@@ -10,7 +10,9 @@ import typer
 from rich.console import Console
 
 from . import __version__
+from .checks.ap006_package_leak import check_listing, is_agent_file
 from .models import Finding
+from .pack import PackError, collect
 from .report import FailOn, exit_code, print_table, to_json
 from .scanner import scan as run_scan
 
@@ -70,5 +72,25 @@ def scan(
 ) -> None:
     """Find secrets that AI coding agents left in history and settings files."""
     findings = run_scan(None if no_home else (home or Path.home()), path)
+    _emit(findings, fmt)
+    raise typer.Exit(exit_code(findings, fail_on))
+
+
+@app.command()
+def pack(
+    target: Annotated[
+        Path,
+        typer.Argument(help="Project directory, or a built package (.tgz, .tar.gz, .whl, .zip)."),
+    ] = Path("."),
+    fmt: FormatOpt = Format.table,
+    fail_on: FailOnOpt = FailOn.high,
+) -> None:
+    """Check what a package would publish: agent files and the keys inside them."""
+    try:
+        listings = collect(target, is_agent_file)
+    except PackError as exc:
+        typer.secho(f"error: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(2) from exc
+    findings = [finding for listing in listings for finding in check_listing(listing)]
     _emit(findings, fmt)
     raise typer.Exit(exit_code(findings, fail_on))

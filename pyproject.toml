@@ -23,6 +23,10 @@ build-backend = "hatchling.build"
 [tool.hatch.version]
 path = "agentprint/__init__.py"
 
+# Allowlist, not denylist: only these ever ship in the source package.
+[tool.hatch.build.targets.sdist]
+include = ["/agentprint", "/tests", "/README.md", "/LICENSE", "/pyproject.toml"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
