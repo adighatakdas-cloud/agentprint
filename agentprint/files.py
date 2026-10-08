@@ -26,16 +26,21 @@ def iter_lines(path: Path) -> Iterator[tuple[int, str]]:
 
 
 def walk_files(root: Path) -> Iterator[Path]:
-    """Regular files at or under root. Symlinks are never followed; missing root yields nothing."""
-    if root.is_symlink():
-        return
-    if root.is_file():
-        yield root
-        return
-    if not root.is_dir():
+    """Regular files at or under root. A symlinked root is followed (dotfile setups); symlinks
+    inside directories are not. Missing or inaccessible paths yield nothing."""
+    try:
+        if root.is_file():
+            yield root
+            return
+        if not root.is_dir():
+            return
+    except OSError:
         return
     for dirpath, _dirs, names in os.walk(root, followlinks=False):
         for name in sorted(names):
             path = Path(dirpath) / name
-            if not path.is_symlink() and path.is_file():
-                yield path
+            try:
+                if not path.is_symlink() and path.is_file():
+                    yield path
+            except OSError:
+                continue

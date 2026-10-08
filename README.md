@@ -31,7 +31,8 @@ uv run agentprint scan --format json   # machine-readable output
 ```
 
 Exit codes: `0` nothing at or above `--fail-on` (default `high`), `1` findings, `2` usage/packaging error.
-Every secret is shown redacted (first 4 characters + length). Nothing leaves your machine.
+Every secret is shown redacted (first 4 characters + length). `scan` is fully offline.
+`pack` on a Python project runs `uv build`, which executes the project's build backend and may download it from PyPI — use it on projects you trust, or pass an already-built archive.
 
 ## Checks
 

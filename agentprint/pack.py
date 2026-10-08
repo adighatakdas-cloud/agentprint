@@ -3,16 +3,30 @@
 from __future__ import annotations
 
 import json
+import lzma
 import shutil
 import subprocess
 import tarfile
 import tempfile
 import zipfile
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 MAX_CONTENT_BYTES = 10 * 1024 * 1024
+TIMEOUT_SECONDS = 300
+# Everything a damaged, truncated or unusual archive can raise while being read.
+ARCHIVE_ERRORS = (
+    OSError,
+    EOFError,
+    ValueError,
+    RuntimeError,  # includes NotImplementedError and encrypted zip members
+    tarfile.TarError,
+    zipfile.BadZipFile,
+    zlib.error,
+    lzma.LZMAError,
+)
 Want = Callable[[str], bool]
 
 
@@ -47,22 +61,25 @@ def read_archive(path: Path, want: Want) -> PackageListing:
                         handle = tf.extractfile(member)
                         if handle is not None:
                             contents[member.name] = handle.read()
-    except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
+    except ARCHIVE_ERRORS as exc:
         raise PackError(f"cannot read archive {path}: {exc}") from exc
     return PackageListing(label=path.name, files=files, contents=contents)
+
+
+def _run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            cmd, cwd=cwd, capture_output=True, text=True, check=False, timeout=TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise PackError(f"{Path(cmd[0]).name} timed out after {TIMEOUT_SECONDS}s") from exc
 
 
 def read_npm_project(root: Path, want: Want) -> PackageListing:
     npm = shutil.which("npm")
     if npm is None:
         raise PackError("npm not found. Install Node.js, or pass a built .tgz instead.")
-    result = subprocess.run(
-        [npm, "pack", "--dry-run", "--json", "--ignore-scripts"],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = _run([npm, "pack", "--dry-run", "--json", "--ignore-scripts"], cwd=root)
     if result.returncode != 0:
         raise PackError(f"npm pack failed: {result.stderr.strip()[-500:]}")
     try:
@@ -86,12 +103,8 @@ def read_python_project(root: Path, want: Want) -> list[PackageListing]:
             "or pass a built sdist/wheel instead."
         )
     with tempfile.TemporaryDirectory() as tmp:
-        result = subprocess.run(
-            [uv, "build", "--out-dir", tmp, str(root)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        # Unlike npm --ignore-scripts, a Python build runs the project's build backend code.
+        result = _run([uv, "build", "--out-dir", tmp, str(root)])
         if result.returncode != 0:
             raise PackError(f"uv build failed: {result.stderr.strip()[-500:]}")
         # uv also writes a .gitignore into the output dir; keep only the built packages.

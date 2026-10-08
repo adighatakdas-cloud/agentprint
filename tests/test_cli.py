@@ -62,3 +62,20 @@ def test_pack_bad_target_exits_2(tmp_path):
     result = runner.invoke(app, ["pack", str(tmp_path / "missing")])
     assert result.exit_code == 2
     assert "does not exist" in result.output
+
+
+def test_scan_missing_path_exits_2(tmp_path):
+    result = runner.invoke(app, ["scan", str(tmp_path / "typo"), "--no-home"])
+    assert result.exit_code == 2
+    assert "does not exist" in result.output
+
+
+def test_scan_missing_home_exits_2(tmp_path):
+    result = runner.invoke(app, ["scan", str(tmp_path), "--home", str(tmp_path / "nohome")])
+    assert result.exit_code == 2
+    assert "does not exist" in result.output
+
+
+def test_pack_help_says_python_builds_run_project_code():
+    result = runner.invoke(app, ["pack", "--help"])
+    assert "runs the project's build" in " ".join(result.output.split())

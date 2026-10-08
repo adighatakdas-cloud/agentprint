@@ -53,3 +53,26 @@ def test_symlink_loop_does_not_hang(tmp_path):
     (tmp_path / "d" / "real.txt").write_text("r")
     (tmp_path / "d" / "loop").symlink_to(tmp_path / "d")
     assert [p.name for p in walk_files(tmp_path / "d")] == ["real.txt"]
+
+
+@pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0, reason="needs POSIX non-root")
+def test_unenterable_directory_is_skipped(tmp_path):
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "settings.json").write_text("x")
+    locked.chmod(0o600)  # readable listing, but cannot be entered
+    try:
+        assert list(walk_files(locked)) == []
+        assert list(walk_files(locked / "settings.json")) == []
+        assert list(iter_lines(locked / "settings.json")) == []
+    finally:
+        locked.chmod(0o700)
+
+
+def test_symlinked_root_file_is_followed(tmp_path):
+    real = tmp_path / "dotfiles" / "settings.json"
+    real.parent.mkdir()
+    real.write_text("x")
+    link = tmp_path / "settings.json"
+    link.symlink_to(real)
+    assert list(walk_files(link)) == [link]

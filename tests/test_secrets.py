@@ -30,6 +30,12 @@ def test_bearer_header_with_known_key_reports_once():
         "the secret is out",
         "password: hunter2",
         "api_key = YOUR_API_KEY_GOES_HERE_PLEASE",
+        "tokenizers/bert-base-uncased-v2/vocab.txt",
+        "secretsmanager.us-east-1.amazonaws.com",
+        "passwordResetTokenExpiresAt2",
+        "TokenBucketRateLimiter2Impl.java",
+        "/opt/plugins/secret-scanner/1.2.0/skills/SKILL.md",
+        "git checkout feature/token-refresh-JIRA-1234-fix",
     ],
 )
 def test_ordinary_text_is_not_a_secret(text):
@@ -52,3 +58,26 @@ def test_long_line_is_fast():
     matches = find_secrets(line)
     assert time.perf_counter() - start < 2.0
     assert [m.value for m in matches] == [fakes.GITHUB]
+
+
+HEX = "9f8e7d6c5b4a39281706f5e4d3c2b1a0"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{\\"api_key\\": \\"' + HEX + '\\"}',  # JSON escaped inside a transcript line
+        "secret_key_base: " + HEX,
+        "AWS_SECRET_ACCESS_KEY=" + HEX,
+        "Authorization: Bearer " + HEX,
+    ],
+)
+def test_generic_finds_assignments_in_common_shapes(text):
+    assert [m.value for m in find_secrets(text)] == [HEX]
+
+
+def test_padded_keyword_is_fast():
+    start = time.perf_counter()
+    find_secrets("token" + " " * 40000 + "x")
+    find_secrets("tokentoken" * 50000)
+    assert time.perf_counter() - start < 2.0

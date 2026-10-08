@@ -95,3 +95,19 @@ def test_python_project_build(tmp_path):
     (root / ".claude" / "settings.local.json").write_bytes(LEAKY)
     findings = _findings(root)
     assert any(f.check_id == "AP006" and ".tar.gz!" in f.location for f in findings)
+
+
+def test_truncated_archive_raises_pack_error(tmp_path):
+    tgz = _tgz(tmp_path / "full.tgz", {"package/a.js": bytes(range(256)) * 400})
+    cut = tmp_path / "cut.tgz"
+    cut.write_bytes(tgz.read_bytes()[:200])
+    with pytest.raises(PackError):
+        collect(cut, is_agent_file)
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(shutil.which("npm") is None, reason="npm not installed")
+def test_packaging_tool_timeout_raises_pack_error(fake_project, monkeypatch):
+    monkeypatch.setattr("agentprint.pack.TIMEOUT_SECONDS", 0.001)
+    with pytest.raises(PackError, match="timed out"):
+        collect(fake_project, is_agent_file)

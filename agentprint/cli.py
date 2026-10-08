@@ -71,7 +71,12 @@ def scan(
     fail_on: FailOnOpt = FailOn.high,
 ) -> None:
     """Find secrets that AI coding agents left in history and settings files."""
-    findings = run_scan(None if no_home else (home or Path.home()), path)
+    home_dir = None if no_home else (home or Path.home())
+    for target in (path, home_dir):
+        if target is not None and not target.is_dir():
+            typer.secho(f"error: {target} does not exist or is not a directory", err=True, fg="red")
+            raise typer.Exit(2)
+    findings = run_scan(home_dir, path)
     _emit(findings, fmt)
     raise typer.Exit(exit_code(findings, fail_on))
 
@@ -85,7 +90,12 @@ def pack(
     fmt: FormatOpt = Format.table,
     fail_on: FailOnOpt = FailOn.high,
 ) -> None:
-    """Check what a package would publish: agent files and the keys inside them."""
+    """Check what a package would publish: agent files and the keys inside them.
+
+    npm projects are listed with `npm pack --dry-run --ignore-scripts` (no package code runs).
+    Python projects are built with `uv build`, which runs the project's build backend and may
+    download it from PyPI: only point it at projects you trust, or pass a built archive.
+    """
     try:
         listings = collect(target, is_agent_file)
     except PackError as exc:

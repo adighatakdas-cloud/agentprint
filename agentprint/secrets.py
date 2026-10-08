@@ -50,13 +50,22 @@ RULES: tuple[SecretRule, ...] = (
     SecretRule("stripe", "Stripe live key", re.compile(r"(?:sk|rk)_live_[A-Za-z0-9]{24,99}")),
     SecretRule("slack", "Slack token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,72}")),
     SecretRule("google", "Google API key", re.compile(r"AIza[0-9A-Za-z_\-]{35}")),
+    # Generic rules: a secret-ish name, a real separator, then a random-looking value.
+    # Possessive quantifiers (*+) and bounded spacing keep matching linear on hostile input.
     SecretRule(
         "generic",
         "Generic secret",
         re.compile(
-            r"(?i)(?:api[_-]?key|secret|token|passw(?:or)?d|bearer)[\"']?\s*[:=]?\s*[\"']?"
-            r"([A-Za-z0-9_\-.+/]{20,200})"
+            r"(?i)(?<![a-z0-9])(?:api[_-]?key|secret|token|passw(?:or)?d)[\w-]{0,40}+"
+            r"\\?[\"']?[ \t]{0,4}[:=][ \t]{0,4}\\?[\"']?([A-Za-z0-9_\-.+]{20,200})"
         ),
+        group=1,
+        min_entropy=3.5,
+    ),
+    SecretRule(
+        "generic",
+        "Generic secret",
+        re.compile(r"(?i)(?<![a-z0-9])bearer[ \t]{1,4}([A-Za-z0-9_\-.+]{20,200})"),
         group=1,
         min_entropy=3.5,
     ),
