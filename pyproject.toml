@@ -1,0 +1,45 @@
+[project]
+name = "agentprint"
+dynamic = ["version"]
+description = "Find the secrets and risky permissions AI coding agents leave behind — on your machine and in the packages you publish."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "adighatakdas-cloud" }]
+keywords = ["security", "secrets", "ai-agents", "claude-code", "codex", "npm", "pypi"]
+dependencies = [
+    "rich>=15.0.0",
+    "typer>=0.27.3",
+]
+
+[project.scripts]
+agentprint = "agentprint.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "agentprint/__init__.py"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["pathlib.Path"]  # allow `= Path(".")` CLI defaults
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: needs npm or uv build; run with -m integration"]
+addopts = "-m 'not integration'"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.10",
+]
