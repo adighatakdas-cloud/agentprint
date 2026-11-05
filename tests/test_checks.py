@@ -9,7 +9,8 @@ from tests import fakes
 
 def test_scan_finds_every_planted_key(fake_home, fake_project):
     findings = scan(fake_home, fake_project)
-    assert Counter(f.check_id for f in findings) == {"AP001": 5, "AP002": 3}
+    # The Codex config.toml key sits in an MCP server entry: AP005, not AP002.
+    assert Counter(f.check_id for f in findings) == {"AP001": 5, "AP002": 2, "AP005": 1}
     assert findings[0].severity is Severity.CRITICAL  # most severe first
 
 
