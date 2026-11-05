@@ -33,7 +33,7 @@ then, [run it from source](#from-source).
 - **We measured it too.** Our [pilot scan](https://github.com/adighatakdas-cloud/agentprint/blob/main/docs/pilot-2026-11.md)
   of the newest 1,976 npm packages and 1,997 PyPI releases (5 November 2026, counts only) found
   agent files in 2.1% of npm packages and 9.2% of PyPI releases. 1 npm and 6 PyPI packages
-  shipped files that should never ship. That sample held no key-shaped strings.
+  shipped files that should never ship. No key-shaped strings turned up inside those agent files.
 - **History files keep what you paste.** Agents save prompts and transcripts as plain text in
   your home folder, where any program you run can read them. A June 2026 Hermes Agent advisory
   ([CVE-2026-53870](https://github.com/advisories/GHSA-99f9-j8r3-p853)) covers such files being
