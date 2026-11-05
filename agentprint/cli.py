@@ -15,11 +15,14 @@ from rich.console import Console
 from . import __version__
 from .advice import Moment
 from .checks.ap006_package_leak import check_listing, is_agent_file
+from .integrations import ALL_INTEGRATIONS
 from .models import Finding
 from .pack import PackError, collect
 from .report import FailOn, exit_code, print_table, to_agent, to_json
 from .sarif import to_sarif
 from .scanner import scan as run_scan
+
+AGENT_NAMES = ", ".join(ALL_INTEGRATIONS)  # help text stays in step with the integrations
 
 app = typer.Typer(
     add_completion=False,
@@ -129,10 +132,7 @@ def pack(
 def guard(
     agent: Annotated[
         str,
-        typer.Option(
-            help="Agent calling the hook: claude-code, codex, cursor, gemini, windsurf, "
-            "devin or opencode."
-        ),
+        typer.Option(help=f"Agent calling the hook: {AGENT_NAMES}."),
     ] = "claude-code",
     fail_on: FailOnOpt = FailOn.high,
 ) -> None:
@@ -168,8 +168,8 @@ AgentsOpt = Annotated[
     list[str] | None,
     typer.Option(
         "--agent",
-        help="Only this agent (repeatable): claude-code, codex, cursor, gemini (or gemini-cli), "
-        "windsurf, devin, opencode, copilot, hermes, antigravity. Default: every agent found.",
+        help=f"Only this agent (repeatable): {AGENT_NAMES} (gemini-cli also means gemini). "
+        "Default: every agent found.",
     ),
 ]
 DryRunOpt = Annotated[bool, typer.Option("--dry-run", help="Show the changes, write nothing.")]

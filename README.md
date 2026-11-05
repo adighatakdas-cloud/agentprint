@@ -25,7 +25,7 @@ Run it once. After that your agent checks the package publishes and `git push` c
 | Windsurf (Cascade) | `~/.codeium/windsurf/hooks.json` | `~/.codeium/windsurf/mcp_config.json` | `memories/global_rules.md` |
 | Devin Desktop / CLI | `~/.config/devin/config.json` | `~/.config/devin/mcp_config.json` | `~/.devin/rules/agentprint.md` |
 | OpenCode | plugin `~/.config/opencode/plugins/agentprint.js` | `opencode.json` | `AGENTS.md` (only if it won't hide your `~/.claude/CLAUDE.md`) |
-| GitHub Copilot (CLI and VS Code) | `~/.copilot/hooks/agentprint.json` | `~/.copilot/mcp-config.json` | `~/.copilot/copilot-instructions.md` |
+| GitHub Copilot | `~/.copilot/hooks/agentprint.json` (checked against the Copilot CLI docs; VS Code uses it only where it runs the same hooks as the CLI, and its shell tool name there is unverified) | `~/.copilot/mcp-config.json` | `~/.copilot/copilot-instructions.md` |
 | Hermes Agent | `~/.hermes/config.yaml` (**off until you approve it** in `hermes chat`) | `~/.hermes/config.yaml` | none: its only global file is the agent's persona, `SOUL.md` |
 | Antigravity | `~/.gemini/config/hooks.json` | `~/.gemini/config/mcp_config.json` | `~/.gemini/config/rules/agentprint.md` |
 
@@ -47,7 +47,7 @@ From source today: `uv run agentprint install --dry-run`.
 - **Spotting a publish is best effort.** agentprint reads the command line the agent is about to run; it isn't a shell. It follows `cd`, `&&`, `bash -c`, `npm run release` (by reading `package.json`), workspaces and release tools like changesets and lerna. A publish hidden in a Makefile, a shell script file or a heredoc can slip past the hook; the instructions note still tells the agent to check first.
 - **"Could not check" is not "OK".** When agentprint can't tell what would be uploaded (a folder held in a variable, a `pnpm --filter` selection, nothing built in `dist/` yet, git not installed), it lets the command run and says "agentprint could not check this…" so you and the agent know.
 - **Your agents' own approvals still apply.** agentprint only adds a "deny" when it finds a problem; it never approves commands for you. If you use Claude Code too, Cursor also runs Claude Code's hooks, so the check can run twice.
-- **Hermes asks before it runs any new hook.** agentprint never approves its own hook: start `hermes chat` once and accept it. Until then (and in gateway or cron runs that never ask) the Hermes hook is off; the MCP server still works. agentprint edits `config.yaml` with a parser that keeps your comments and layout, and only if Hermes has already created it; otherwise it prints what to add and asks you to run Hermes once first.
+- **Hermes asks before it runs any new hook.** agentprint never approves its own hook: start `hermes chat` once and accept it. Until then (and in gateway or cron runs that never ask) the Hermes hook is off; the MCP server still works. agentprint only edits `config.yaml` if Hermes has already created it, and leaves your own lines, comments, indentation and line endings as they were; its entries go first in each section. If the file is missing, can't be read safely, or the section uses YAML anchors (`&`, `*`, `<<`), it changes nothing and prints what to add by hand.
 - **Codex's `config.toml`:** agentprint's MCP entry sits in a marked block at the top of the file. If Codex ever writes its own settings inside that block, uninstall keeps those lines and removes only agentprint's. Not yet tested against a live Codex.
 
 ## What it will do

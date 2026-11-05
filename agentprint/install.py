@@ -58,6 +58,7 @@ from .integrations.base import (
     Launch,
     Unsupported,
     YamlEdit,
+    expanded_size,
 )
 from .sanitize import clean
 from .secrets import find_secrets, redact
@@ -258,15 +259,19 @@ def _json_delta(before: object, after: object) -> tuple[object, object]:
 
 
 def _data(text: str, edits: list[Edit]) -> object:
-    """A JSON or YAML file's data (empty file = {}); ValueError when it can't be read."""
+    """A JSON or YAML file's data (empty file = {}); ValueError when it can't be read, or when
+    its anchors would expand it past MAX_EXPANDED values (checked before anything walks it)."""
     if any(isinstance(e, YamlEdit) for e in edits):
         try:
-            return yaml.safe_load(text or "") or {}
+            data = yaml.safe_load((text or "").lstrip("﻿")) or {}
         except yaml.YAMLError as exc:
             raise ValueError(str(exc)) from exc
-    if any(isinstance(e, JsonEdit) for e in edits):
-        return json.loads(text or "{}")
-    raise ValueError("not a data file")
+    elif any(isinstance(e, JsonEdit) for e in edits):
+        data = json.loads(text or "{}")
+    else:
+        raise ValueError("not a data file")
+    expanded_size(data)
+    return data
 
 
 def _render(value: object, edits: list[Edit]) -> str:
@@ -311,11 +316,19 @@ def _snippet(edits: list[Edit]) -> str:
         sample: dict = {}
         for edit in edits:
             edit.add(sample)
-        return _render(sample, edits)
+        return _render(json.loads(json.dumps(sample, default=str)), edits)  # plain types
     parts = []
     for edit in edits:
         parts.append(edit.content if isinstance(edit, FileEdit) else edit.apply(None))
     return "\n".join(parts)
+
+
+def _uses_launcher(path: Path) -> bool:
+    try:
+        text = _read(path)
+    except Unsupported:
+        return False
+    return text is not None and HOOK_MARK in text
 
 
 def _would_change(path: Path, edits: list[Edit]) -> bool:
@@ -346,7 +359,7 @@ def _core_edits(home: Path, agentprint: list[str]) -> list[Edit]:
             home / STATE_DIR / "bin" / HOOK_MARK,
             "hook launcher (lets agents run agentprint safely)",
             launcher_script(agentprint),
-            mode=0o755,
+            mode=0o700,  # runnable by you only
         )
     ]
 
@@ -376,13 +389,15 @@ def install(
     state = State.load(home)
     changed = 0
     agents = [(i.name, i.label, i.edits(home, env, launch)) for i in found]
-    # The shared launcher only goes in when some agent file will really use it.
-    needed = any(
-        _would_change(path, group)
-        for _, _, edits in agents
-        for path, group in _group(edits).items()
+    agent_files = [(path, group) for _, _, edits in agents for path, group in _group(edits).items()]
+    # The shared launcher goes in when an agent file will use it, or when a hook installed
+    # earlier already uses it and the launcher is missing or out of date.
+    core_edits = _core_edits(home, agentprint)
+    needed = any(_would_change(path, group) for path, group in agent_files) or (
+        any(_would_change(edit.path, [edit]) for edit in core_edits)
+        and any(_uses_launcher(path) for path, _ in agent_files)
     )
-    core = [(CORE, "agentprint", _core_edits(home, agentprint))] if needed else []
+    core = [(CORE, "agentprint", core_edits)] if needed else []
     sections = core + agents
     try:
         for name, label, edits in sections:
@@ -502,8 +517,15 @@ def uninstall(
     changed = 0
     exact = True
     for path, group in grouped.items():
-        result = _uninstall_file(home, path, group, state, dry_run, echo)
-        changed += result != "same"
+        try:
+            result = _uninstall_file(home, path, group, state, dry_run, echo)
+        except Exception as exc:  # noqa: BLE001 - one bad file must not stop the others
+            echo(
+                f"  ! {_shown(home, path)}: could not undo it ({type(exc).__name__}); left as "
+                "is. Run agentprint uninstall again later."
+            )
+            result = "kept"
+        changed += result not in {"same", "kept"}
         exact = exact and result in {"same", "restored", "removed"}
     if dry_run:
         echo(f"\n{changed} file(s) would change. Run without --dry-run to apply.")

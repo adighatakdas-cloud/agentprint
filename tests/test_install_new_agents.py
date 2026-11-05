@@ -125,7 +125,9 @@ def test_hermes_flush_list_style_is_followed(tmp_path):
     _write(home / ".hermes" / "config.yaml", flush)
     _install(home, ["hermes"])
     text = (home / ".hermes" / "config.yaml").read_text()
-    assert text.startswith(flush) and "\n  - matcher: terminal\n    command: /" in text
+    remaining = iter(text.splitlines())
+    assert all(line in remaining for line in flush.splitlines())  # in order, unchanged
+    assert "\n  - matcher: terminal\n    command: /" in text  # ours in the same flush style
 
 
 def test_hermes_without_config_yaml_is_left_alone_and_shown_the_snippet(tmp_path):
