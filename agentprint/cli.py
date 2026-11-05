@@ -137,3 +137,62 @@ def guard(
     if reply.stderr:
         typer.echo(reply.stderr, err=True)
     raise typer.Exit(reply.exit_code)
+
+
+AgentsOpt = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--agent",
+        help="Only this agent (repeatable): claude-code, codex, cursor, gemini, windsurf, "
+        "devin, opencode. Default: every agent found.",
+    ),
+]
+DryRunOpt = Annotated[bool, typer.Option("--dry-run", help="Show the changes, write nothing.")]
+SetupHomeOpt = Annotated[
+    Path | None,
+    typer.Option(help="Home folder whose agent config to change. Default: yours."),
+]
+
+
+def _setup_args(agents: list[str] | None, home: Path | None) -> tuple[Path, dict[str, str]]:
+    from .integrations import ALL_INTEGRATIONS
+
+    unknown = [name for name in agents or [] if name not in ALL_INTEGRATIONS]
+    if unknown:
+        typer.secho(
+            f"error: unknown agent {', '.join(unknown)}. Known: {', '.join(ALL_INTEGRATIONS)}",
+            err=True,
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(2)
+    if home is None:
+        return Path.home(), dict(os.environ)  # honour CODEX_HOME, CLAUDE_CONFIG_DIR, ...
+    if not home.is_dir():
+        typer.secho(f"error: {home} is not a directory", err=True, fg=typer.colors.RED)
+        raise typer.Exit(2)
+    return home, {}
+
+
+@app.command()
+def install(agent: AgentsOpt = None, dry_run: DryRunOpt = False, home: SetupHomeOpt = None) -> None:
+    """Set agentprint up inside every AI coding agent on this computer.
+
+    For each agent found it adds a hook that checks publishes and pushes (where the agent
+    supports hooks), the agentprint MCP server, and a short note in the agent's global rules.
+    Every change is shown as a diff and backed up first. `agentprint uninstall` undoes it.
+    """
+    from .install import install as run_install
+
+    home_dir, env = _setup_args(agent, home)
+    run_install(home_dir, env, agent, dry_run, typer.echo)
+
+
+@app.command()
+def uninstall(
+    agent: AgentsOpt = None, dry_run: DryRunOpt = False, home: SetupHomeOpt = None
+) -> None:
+    """Remove everything `agentprint install` added, restoring the files exactly."""
+    from .install import uninstall as run_uninstall
+
+    home_dir, env = _setup_args(agent, home)
+    run_uninstall(home_dir, env, agent, dry_run, typer.echo)
