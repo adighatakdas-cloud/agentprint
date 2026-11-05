@@ -92,3 +92,8 @@ class AgentConfig:
     grants: tuple[Grant, ...] = ()
     hooks: tuple[HookCommand, ...] = ()
     mcp_servers: tuple[McpServer, ...] = ()
+
+
+class CannotCheck(Exception):
+    """agentprint could not tell what a publish or push would upload. Callers report
+    "could not check" (and allow), never "OK"."""

@@ -22,7 +22,7 @@ from .advice import Moment
 from .checks.ap006_package_leak import check_listing, is_agent_file
 from .commands import NODE, ROOT_RELEASERS, WORKSPACE_RELEASERS, Action, Risky, detect
 from .gitcheck import check_push
-from .models import Finding
+from .models import CannotCheck, Finding
 from .pack import PackageListing, PackError, read_archive, read_npm_project
 from .report import FailOn, exit_code, to_agent
 from .sanitize import clean
@@ -40,8 +40,7 @@ class Verdict:
     warning: str | None = None  # shown to the human/agent, never blocks
 
 
-class CannotCheck(Exception):
-    """agentprint could not tell what this publish would upload."""
+__all__ = ["CannotCheck", "Verdict", "check_package_path", "evaluate", "workspace_folders"]
 
 
 def evaluate(command: str, cwd: Path, fail_on: FailOn = FailOn.high) -> Verdict | None:

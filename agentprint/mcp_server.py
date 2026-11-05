@@ -60,7 +60,7 @@ def build_server() -> MCPServer:
         before git push. Result line 1 is `agentprint: OK` or `agentprint: BLOCK — ...`."""
         try:
             findings = run_check_push(_path(path))
-        except OSError as exc:
+        except (CannotCheck, OSError) as exc:
             return _cannot(exc)
         return to_agent(findings, FailOn.high, Moment.push)
 

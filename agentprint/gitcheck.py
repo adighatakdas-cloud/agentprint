@@ -14,8 +14,9 @@ from .agents import ALL_AGENTS
 from .checks.ap002_settings_secret import CHECK as AP002
 from .checks.ap006_package_leak import check_listing, is_agent_file
 from .checks.ap007_local_not_ignored import LocalFileNotIgnored as AP007
-from .models import Finding, Kind
+from .models import CannotCheck, Finding, Kind
 from .pack import MAX_CONTENT_BYTES, PackageListing
+from .sanitize import clean
 
 GIT_TIMEOUT = 20
 PUSHED_TITLE = "Agent file would be pushed to the git remote"
@@ -58,6 +59,12 @@ def _read(path: Path) -> bytes:
 
 
 def check_push(cwd: Path) -> list[Finding]:
+    """Findings for what a push from `cwd` would publish. Raises CannotCheck when it can't
+    look (no such folder, git missing); a folder outside any repository has nothing to push."""
+    if not cwd.is_dir():
+        raise CannotCheck(f"the folder {clean(str(cwd))!r} does not exist")
+    if shutil.which("git") is None:
+        raise CannotCheck("git is not installed, so the repository can't be read")
     root = repo_root(cwd)
     if root is None:
         return []

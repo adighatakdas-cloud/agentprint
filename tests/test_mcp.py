@@ -79,6 +79,10 @@ def test_check_push_outside_a_repo_is_ok(tmp_path):
     assert call("check_push", path=str(tmp_path)).startswith("agentprint: OK")
 
 
+def test_check_push_on_a_missing_folder_says_could_not_check(tmp_path):
+    assert "could not check" in call("check_push", path=str(tmp_path / "nope"))
+
+
 def test_explain_finding_known_and_unknown():
     assert "Rotate" in call("explain_finding", check_id="AP002")
     assert "no check" in call("explain_finding", check_id="AP999")
