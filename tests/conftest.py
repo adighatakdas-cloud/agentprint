@@ -91,7 +91,7 @@ def _gemini_home(home: Path) -> None:
     # Expected places for credentials: never read.
     _write(gemini / "oauth_creds.json", json.dumps({"access_token": fakes.GENERIC_VALUE}))
     _write(gemini / ".env", f"GEMINI_API_KEY={fakes.GOOGLE}\n")
-    # Google Antigravity shares ~/.gemini but is a different product: not scanned.
+    # Google Antigravity shares ~/.gemini: its files belong to the Antigravity module.
     _write(gemini / "antigravity" / "mcp_config.json", json.dumps({"mcpServers": {}}))
 
 
@@ -256,12 +256,47 @@ def _hermes_home(home: Path) -> None:
     _write(hermes / "profiles" / "work" / ".env", f"ANTHROPIC_API_KEY={fakes.ANTHROPIC}\n")
 
 
+def _antigravity_home(home: Path) -> None:
+    gemini = home / ".gemini"
+    app = gemini / "antigravity"
+    turn = {"type": "user", "content": f"token {fakes.STRIPE}"}
+    logs = app / "brain" / "c-0001" / ".system_generated" / "logs"
+    _write(logs / "transcript.jsonl", _jsonl(turn))
+    _write(app / "brain" / "c-0001" / "task.md", "- [ ] fix login\n")
+    (app / "conversations").mkdir(parents=True)
+    (app / "conversations" / "c-0001.pb").write_bytes(b"\x0a\x00binary")  # not covered
+    _write(app / "mcp_config.json", "")  # older app versions; empty on the verification Mac
+    # Antigravity's own MCP OAuth token store: never secret-scanned.
+    _write(app / "mcp_oauth_tokens.json", json.dumps({"maps": {"token": fakes.GENERIC_VALUE}}))
+    cli = {"toolPermission": "always-proceed"}
+    cli["permissions"] = {"allow": ["command(git status)", "command(*)"]}
+    _write(gemini / "antigravity-cli" / "settings.json", json.dumps(cli))
+    guard = {"matcher": "run_command", "hooks": [{"type": "command", "command": "./guard.sh"}]}
+    done = {"type": "command", "command": "wget -q https://hooks.example.invalid/done"}
+    off = {"type": "command", "command": "curl https://x.example.invalid", "enabled": False}
+    hooks = {"team-hooks": {"PreToolUse": [guard], "Stop": [done, off]}}
+    _write(gemini / "config" / "hooks.json", json.dumps(hooks))
+    maps = {"serverUrl": "https://mcp.example.invalid/mcp"}
+    maps["headers"] = {"Authorization": f"Bearer {fakes.GOOGLE}"}
+    _write(gemini / "config" / "mcp_config.json", json.dumps({"mcpServers": {"maps": maps}}))
+
+
+def _antigravity_project(root: Path) -> None:
+    agents = root / ".agents"
+    lint = {"type": "command", "command": "./scripts/lint.sh"}
+    _write(agents / "hooks.json", json.dumps({"lint": {"PostToolUse": [{"hooks": [lint]}]}}))
+    aws = {"command": "uvx", "args": ["aws-mcp"], "env": {"AWS_ACCESS_KEY_ID": fakes.AWS}}
+    _write(agents / "mcp_config.json", json.dumps({"mcpServers": {"aws": aws}}))
+    _write(agents / "rules" / "style.md", "Use tabs.\n")
+
+
 @pytest.fixture
 def more_home(tmp_path) -> Path:
     """GitHub Copilot, Hermes Agent and Google Antigravity files."""
     home = tmp_path / "more-home"
     _copilot_home(home)
     _hermes_home(home)
+    _antigravity_home(home)
     return home
 
 
@@ -269,4 +304,5 @@ def more_home(tmp_path) -> Path:
 def more_project(tmp_path) -> Path:
     root = tmp_path / "more-proj"
     _copilot_project(root)
+    _antigravity_project(root)
     return root

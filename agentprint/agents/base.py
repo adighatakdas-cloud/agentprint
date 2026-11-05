@@ -102,8 +102,8 @@ def hook_commands(hooks: Any) -> tuple[HookCommand, ...]:
             inner = entry.get("hooks")
             handlers = inner if isinstance(inner, list) else [entry]
             for handler in handlers:
-                if not isinstance(handler, dict):
-                    continue
+                if not isinstance(handler, dict) or handler.get("enabled") is False:
+                    continue  # enabled: false (Antigravity) means the hook never runs
                 # commandWindows: Codex; bash / powershell: Copilot's per-platform commands.
                 for key in ("command", "commandWindows", "command_windows", "bash", "powershell"):
                     text = _command_text(handler.get(key))
