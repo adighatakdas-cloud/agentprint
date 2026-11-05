@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
@@ -14,6 +15,7 @@ from .checks.ap006_package_leak import check_listing, is_agent_file
 from .models import Finding
 from .pack import PackError, collect
 from .report import FailOn, exit_code, print_table, to_json
+from .sarif import to_sarif
 from .scanner import scan as run_scan
 
 app = typer.Typer(
@@ -27,6 +29,7 @@ app = typer.Typer(
 class Format(StrEnum):
     table = "table"
     json = "json"
+    sarif = "sarif"
 
 
 FormatOpt = Annotated[Format, typer.Option("--format", "-f", help="Output format.")]
@@ -51,9 +54,13 @@ def main(
     """agentprint."""
 
 
-def _emit(findings: list[Finding], fmt: Format) -> None:
+def _emit(
+    findings: list[Finding], fmt: Format, package: Path | None = None, labels: Collection[str] = ()
+) -> None:
     if fmt is Format.json:
         typer.echo(to_json(findings))
+    elif fmt is Format.sarif:
+        typer.echo(to_sarif(findings, package=package, labels=labels))
     else:
         print_table(findings, Console())
 
@@ -102,5 +109,5 @@ def pack(
         typer.secho(f"error: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(2) from exc
     findings = [finding for listing in listings for finding in check_listing(listing)]
-    _emit(findings, fmt)
+    _emit(findings, fmt, package=target, labels=[listing.label for listing in listings])
     raise typer.Exit(exit_code(findings, fail_on))
