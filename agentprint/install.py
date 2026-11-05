@@ -42,6 +42,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import yaml
+
 from . import __version__
 from .integrations import ALL_INTEGRATIONS
 from .integrations.base import (
@@ -55,6 +57,7 @@ from .integrations.base import (
     JsonEdit,
     Launch,
     Unsupported,
+    YamlEdit,
 )
 from .sanitize import clean
 from .secrets import find_secrets, redact
@@ -254,22 +257,39 @@ def _json_delta(before: object, after: object) -> tuple[object, object]:
     return (None, None) if before == after else (after, before)
 
 
+def _data(text: str, edits: list[Edit]) -> object:
+    """A JSON or YAML file's data (empty file = {}); ValueError when it can't be read."""
+    if any(isinstance(e, YamlEdit) for e in edits):
+        try:
+            return yaml.safe_load(text or "") or {}
+        except yaml.YAMLError as exc:
+            raise ValueError(str(exc)) from exc
+    if any(isinstance(e, JsonEdit) for e in edits):
+        return json.loads(text or "{}")
+    raise ValueError("not a data file")
+
+
+def _render(value: object, edits: list[Edit]) -> str:
+    if any(isinstance(e, YamlEdit) for e in edits):
+        return yaml.safe_dump(value, sort_keys=False, default_flow_style=False, width=4096)
+    return json.dumps(value, indent=2)
+
+
 def changes(old: str | None, new: str | None, edits: list[Edit]) -> list[str]:
     """The lines agentprint adds (+) or removes (-), and nothing else from the file.
 
     A JSON file is compared as data, so re-indenting a compact file doesn't print every line
     of it, and none of the user's other values (database URLs, tokens) are ever shown."""
-    if any(isinstance(e, JsonEdit) for e in edits):
+    if any(isinstance(e, JsonEdit | YamlEdit) for e in edits):
         try:
-            before, after = json.loads(old or "{}"), json.loads(new or "{}")
+            before, after = _data(old or "", edits), _data(new or "", edits)
         except ValueError:
             return ["    (contents not shown)"]
         added, removed = _json_delta(before, after)
-        lines = (
-            [f"-{line}" for line in json.dumps(removed, indent=2).splitlines()] if removed else []
-        )
-        lines += [f"+{line}" for line in json.dumps(added, indent=2).splitlines()] if added else []
-        if old is not None and new is not None and added and not removed:
+        lines = [f"-{line}" for line in _render(removed, edits).splitlines()] if removed else []
+        lines += [f"+{line}" for line in _render(added, edits).splitlines()] if added else []
+        json_file = any(isinstance(e, JsonEdit) for e in edits)
+        if json_file and old is not None and new is not None and added and not removed:
             lines.append(" (the rest of the file keeps its values; JSON may be re-indented)")
     else:
         lines = [
@@ -474,15 +494,24 @@ def uninstall(
             _rmdir_if_empty(Path(d))
         _rmdir_if_empty(home / STATE_DIR)
     elif state.files or (home / STATE_DIR).exists():
+        for d in sorted(state.dirs, key=len, reverse=True):  # e.g. ~/.gemini/config, if empty
+            if _rmdir_if_empty(Path(d)):
+                state.dirs.remove(d)
         state.save()
         if (home / STATE_DIR / "backups").exists():
             echo(f"Backups kept in {_shown(home, home / STATE_DIR / 'backups')}")
     echo(f"\nDone: {changed} file(s) changed." if changed else "\nNothing to remove.")
 
 
-def _rmdir_if_empty(directory: Path) -> None:
-    with contextlib.suppress(OSError):  # not empty, or already gone
+def _rmdir_if_empty(directory: Path) -> bool:
+    """Remove a folder agentprint created if nothing is left in it. True if it's gone."""
+    try:
         directory.rmdir()
+    except FileNotFoundError:
+        return True
+    except OSError:  # not empty
+        return False
+    return True
 
 
 def _backup_text(entry: dict | None) -> str | None:
@@ -505,13 +534,11 @@ def _pruned(value: object) -> object:
 
 
 def _same(text: str, backup: str, edits: list[Edit]) -> bool:
-    """Same content: identical text, or (for JSON files) the same data."""
+    """Same content: identical text, or (for JSON / YAML files) the same data."""
     if text == backup:
         return True
-    if not any(isinstance(e, JsonEdit) for e in edits):
-        return False
     try:
-        return _pruned(json.loads(text or "{}")) == _pruned(json.loads(backup or "{}"))
+        return _pruned(_data(text, edits)) == _pruned(_data(backup, edits))
     except ValueError:
         return False
 
