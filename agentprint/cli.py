@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
@@ -108,3 +110,30 @@ def pack(
     findings = [finding for listing in listings for finding in check_listing(listing)]
     _emit(findings, fmt, fail_on, Moment.publish)
     raise typer.Exit(exit_code(findings, fail_on))
+
+
+@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+def guard(
+    agent: Annotated[
+        str,
+        typer.Option(
+            help="Agent calling the hook: claude-code, codex, cursor, gemini, windsurf, "
+            "devin or opencode."
+        ),
+    ] = "claude-code",
+    fail_on: FailOnOpt = FailOn.high,
+) -> None:
+    """Hook entry point for AI agents: stop a publish or git push that would leak.
+
+    Reads the agent's hook JSON on stdin and answers in that agent's own format. Only package
+    publishes and `git push` are checked; everything else passes straight through. If
+    agentprint itself fails, the command is allowed. `agentprint install` sets this up.
+    """
+    from .hook import run_hook  # imported here so other commands stay fast to start
+
+    reply = run_hook(agent, sys.stdin.read(), os.environ, fail_on)
+    if reply.stdout:
+        typer.echo(reply.stdout)
+    if reply.stderr:
+        typer.echo(reply.stderr, err=True)
+    raise typer.Exit(reply.exit_code)
