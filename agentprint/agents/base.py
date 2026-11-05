@@ -102,12 +102,17 @@ def hook_commands(hooks: Any) -> tuple[HookCommand, ...]:
             inner = entry.get("hooks")
             handlers = inner if isinstance(inner, list) else [entry]
             for handler in handlers:
-                if not isinstance(handler, dict):
-                    continue
-                for key in ("command", "commandWindows", "command_windows"):
+                if not isinstance(handler, dict) or handler.get("enabled") is False:
+                    continue  # enabled: false (Antigravity) means the hook never runs
+                # commandWindows: Codex; bash / powershell: Copilot's per-platform commands.
+                for key in ("command", "commandWindows", "command_windows", "bash", "powershell"):
                     text = _command_text(handler.get(key))
                     if text:
                         found.append(HookCommand(str(event), text))
+                if isinstance(handler.get("exec"), str):  # Copilot's shell-free exec + args
+                    args = handler.get("args")
+                    argv = [handler["exec"], *(args if isinstance(args, list) else [])]
+                    found.append(HookCommand(str(event), _command_text(argv)))
                 if handler.get("type") == "http" and isinstance(handler.get("url"), str):
                     found.append(HookCommand(str(event), f"POST {handler['url']}"))
     return tuple(found)

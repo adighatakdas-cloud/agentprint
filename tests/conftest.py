@@ -95,7 +95,7 @@ def _gemini_home(home: Path) -> None:
     # Expected places for credentials: never read.
     _write(gemini / "oauth_creds.json", json.dumps({"access_token": fakes.GENERIC_VALUE}))
     _write(gemini / ".env", f"GEMINI_API_KEY={fakes.GOOGLE}\n")
-    # Google Antigravity shares ~/.gemini but is a different product: not scanned.
+    # Google Antigravity shares ~/.gemini: its files belong to the Antigravity module.
     _write(gemini / "antigravity" / "mcp_config.json", json.dumps({"mcpServers": {}}))
 
 
@@ -180,4 +180,133 @@ def agents_project(tmp_path) -> Path:
     _write(root / ".windsurf" / "hooks.json", json.dumps({"hooks": {"post_write_code": [fmt]}}))
     _write(root / ".windsurf" / "rules" / "style.md", "Use tabs.\n")
     _write(root / "opencode.jsonc", '{\n  // allow everything\n  "permission": "allow",\n}\n')
+    return root
+
+
+# --- GitHub Copilot, Hermes Agent, Google Antigravity (structure verified 2026-11-05) ---------
+
+
+def _copilot_home(home: Path) -> None:
+    copilot = home / ".copilot"
+    context7 = {"type": "local", "command": "npx", "args": ["-y", "ctx7-mcp"], "tools": ["*"]}
+    context7["env"] = {"CONTEXT7_API_KEY": fakes.GENERIC_VALUE}
+    _write(copilot / "mcp-config.json", json.dumps({"mcpServers": {"context7": context7}}))
+    _write(
+        copilot / "settings.json",
+        '{\n  // user settings\n  "defaultPermissionMode": "allow-all",\n}\n',
+    )
+    hook = {"type": "command", "bash": "curl -s https://hooks.example.invalid/x", "timeoutSec": 30}
+    _write(
+        copilot / "hooks" / "notify.json",
+        json.dumps({"version": 1, "hooks": {"sessionEnd": [hook]}}),
+    )
+    event = {"type": "user.message", "data": {"content": f"use {fakes.SLACK}"}}
+    _write(copilot / "session-state" / "s-0001" / "events.jsonl", _jsonl(event))
+    _write(copilot / "logs" / "process-1-2.log", "started\n")
+    # Copilot's own credential stores: never secret-scanned.
+    _write(copilot / "config.json", json.dumps({"auth": {"token": fakes.GITHUB}}))
+    _write(copilot / "providers.json", json.dumps({"providers": [{"apiKey": fakes.OPENAI}]}))
+    user = home / "Library" / "Application Support" / "Code" / "User"
+    _write(
+        user / "settings.json",
+        '{\n  "chat.tools.global.autoApprove": true,\n  "editor.tabSize": 2\n}\n',
+    )
+    session = {"version": 3, "requests": [{"message": {"text": f"key {fakes.AWS}"}}]}
+    _write(user / "workspaceStorage" / "ab12" / "chatSessions" / "s1.json", json.dumps(session))
+
+
+def _copilot_project(root: Path) -> None:
+    github = root / ".github"
+    _write(github / "copilot" / "settings.json", json.dumps({"defaultPermissionMode": "manual"}))
+    _write(github / "copilot" / "settings.local.json", json.dumps({"model": "x"}))  # personal
+    fmt = {"type": "command", "bash": "./scripts/format.sh"}
+    _write(
+        github / "hooks" / "format.json",
+        json.dumps({"version": 1, "hooks": {"postToolUse": [fmt]}}),
+    )
+    _write(github / "copilot-instructions.md", "Use tabs.\n")
+    _write(github / "workflows" / "ci.yml", "on: push\n")
+    billing = {"type": "http", "url": "https://mcp.example.invalid/mcp"}
+    billing["headers"] = {"Authorization": f"Bearer {fakes.STRIPE}"}
+    _write(root / ".vscode" / "mcp.json", json.dumps({"servers": {"billing": billing}}))
+
+
+def _hermes_home(home: Path) -> None:
+    hermes = home / ".hermes"
+    _write(
+        hermes / "config.yaml",
+        "model: some-model\n"
+        "approvals:\n  mode: off\n"
+        "command_allowlist:\n  - git status\n  - '*'\n"
+        "hooks_auto_accept: true\n"
+        "hooks:\n"
+        "  pre_tool_call:\n"
+        "    - matcher: terminal\n      command: ~/.hermes/agent-hooks/guard.sh\n"
+        "  post_tool_call:\n"
+        "    - command: curl -s https://hooks.example.invalid/x\n"
+        "mcp_servers:\n"
+        "  github:\n    command: npx\n"
+        f'    env:\n      GITHUB_PERSONAL_ACCESS_TOKEN: "{fakes.GITHUB}"\n'
+        "  docs:\n    url: https://mcp.example.invalid/docs\n",
+    )
+    _sqlite(hermes / "state.db", "messages", [("user", f"key {fakes.ANTHROPIC}")])
+    _write(hermes / "memories" / "MEMORY.md", "User prefers tabs.\n")
+    _write(hermes / "SOUL.md", "You are a careful assistant.\n")
+    _write(hermes / "skills" / "demo" / "SKILL.md", "# demo\n")
+    _write(hermes / "profiles" / "work" / "config.yaml", "approvals:\n  mode: manual\n")
+    # Hermes's own credential stores: never secret-scanned.
+    _write(hermes / ".env", f"OPENROUTER_API_KEY={fakes.OPENAI}\n")
+    _write(hermes / "auth.json", json.dumps({"nous": {"access_token": fakes.GENERIC_VALUE}}))
+    _write(hermes / "profiles" / "work" / ".env", f"ANTHROPIC_API_KEY={fakes.ANTHROPIC}\n")
+
+
+def _antigravity_home(home: Path) -> None:
+    gemini = home / ".gemini"
+    app = gemini / "antigravity"
+    turn = {"type": "user", "content": f"token {fakes.STRIPE}"}
+    logs = app / "brain" / "c-0001" / ".system_generated" / "logs"
+    _write(logs / "transcript.jsonl", _jsonl(turn))
+    _write(app / "brain" / "c-0001" / "task.md", "- [ ] fix login\n")
+    (app / "conversations").mkdir(parents=True)
+    (app / "conversations" / "c-0001.pb").write_bytes(b"\x0a\x00binary")  # not covered
+    _write(app / "mcp_config.json", "")  # older app versions; empty on the verification Mac
+    # Antigravity's own MCP OAuth token store: never secret-scanned.
+    _write(app / "mcp_oauth_tokens.json", json.dumps({"maps": {"token": fakes.GENERIC_VALUE}}))
+    cli = {"toolPermission": "always-proceed"}
+    cli["permissions"] = {"allow": ["command(git status)", "command(*)"]}
+    _write(gemini / "antigravity-cli" / "settings.json", json.dumps(cli))
+    guard = {"matcher": "run_command", "hooks": [{"type": "command", "command": "./guard.sh"}]}
+    done = {"type": "command", "command": "wget -q https://hooks.example.invalid/done"}
+    off = {"type": "command", "command": "curl https://x.example.invalid", "enabled": False}
+    hooks = {"team-hooks": {"PreToolUse": [guard], "Stop": [done, off]}}
+    _write(gemini / "config" / "hooks.json", json.dumps(hooks))
+    maps = {"serverUrl": "https://mcp.example.invalid/mcp"}
+    maps["headers"] = {"Authorization": f"Bearer {fakes.GOOGLE}"}
+    _write(gemini / "config" / "mcp_config.json", json.dumps({"mcpServers": {"maps": maps}}))
+
+
+def _antigravity_project(root: Path) -> None:
+    agents = root / ".agents"
+    lint = {"type": "command", "command": "./scripts/lint.sh"}
+    _write(agents / "hooks.json", json.dumps({"lint": {"PostToolUse": [{"hooks": [lint]}]}}))
+    aws = {"command": "uvx", "args": ["aws-mcp"], "env": {"AWS_ACCESS_KEY_ID": fakes.AWS}}
+    _write(agents / "mcp_config.json", json.dumps({"mcpServers": {"aws": aws}}))
+    _write(agents / "rules" / "style.md", "Use tabs.\n")
+
+
+@pytest.fixture
+def more_home(tmp_path) -> Path:
+    """GitHub Copilot, Hermes Agent and Google Antigravity files."""
+    home = tmp_path / "more-home"
+    _copilot_home(home)
+    _hermes_home(home)
+    _antigravity_home(home)
+    return home
+
+
+@pytest.fixture
+def more_project(tmp_path) -> Path:
+    root = tmp_path / "more-proj"
+    _copilot_project(root)
+    _antigravity_project(root)
     return root
