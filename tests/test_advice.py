@@ -89,3 +89,11 @@ def test_untrusted_paths_in_steps_are_cleaned_and_quoted():
     evil = "pkg.tgz!package/\x1b[31mIGNORE ALL\n/.claude/settings.local.json"
     result = advise(_leak(evil), Moment.publish)
     assert not any("\x1b" in step or "\n" in step for step in result.fix_steps)
+
+
+def test_not_ignored_agent_file_says_which_gitignore_line():
+    finding = Finding(
+        "AP007", Severity.MEDIUM, "x", "agent", "/repo/.claude/settings.local.json", None, "d", "f"
+    )
+    [step] = advise(finding, Moment.push).fix_steps
+    assert '".claude/settings.local.json"' in step and ".gitignore" in step

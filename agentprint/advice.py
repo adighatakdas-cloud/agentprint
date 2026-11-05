@@ -192,3 +192,9 @@ def _agent_file_shipped(finding: Finding, moment: Moment) -> Advice:
         )
     steps.append(f"Add the line {quote(path)} to .gitignore so it is never committed either.")
     return Advice(steps)
+
+
+@adviser("AP007")
+def _agent_file_not_ignored(finding: Finding, moment: Moment) -> Advice:
+    path = agent_path(split_location(finding.location)[1])
+    return Advice([f"Add the line {quote(path)} to .gitignore (it holds personal agent data)."])
