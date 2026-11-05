@@ -42,8 +42,11 @@ extend-immutable-calls = ["pathlib.Path"]  # allow `= Path(".")` CLI defaults
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["integration: needs npm or uv build; run with -m integration"]
-addopts = "-m 'not integration'"
+markers = [
+    "integration: needs npm or uv build; run with -m integration",
+    "live: drives a real agent CLI against a mock model; run with -m live",
+]
+addopts = "-m 'not integration and not live'"
 
 [dependency-groups]
 dev = [
