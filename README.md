@@ -21,8 +21,7 @@ runs `git push`, agentprint looks at what would be uploaded. If something would 
 is stopped and told how to fix it, and it asks you only for what it can't do itself: replacing
 a leaked key.
 
-**Status:** v0.1, pre-release. The `uvx` and `npx` commands work after the first release; until
-then, [run it from source](#from-source).
+**Status:** v0.1.0, first release. Feedback and issues welcome.
 
 ## Why
 
@@ -40,8 +39,6 @@ then, [run it from source](#from-source).
   created readable by every user on the machine.
 
 ## Quickstart
-
-> Works after the first release. Until then, use [from source](#from-source).
 
 ```bash
 uvx agentprint scan       # 1. check this machine and the current folder
@@ -166,8 +163,6 @@ no headless mode, or an account needed). Versions and file paths:
 [docs/supported-agents.md](https://github.com/adighatakdas-cloud/agentprint/blob/main/docs/supported-agents.md).
 
 ## Use it in CI
-
-> Works after the first release.
 
 **Stop a leaky `npm publish`.** In `package.json` (the npm name `agentprint` belongs to an
 unrelated project, so the wrapper is `agentprint-cli`; it runs the same tool through uvx or pipx):
