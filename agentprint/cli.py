@@ -10,10 +10,11 @@ import typer
 from rich.console import Console
 
 from . import __version__
+from .advice import Moment
 from .checks.ap006_package_leak import check_listing, is_agent_file
 from .models import Finding
 from .pack import PackError, collect
-from .report import FailOn, exit_code, print_table, to_json
+from .report import FailOn, exit_code, print_table, to_agent, to_json
 from .scanner import scan as run_scan
 
 app = typer.Typer(
@@ -27,6 +28,7 @@ app = typer.Typer(
 class Format(StrEnum):
     table = "table"
     json = "json"
+    agent = "agent"  # compact text for an AI coding agent: verdict first, fix steps, ask_human
 
 
 FormatOpt = Annotated[Format, typer.Option("--format", "-f", help="Output format.")]
@@ -51,9 +53,11 @@ def main(
     """agentprint."""
 
 
-def _emit(findings: list[Finding], fmt: Format) -> None:
+def _emit(findings: list[Finding], fmt: Format, fail_on: FailOn, moment: Moment) -> None:
     if fmt is Format.json:
-        typer.echo(to_json(findings))
+        typer.echo(to_json(findings, moment))
+    elif fmt is Format.agent:
+        typer.echo(to_agent(findings, fail_on, moment))
     else:
         print_table(findings, Console())
 
@@ -77,7 +81,7 @@ def scan(
             typer.secho(f"error: {target} does not exist or is not a directory", err=True, fg="red")
             raise typer.Exit(2)
     findings = run_scan(home_dir, path)
-    _emit(findings, fmt)
+    _emit(findings, fmt, fail_on, Moment.scan)
     raise typer.Exit(exit_code(findings, fail_on))
 
 
@@ -102,5 +106,5 @@ def pack(
         typer.secho(f"error: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(2) from exc
     findings = [finding for listing in listings for finding in check_listing(listing)]
-    _emit(findings, fmt)
+    _emit(findings, fmt, fail_on, Moment.publish)
     raise typer.Exit(exit_code(findings, fail_on))

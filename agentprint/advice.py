@@ -1,0 +1,194 @@
+"""What to do about each finding, written for the AI agent that will do it.
+
+`fix_steps` are actions an agent can perform itself (edit a file, add an ignore line, untrack a
+file). `ask_human` is what only the human can do, such as rotating a key in a provider console.
+
+Checks plug in here, not in the report code: register an adviser for a check id with
+`@adviser("AP0xx")`. A check with no adviser falls back to its one-line `fix` hint.
+Every value taken from scanned content goes through `sanitize.quote()`.
+"""
+
+from __future__ import annotations
+
+import shlex
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from enum import StrEnum
+
+from .agents import ALL_AGENTS
+from .models import Finding
+from .sanitize import clean, quote
+from .secrets import RULES
+
+
+class Moment(StrEnum):
+    """What the user is about to do; it changes which fix applies."""
+
+    scan = "scan"  # a general check of this machine or project
+    publish = "publish"  # about to publish a package
+    push = "push"  # about to git push
+
+
+@dataclass(frozen=True)
+class Advice:
+    fix_steps: list[str] = field(default_factory=list)
+    ask_human: list[str] = field(default_factory=list)
+
+
+Adviser = Callable[[Finding, Moment], Advice]
+ADVISERS: dict[str, Adviser] = {}
+
+# Where to revoke and replace each kind of key. Checked 2026-11-05 against:
+# anthropic  https://platform.claude.com/docs/en/get-api-key ("API keys" page link)
+# openai     platform.openai.com/api-keys is the dashboard's keys page (OpenAI's help centre
+#            pages were not fetchable; matches the dashboard's own navigation)
+# github     https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/
+#            managing-your-personal-access-tokens (Settings > Developer settings > Tokens)
+# aws        https://docs.aws.amazon.com/IAM/latest/UserGuide/id-credentials-access-keys-update.html
+# stripe     https://docs.stripe.com/keys ("Rotate an API key" on the API keys page)
+# slack      https://docs.slack.dev/authentication/best-practices-for-security (api.slack.com/apps)
+# google     https://docs.cloud.google.com/docs/authentication/api-keys (Credentials page)
+ROTATE_AT: dict[str, str] = {
+    "anthropic": "https://platform.claude.com/settings/keys",
+    "openai": "https://platform.openai.com/api-keys",
+    "github": "https://github.com/settings/tokens",
+    "aws": "https://console.aws.amazon.com/iam/",
+    "stripe": "https://dashboard.stripe.com/apikeys",
+    "slack": "https://api.slack.com/apps",
+    "google": "https://console.cloud.google.com/apis/credentials",
+}
+_RULE_BY_NAME = {rule.name: rule.id for rule in RULES}
+_PACKAGE_SUFFIXES = (".tgz", ".tar.gz", ".whl", ".zip")
+NO_LEAK = "Never print, echo, copy or reuse the key's value while doing this."
+
+
+def adviser(check_id: str) -> Callable[[Adviser], Adviser]:
+    def register(fn: Adviser) -> Adviser:
+        ADVISERS[check_id] = fn
+        return fn
+
+    return register
+
+
+def advise(finding: Finding, moment: Moment) -> Advice:
+    fn = ADVISERS.get(finding.check_id)
+    return fn(finding, moment) if fn else Advice([finding.fix], [])
+
+
+# ---- helpers ---------------------------------------------------------------------------------
+
+
+def split_location(location: str) -> tuple[str | None, str]:
+    """'pkg-1.0.tgz!package/x' -> ('pkg-1.0.tgz', 'package/x'); a plain path -> (None, path)."""
+    head, sep, tail = location.partition("!")
+    if sep and head.endswith(_PACKAGE_SUFFIXES):
+        return head, tail
+    return None, location
+
+
+def agent_path(member: str) -> str:
+    """The agent-owned part of a path: 'package/sub/.claude/x.json' -> '.claude/x.json'."""
+    for agent in ALL_AGENTS:
+        for rule in agent.package_rules:
+            match = rule.pattern.search(member)
+            if match:
+                return member[match.start() :].lstrip("/")
+    return member.rsplit("/", 1)[-1]
+
+
+def _ignore_line(path: str) -> str:
+    """Ignore the whole agent folder ('.claude/'), or the single file if it's top level."""
+    first, sep, _ = path.partition("/")
+    return first + "/" if sep else path
+
+
+def _where(finding: Finding) -> str:
+    line = f" line {finding.line}" if finding.line else ""
+    return f"{quote(finding.location)}{line}"
+
+
+def _rotate(finding: Finding) -> list[str]:
+    name, _, shown = finding.detail.partition(": ")
+    rule_id = _RULE_BY_NAME.get(name)
+    url = ROTATE_AT.get(rule_id or "")
+    key = f"the {clean(name)} that starts {quote(shown)}"
+    if url:
+        return [
+            f"Rotate {key}: revoke it and create a new one at {url}. The agent cannot do this; "
+            "treat the old key as public."
+        ]
+    return [
+        f"Rotate {key} with the service that issued it (agentprint can't tell which). The agent "
+        "cannot do this; treat the old key as public."
+    ]
+
+
+# ---- advisers --------------------------------------------------------------------------------
+
+
+@adviser("AP001")
+def _history_secret(finding: Finding, moment: Moment) -> Advice:
+    return Advice(
+        [
+            f"In {_where(finding)}, replace the key with the text REDACTED, or delete the file if "
+            "that history is not needed. " + NO_LEAK,
+        ],
+        _rotate(finding),
+    )
+
+
+@adviser("AP002")
+def _settings_secret(finding: Finding, moment: Moment) -> Advice:
+    package, member = split_location(finding.location)
+    if package is not None:
+        source = quote(agent_path(member))
+        steps = [
+            f"Delete the key from the source file {source} in the project (line {finding.line}); "
+            "the package copy is built from it. Load the key from an environment variable "
+            "instead. " + NO_LEAK,
+            "Also keep that file out of the package (see the matching AP006 finding).",
+        ]
+    elif moment is Moment.push:
+        steps = [
+            f"Delete the key from {_where(finding)}, load it from an environment variable "
+            "instead, and commit the change. " + NO_LEAK,
+            "The key stays in earlier commits, so rotating it (ask_human) is what makes it safe.",
+        ]
+    else:
+        steps = [
+            f"Delete the key from {_where(finding)} and load it from an environment variable "
+            "instead (set it in your shell profile or a secret manager). " + NO_LEAK,
+        ]
+    return Advice(steps, _rotate(finding))
+
+
+@adviser("AP006")
+def _agent_file_shipped(finding: Finding, moment: Moment) -> Advice:
+    package, member = split_location(finding.location)
+    path = agent_path(member)
+    if package is None or moment is Moment.push:
+        rel = clean(member)
+        return Advice(
+            [
+                f"Stop tracking {quote(member)} but keep the local file: "
+                f"git rm --cached -- {shlex.quote(rel)}",
+                f"Add the line {quote(path)} to .gitignore, commit both changes, then push again.",
+            ]
+        )
+    exclude = quote(_ignore_line(path))
+    steps: list[str] = []
+    if package.endswith(".tgz"):
+        steps.append(
+            f"Add the line {exclude} to .npmignore in the package folder. If .npmignore does not "
+            "exist yet, first copy .gitignore to .npmignore: npm stops reading .gitignore once "
+            '.npmignore exists. If package.json has a "files" list, make sure no entry in it '
+            "includes this path."
+        )
+    else:
+        steps.append(
+            f"Exclude {exclude} from the package in your build config: hatchling "
+            "[tool.hatch.build.targets.sdist] and .wheel exclude = [...], setuptools "
+            "MANIFEST.in prune/exclude, poetry exclude = [...], flit [tool.flit.sdist] exclude."
+        )
+    steps.append(f"Add the line {quote(path)} to .gitignore so it is never committed either.")
+    return Advice(steps)
