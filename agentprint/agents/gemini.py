@@ -84,9 +84,16 @@ class Gemini:
 
     def discover_home(self, home: Path) -> Iterator[Artifact]:
         base = home / ".gemini"
-        # Not read: .env and oauth_creds.json are where credentials are expected to live.
         yield from artifacts(NAME, Kind.SETTINGS, base / "settings.json")
         yield from artifacts(NAME, Kind.HISTORY, base / "tmp")
+        # Where Gemini CLI keeps keys and login tokens on purpose: permission check only.
+        yield from artifacts(
+            NAME,
+            Kind.CREDENTIALS,
+            base / ".env",
+            base / "oauth_creds.json",
+            base / "google_accounts.json",
+        )
 
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         base = root / ".gemini"

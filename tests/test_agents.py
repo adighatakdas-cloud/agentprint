@@ -18,13 +18,21 @@ def test_claude_code_home_files(fake_home):
     }
 
 
-def test_codex_home_files_skip_auth_json(fake_home):
+def test_codex_home_files_list_auth_json_only_as_a_credential_store(fake_home):
     found = _rel(Codex().discover_home(fake_home), fake_home)
     assert found == {
         (Kind.SETTINGS, ".codex/config.toml"),
         (Kind.HISTORY, ".codex/sessions/2026/10/01/rollout-x.jsonl"),
         (Kind.HISTORY, ".codex/history.jsonl"),
+        (Kind.CREDENTIALS, ".codex/auth.json"),  # never secret-scanned; permission check only
     }
+
+
+def test_claude_code_linux_credentials_file_is_a_credential_store(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / ".credentials.json").write_text("{}")
+    found = _rel(ClaudeCode().discover_home(tmp_path), tmp_path)
+    assert found == {(Kind.CREDENTIALS, ".claude/.credentials.json")}
 
 
 def test_claude_code_project_files(fake_project):

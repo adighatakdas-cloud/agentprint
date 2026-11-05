@@ -79,10 +79,11 @@ class OpenCode:
         config = home / ".config" / "opencode"
         data = home / ".local" / "share" / "opencode"
         yield from artifacts(NAME, Kind.SETTINGS, *(config / name for name in _CONFIG_NAMES))
-        # auth.json and mcp-auth.json are OpenCode's own key stores: expected, not scanned.
         yield from artifacts(
             NAME, Kind.HISTORY, data / "opencode.db", data / "storage", data / "log"
         )
+        # OpenCode's own key stores: never secret-scanned, only checked for who can read them.
+        yield from artifacts(NAME, Kind.CREDENTIALS, data / "auth.json", data / "mcp-auth.json")
 
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         yield from artifacts(NAME, Kind.SETTINGS, *(root / name for name in _CONFIG_NAMES))

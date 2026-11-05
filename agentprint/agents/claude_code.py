@@ -96,6 +96,8 @@ class ClaudeCode:
             base / "projects",  # full transcripts, per project
             base / "file-history",  # backups of files Claude edited (can include .env)
         )
+        # Login token on Linux and Windows (macOS uses the Keychain): permission check only.
+        yield from artifacts(NAME, Kind.CREDENTIALS, base / ".credentials.json")
 
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         yield from artifacts(NAME, Kind.SETTINGS, root / ".claude" / "settings.json")
