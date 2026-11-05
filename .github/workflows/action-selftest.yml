@@ -1,0 +1,102 @@
+name: Action self-test
+
+# Runs this repository's action.yml against synthetic projects and checks agentprint's exit codes
+# (0 ok / 1 findings / 2 error) survive the action. Fixtures are written at runtime by
+# tests/action_fixtures.py; their fake keys come from tests/fakes.py.
+# SARIF upload is not exercised: it needs code scanning, and would put fixture alerts in this
+# repository's Security tab.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Write synthetic fixtures
+        run: python3 -m tests.action_fixtures "$RUNNER_TEMP/fx"
+
+      - id: pack-clean
+        continue-on-error: true
+        uses: ./
+        with:
+          command: pack
+          path: ${{ runner.temp }}/fx/clean-npm
+
+      - id: pack-leaky
+        continue-on-error: true
+        uses: ./
+        with:
+          command: pack
+          path: ${{ runner.temp }}/fx/leaky-npm
+
+      - id: scan-clean
+        continue-on-error: true
+        uses: ./
+        with:
+          command: scan
+          path: ${{ runner.temp }}/fx/clean-repo
+
+      - id: scan-leaky
+        continue-on-error: true
+        uses: ./
+        with:
+          command: scan
+          path: ${{ runner.temp }}/fx/leaky-repo
+
+      - id: report-only
+        continue-on-error: true
+        uses: ./
+        with:
+          command: scan
+          path: ${{ runner.temp }}/fx/leaky-repo
+          fail-on: none
+
+      - id: missing-path
+        continue-on-error: true
+        uses: ./
+        with:
+          command: pack
+          path: ${{ runner.temp }}/fx/does-not-exist
+
+      - name: Check exit codes, step results and SARIF
+        env:
+          PACK_CLEAN: ${{ steps.pack-clean.outputs.exit-code }}/${{ steps.pack-clean.outcome }}
+          PACK_LEAKY: ${{ steps.pack-leaky.outputs.exit-code }}/${{ steps.pack-leaky.outcome }}
+          SCAN_CLEAN: ${{ steps.scan-clean.outputs.exit-code }}/${{ steps.scan-clean.outcome }}
+          SCAN_LEAKY: ${{ steps.scan-leaky.outputs.exit-code }}/${{ steps.scan-leaky.outcome }}
+          REPORT_ONLY: ${{ steps.report-only.outputs.exit-code }}/${{ steps.report-only.outcome }}
+          MISSING: ${{ steps.missing-path.outputs.exit-code }}/${{ steps.missing-path.outcome }}
+          LEAKY_SARIF: ${{ steps.pack-leaky.outputs.sarif-file }}
+          MISSING_SARIF: ${{ steps.missing-path.outputs.sarif-file }}
+        run: |
+          failed=0
+          check() {
+            if [ "$2" = "$3" ]; then echo "ok   $1: $2"
+            else echo "::error::$1: expected $3, got $2"; failed=1; fi
+          }
+          check pack-clean   "$PACK_CLEAN"  "0/success"
+          check pack-leaky   "$PACK_LEAKY"  "1/failure"
+          check scan-clean   "$SCAN_CLEAN"  "0/success"
+          check scan-leaky   "$SCAN_LEAKY"  "1/failure"
+          check report-only  "$REPORT_ONLY" "0/success"
+          check missing-path "$MISSING"     "2/failure"
+          check missing-path-sarif "${MISSING_SARIF:-none}" "none"
+          check leaky-sarif-results "$(jq '.runs[0].results | length' "$LEAKY_SARIF")" "2"
+          python3 - "$LEAKY_SARIF" <<'EOF' || failed=1
+          import sys
+          from tests import fakes
+          text = open(sys.argv[1]).read()
+          assert not any(key in text for key in fakes.ALL.values()), "full key in SARIF"
+          EOF
+          exit "$failed"

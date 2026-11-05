@@ -1,0 +1,105 @@
+name: agentprint
+description: >-
+  Stop AI-agent files (.claude/, .codex/) and leaked API keys from shipping in your npm/PyPI
+  package or sitting in your repo. Offline; keys are always shown redacted.
+author: adighatakdas-cloud
+branding:
+  icon: shield
+  color: red
+
+inputs:
+  command:
+    description: >-
+      `pack` checks what your npm/PyPI package would publish. `scan` checks the agent settings
+      files in your repository (never the runner's home directory).
+    required: false
+    default: pack
+  path:
+    description: Project directory, or for `pack` an already-built .tgz/.tar.gz/.whl/.zip.
+    required: false
+    default: "."
+  fail-on:
+    description: >-
+      Fail when a finding is at or above this severity: low, medium, high, critical, or none
+      (report only).
+    required: false
+    default: high
+  upload-sarif:
+    description: >-
+      "true" uploads the results to GitHub code scanning (the Security tab). The job needs
+      `permissions: security-events: write`; private repositories also need GitHub Code Security.
+    required: false
+    default: "false"
+
+outputs:
+  exit-code:
+    description: "agentprint's exit code: 0 nothing at or above fail-on, 1 findings, 2 error."
+    value: ${{ steps.run.outputs.exit-code }}
+  sarif-file:
+    description: Path of the SARIF report (set whenever agentprint ran without an error).
+    value: ${{ steps.run.outputs.sarif-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      with:
+        version: latest-known # newest uv whose checksum this setup-uv release knows
+        enable-cache: "false" # don't write into the caller's Actions cache
+        working-directory: ${{ github.action_path }}
+
+    # Runs agentprint from this action's own checkout (pinned by the caller's `uses:` ref)
+    # until it is on PyPI.
+    - name: Install agentprint
+      shell: bash
+      run: uv sync --quiet --locked --no-dev --project "$GITHUB_ACTION_PATH"
+
+    - name: Run agentprint
+      id: run
+      shell: bash
+      env:
+        AP_COMMAND: ${{ inputs.command }}
+        AP_PATH: ${{ inputs.path }}
+        AP_FAIL_ON: ${{ inputs.fail-on }}
+        COLUMNS: "160"
+      run: |
+        set +e  # keep going on findings: the last step reports the exit code
+        set -uo pipefail
+        ap() { uv run --quiet --no-sync --project "$GITHUB_ACTION_PATH" agentprint "$@"; }
+        case "$AP_COMMAND" in
+          scan) cmd=(scan --no-home) ;;
+          pack) cmd=(pack) ;;
+          *)
+            echo "::error title=agentprint::input 'command' must be 'scan' or 'pack'"
+            echo "exit-code=2" >> "$GITHUB_OUTPUT"
+            exit 0
+            ;;
+        esac
+        # Table for the log; this run's exit code is the result.
+        ap "${cmd[@]}" --fail-on "$AP_FAIL_ON" --format table -- "$AP_PATH"
+        code=$?
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        if [ "$code" -le 1 ]; then
+          sarif="$RUNNER_TEMP/agentprint-$AP_COMMAND.sarif"
+          ap "${cmd[@]}" --fail-on "$AP_FAIL_ON" --format sarif -- "$AP_PATH" > "$sarif"
+          if [ "$?" -le 1 ]; then
+            echo "sarif-file=$sarif" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=agentprint::could not write the SARIF report"
+          fi
+        fi
+
+    - name: Upload SARIF to code scanning
+      if: inputs.upload-sarif == 'true' && steps.run.outputs.sarif-file != ''
+      uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+      with:
+        sarif_file: ${{ steps.run.outputs.sarif-file }}
+        category: agentprint-${{ inputs.command }}
+
+    # Last, so the SARIF is uploaded even when findings fail the step.
+    - name: Finish with agentprint's exit code
+      shell: bash
+      env:
+        AP_EXIT: ${{ steps.run.outputs.exit-code }}
+      run: exit "${AP_EXIT:-2}"
