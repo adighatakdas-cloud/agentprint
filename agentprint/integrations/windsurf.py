@@ -11,16 +11,22 @@ https://web.archive.org/web/20260516140338/https://docs.windsurf.com/windsurf/ca
 - MCP: `mcpServers` in ~/.codeium/windsurf/mcp_config.json.
 - Instructions: ~/.codeium/windsurf/memories/global_rules.md.
 
-Devin Local / Devin CLI (~/.config/devin)
-- Hook: PreToolUse with matcher "^exec$" under `hooks` in ~/.config/devin/config.json; input
-  `tool_name` "exec" and `tool_input.command`, no cwd field (DEVIN_PROJECT_DIR is set). Block =
-  `{"decision": "block", "reason": ...}` ("shown to the agent"); allow = exit 0, no output (never
-  "approve", which would skip the user's approval). Other exit codes are logged, never block.
-  https://docs.devin.ai/cli/extensibility/hooks/overview ,
+Devin Local / Devin CLI (rechecked 2026-11-05)
+- Found by either ~/.config/devin (Devin CLI's config folder) or ~/.devin (rules folder; Devin
+  Desktop may create only this one).
+- Hook: PreToolUse with matcher "^exec$" under `hooks` in ~/.config/devin/config.json, the only
+  documented user-level hook file of Devin's own; input `tool_name` "exec" and
+  `tool_input.command`, no cwd field (DEVIN_PROJECT_DIR is set). Exit 0 = continue, exit 2 =
+  block, other codes are logged and never block; JSON `{"decision": "block", "reason": ...}`
+  ("shown to the agent") also blocks. Allow = exit 0, no output (never "approve", which skips
+  the user's approval). https://docs.devin.ai/cli/extensibility/hooks/overview ,
   https://docs.devin.ai/cli/extensibility/hooks/lifecycle-hooks
-- MCP: `mcpServers` in ~/.config/devin/mcp_config.json.
-  https://docs.devin.ai/cli/extensibility/mcp/configuration
-- Instructions: ~/.config/devin/AGENTS.md. https://docs.devin.ai/cli/extensibility/rules
+- MCP: `mcpServers` in ~/.config/devin/mcp_config.json ("User scope").
+  https://docs.devin.ai/cli/extensibility/mcp/configuration ,
+  https://docs.devin.ai/desktop/devin-local/customizations
+- Instructions: ~/.devin/rules/agentprint.md with `trigger: always_on` frontmatter, a file of
+  agentprint's own ("~/.devin/rules/*.md" is a documented global rules location).
+  https://docs.devin.ai/cli/extensibility/rules
 - Devin's config files allow comments; a file with comments is left alone and the snippet is
   printed for the user to paste.
 """
@@ -36,6 +42,7 @@ from .base import (
     BlockEdit,
     Edit,
     Env,
+    FileEdit,
     HookCall,
     HookReply,
     Integration,
@@ -138,8 +145,21 @@ def devin_edits(home: Path, env: Env, launch: Launch) -> list[Edit]:
             remove=lambda c: drop_hook(c, "PreToolUse"),
         ),
         _mcp(base / "mcp_config.json", launch),
-        BlockEdit(base / "AGENTS.md", "instructions", INSTRUCTIONS),
+        FileEdit(home / ".devin" / "rules" / "agentprint.md", "instructions (global rule)", RULE),
     ]
+
+
+def devin_found_by(home: Path, env: Env) -> list[Path]:
+    return [devin_dir(home, env), home / ".devin"]
+
+
+RULE = f"""\
+---
+trigger: always_on
+---
+<!-- Written by `agentprint install`; `agentprint uninstall` deletes this file. -->
+
+{INSTRUCTIONS}"""
 
 
 def devin_parse(payload: dict, env: Env) -> HookCall | None:
@@ -172,4 +192,5 @@ DEVIN_INTEGRATION = Integration(
     edits=devin_edits,
     parse_hook=devin_parse,
     reply=devin_reply,
+    found_by=devin_found_by,
 )

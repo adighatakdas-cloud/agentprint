@@ -334,6 +334,9 @@ class Integration:
     parse_hook: Callable[[dict, Env], HookCall | None]
     reply: Callable[[Verdict | None], HookReply]
     notes: tuple[str, ...] = field(default_factory=tuple)
+    # Folders whose presence means the agent is installed; default: config_dir only.
+    found_by: Callable[[Path, Env], list[Path]] | None = None
 
     def installed(self, home: Path, env: Env) -> bool:
-        return self.config_dir(home, env).is_dir()
+        folders = self.found_by(home, env) if self.found_by else [self.config_dir(home, env)]
+        return any(folder.is_dir() for folder in folders)

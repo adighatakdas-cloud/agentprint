@@ -374,3 +374,25 @@ def test_uvx_fallback_is_pinned_to_this_version(monkeypatch):
 )
 def test_throwaway_installs_are_never_written_into_hooks(path, ephemeral):
     assert install._ephemeral(path) is ephemeral
+
+
+# ---- 15. Devin Desktop keeps ~/.devin; Devin CLI config lives in ~/.config/devin ----------
+
+
+@pytest.mark.parametrize("existing", [".devin", ".config/devin"])
+def test_devin_is_found_by_either_folder_and_round_trips(tmp_path, monkeypatch, existing):
+    home = tmp_path / "home"
+    (home / existing).mkdir(parents=True)
+    before = snapshot(home)
+    _launch(monkeypatch, "/opt/agentprint")
+    out: list[str] = []
+    _install(home, echo=out.append)
+    assert any("Devin" in line for line in out if line.startswith("Agents found"))
+    hooks = json.loads((home / ".config" / "devin" / "config.json").read_text())
+    assert hooks["hooks"]["PreToolUse"][0]["matcher"] == "^exec$"
+    mcp = json.loads((home / ".config" / "devin" / "mcp_config.json").read_text())
+    assert mcp["mcpServers"]["agentprint"]["command"] == "/opt/agentprint"
+    rule = (home / ".devin" / "rules" / "agentprint.md").read_text()
+    assert rule.startswith("---\ntrigger: always_on\n---\n") and "agentprint: BLOCK" in rule
+    _uninstall(home)
+    assert snapshot(home) == before
