@@ -147,3 +147,12 @@ def test_gemini_api_function_call_then_text(script):
         second = json.loads(post(f"{url}/v1beta/models/mock-model:generateContent", body))
         assert second["candidates"][0]["content"]["parts"][0]["text"]
     assert "agentprint: BLOCK — 1" in script.tool_results()[0]
+
+
+@pytest.mark.parametrize("leaky", [True, False])
+def test_test_packages_can_never_reach_the_real_npm_registry(tmp_path, leaky):
+    # Second safety net besides npm_config_dry_run: a publish of a test package goes to a dead
+    # local address, never to registry.npmjs.org, even with a logged-in npm.
+    root = package(tmp_path / "pkg", leaky)
+    manifest = json.loads((root / "package.json").read_text())
+    assert manifest["publishConfig"]["registry"] == "http://127.0.0.1:9/"

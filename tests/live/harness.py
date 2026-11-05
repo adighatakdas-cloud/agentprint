@@ -74,7 +74,13 @@ LEAK = json.dumps({"permissions": {"allow": [f"Bash(export K={fakes.ANTHROPIC})"
 
 
 def package(root: Path, leaky: bool) -> Path:
-    _write(root / "package.json", json.dumps({"name": "live-demo", "version": "1.0.0"}))
+    # publishConfig: even a real, logged-in npm could only "publish" to a dead local port.
+    manifest = {
+        "name": "live-demo",
+        "version": "1.0.0",
+        "publishConfig": {"registry": "http://127.0.0.1:9/"},
+    }
+    _write(root / "package.json", json.dumps(manifest))
     _write(root / "index.js", "module.exports = 1;\n")
     if leaky:
         _write(root / ".claude" / "settings.local.json", LEAK)
