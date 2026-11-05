@@ -139,6 +139,18 @@ def guard(
     raise typer.Exit(reply.exit_code)
 
 
+@app.command()
+def mcp() -> None:
+    """Run agentprint as an MCP server on stdin/stdout, for AI agents.
+
+    Tools: check_package, check_push, scan_secrets, explain_finding. `agentprint install`
+    registers it with your agents.
+    """
+    from .mcp_server import build_server
+
+    build_server().run()
+
+
 AgentsOpt = Annotated[
     list[str] | None,
     typer.Option(

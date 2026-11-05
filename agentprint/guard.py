@@ -81,30 +81,46 @@ def _decide(command: str, risky: list[Risky], fail_on: FailOn) -> Verdict:
     return Verdict(False, warning=warning)
 
 
-def _check_publish(item: Risky) -> list[Finding]:
-    listings: list[PackageListing] = []
-    if item.tool in NODE:
-        for target in item.targets or (".",):
-            path = item.cwd / target
-            if path.is_file():
-                listings.append(read_archive(path, is_agent_file))
-            elif (path / "package.json").is_file():
-                listings.append(read_npm_project(path, is_agent_file))
-            else:
-                raise CannotCheck(f"no package.json in {path}")
-    else:
-        files = sorted(
-            {
-                Path(name)
-                for pattern in item.targets or DEFAULT_DIST
-                for name in glob.glob(os.path.join(item.cwd, pattern))
-                if name.endswith(ARCHIVES) and os.path.isfile(name)
-            }
+def _built(cwd: Path, patterns: tuple[str, ...]) -> list[PackageListing]:
+    files = sorted(
+        {
+            Path(name)
+            for pattern in patterns
+            for name in glob.glob(os.path.join(cwd, pattern))
+            if name.endswith(ARCHIVES) and os.path.isfile(name)
+        }
+    )
+    if not files:
+        raise CannotCheck(
+            "no built package (.whl / .tar.gz) found to upload. Build it first, then run "
+            "`agentprint pack dist/<file> --format agent`."
         )
-        if not files:
-            raise CannotCheck(
-                "no built package (.whl / .tar.gz) found to upload. Build it first, then run "
-                "`agentprint pack dist/<file> --format agent`."
-            )
-        listings = [read_archive(file, is_agent_file) for file in files]
+    return [read_archive(file, is_agent_file) for file in files]
+
+
+def check_package_path(path: Path) -> list[Finding]:
+    """Findings for a built package file, an npm package folder, or a Python project's dist/.
+
+    Never builds anything (no project code runs, no network)."""
+    if path.is_file():
+        listings = [read_archive(path, is_agent_file)]
+    elif (path / "package.json").is_file():
+        listings = [read_npm_project(path, is_agent_file)]
+    elif (path / "pyproject.toml").is_file() or (path / "setup.py").is_file():
+        listings = _built(path, DEFAULT_DIST)
+    else:
+        raise CannotCheck(f"{path} is not a package folder or a built package file")
     return [finding for listing in listings for finding in check_listing(listing)]
+
+
+def _check_publish(item: Risky) -> list[Finding]:
+    if item.tool in NODE:
+        return [f for target in item.targets or (".",) for f in _node_target(item.cwd / target)]
+    listings = _built(item.cwd, item.targets or DEFAULT_DIST)
+    return [finding for listing in listings for finding in check_listing(listing)]
+
+
+def _node_target(path: Path) -> list[Finding]:
+    if not path.is_file() and not (path / "package.json").is_file():
+        raise CannotCheck(f"no package.json in {path}")
+    return check_package_path(path)

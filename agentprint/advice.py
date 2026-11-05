@@ -198,3 +198,48 @@ def _agent_file_shipped(finding: Finding, moment: Moment) -> Advice:
 def _agent_file_not_ignored(finding: Finding, moment: Moment) -> Advice:
     path = agent_path(split_location(finding.location)[1])
     return Advice([f"Add the line {quote(path)} to .gitignore (it holds personal agent data)."])
+
+
+# ---- explanations (agentprint mcp: explain_finding) ------------------------------------------
+
+EXPLAIN: dict[str, str] = {
+    "AP001": (
+        "AP001 Secret in agent history (high). An API key sits in a file where an AI agent keeps "
+        "its chat history, transcripts, pasted text or backups of files it edited. Those files "
+        "are copied by backups and sync tools, read by other programs, and sometimes published "
+        "by accident, so the key must be treated as exposed. Fix: the human rotates the key at "
+        "the provider; the agent replaces the key in that file with REDACTED or deletes the file."
+    ),
+    "AP002": (
+        "AP002 Secret in agent settings (critical). An API key is written into an agent's "
+        "settings, permission allowlist or MCP config. These files are read on every start, often "
+        "shared, and can end up in a git commit or a published package. Fix: Rotate the key with "
+        "its provider (the human must do this), remove it from the file, and load it from an "
+        "environment variable instead."
+    ),
+    "AP006": (
+        "AP006 Agent file would ship in package (high/medium). A file an AI agent writes for "
+        "itself (personal allowlist, conversation log, local notes, login token) is inside the "
+        "package you are about to publish, where anyone can download it. Fix: exclude it "
+        "(.npmignore or the package.json files list for npm; the build tool's exclude list for "
+        "Python), add it to .gitignore, and check again. Rotate any key it held."
+    ),
+    "AP007": (
+        "AP007 Agent file not ignored by git (medium). A personal agent file is neither committed "
+        "nor in .gitignore, so the next `git add .` would commit it. Fix: add it to .gitignore."
+    ),
+}
+
+
+def explain(check_id: str) -> str:
+    check_id = clean(check_id).strip().upper()[:20]
+    if check_id in EXPLAIN:
+        return EXPLAIN[check_id]
+    from .checks import SCAN_CHECKS  # checks added later explain themselves via title + fix
+
+    for check in SCAN_CHECKS:
+        if getattr(check, "id", None) == check_id:
+            severity = getattr(getattr(check, "severity", None), "name", "").lower()
+            return f"{check_id} {check.title} ({severity}). Fix: {check.fix}"
+    known = ", ".join(sorted(EXPLAIN))
+    return f"agentprint has no check called {quote(check_id)}. Known checks: {known}."
