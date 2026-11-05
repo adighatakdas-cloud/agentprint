@@ -345,3 +345,32 @@ def test_crlf_line_endings_are_kept(tmp_path, monkeypatch):
     assert rules.read_bytes().startswith(b"# mine\r\n- keep\r\n")
     _uninstall(home)
     assert rules.read_bytes() == b"# mine\r\n- keep\r\n"
+
+
+# ---- 11. how hooks start agentprint ----------------------------------------------------------
+
+
+def test_uvx_fallback_is_pinned_to_this_version(monkeypatch):
+    from agentprint import __version__
+
+    found = {"agentprint": None, "uvx": "/Users/u/.local/bin/uvx"}
+    monkeypatch.setattr(install.shutil, "which", lambda name: found[name])
+    expected = ["/Users/u/.local/bin/uvx", f"agentprint=={__version__}"]
+    assert install.resolve_agentprint() == expected
+
+
+@pytest.mark.parametrize(
+    ("path", "ephemeral"),
+    [
+        ("/Users/u/.cache/uv/archive-v0/abc/bin/agentprint", True),
+        ("/Users/u/.local/pipx/.cache/0f1e2d/bin/agentprint", True),
+        ("/Users/u/Library/Caches/pipx/0f1e2d/bin/agentprint", True),
+        ("/home/u/.cache/pipx/0f1e2d/bin/agentprint", True),
+        ("/tmp/xyz/bin/agentprint", True),
+        ("/Users/u/.local/bin/agentprint", False),
+        ("/Users/u/.local/pipx/venvs/agentprint/bin/agentprint", False),
+        ("/Users/u/.local/share/uv/tools/agentprint/bin/agentprint", False),
+    ],
+)
+def test_throwaway_installs_are_never_written_into_hooks(path, ephemeral):
+    assert install._ephemeral(path) is ephemeral

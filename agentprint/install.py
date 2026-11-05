@@ -28,6 +28,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import __version__
 from .integrations import ALL_INTEGRATIONS
 from .integrations.base import (
     BLOCK_EXIT,
@@ -53,17 +54,29 @@ Echo = Callable[[str], None]
 # ---- how agents start agentprint --------------------------------------------------------------
 
 
+_THROWAWAY = (
+    "/uv/archive-v",  # uvx
+    "/.cache/uv/",
+    "/pipx/.cache/",  # pipx run: ~/.local/pipx/.cache/<hash>
+    "/caches/pipx/",  # pipx run on macOS: ~/Library/Caches/pipx/<hash>
+    "/.cache/pipx/",  # pipx run on Linux
+    "/tmp/",
+    "/temp/",
+)
+
+
 def _ephemeral(path: str) -> bool:
-    """True for uvx's throwaway environments and temp dirs, which may vanish."""
+    """True for uvx / pipx run environments and temp dirs, which may vanish at any time."""
     low = path.lower()
-    return any(part in low for part in ("/uv/archive-v", "/.cache/uv/", "/tmp/", "/temp/"))
+    return any(part in low for part in _THROWAWAY)
 
 
 def resolve_agentprint() -> list[str]:
     exe = shutil.which("agentprint")
     if exe and not _ephemeral(os.path.abspath(exe)):
         return [os.path.abspath(exe)]
-    return [shutil.which("uvx") or "uvx", "agentprint"]
+    # Pinned: hooks keep running the version that was installed, not whatever is newest.
+    return [shutil.which("uvx") or "uvx", f"agentprint=={__version__}"]
 
 
 def launcher_script(agentprint: list[str]) -> str:
@@ -286,7 +299,7 @@ def install(
         return
     echo("Agents found: " + ", ".join(i.label for i in found))
     echo("Agents will start agentprint with: " + " ".join(agentprint))
-    if agentprint[-1] == "agentprint" and len(agentprint) == 2:
+    if len(agentprint) == 2 and agentprint[1].startswith("agentprint=="):
         echo(
             "  (no permanent install found, so hooks use uvx. For faster offline hooks run "
             "`uv tool install agentprint`, then install again.)"
