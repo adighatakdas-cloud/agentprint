@@ -114,7 +114,7 @@ def _real(path: Path) -> Path:
 
 def _read(path: Path) -> str | None:
     try:
-        return _real(path).read_text(encoding="utf-8")
+        return _real(path).read_bytes().decode("utf-8")  # keeps CRLF line ends
     except FileNotFoundError:
         return None
     except UnicodeDecodeError as exc:
@@ -135,15 +135,31 @@ def _mkdirs(directory: Path) -> list[str]:
     return created
 
 
+def _read_only(path: Path) -> bool:
+    try:
+        return not _real(path).stat().st_mode & stat.S_IWUSR
+    except FileNotFoundError:
+        return False
+
+
 def _atomic_write(path: Path, text: str, mode: int | None = None) -> None:
+    """Write via a temp file that is private (0600) from its first byte, then give it the
+    original file's mode (or `mode`, or 0600 for a new file) and move it into place."""
     target = _real(path)
     tmp = target.with_name(f".{target.name}.agentprint-tmp")
-    tmp.write_bytes(text.encode("utf-8"))
-    if target.exists():
-        shutil.copymode(target, tmp)
-    elif mode is not None:
-        tmp.chmod(mode)
-    os.replace(tmp, target)
+    with contextlib.suppress(FileNotFoundError):
+        tmp.unlink()  # a leftover from an interrupted run
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(text.encode("utf-8"))
+        final = stat.S_IMODE(target.stat().st_mode) if target.exists() else (mode or 0o600)
+        os.chmod(tmp, final)
+        os.replace(tmp, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
 
 
 def _backup_path(home: Path, path: Path) -> Path:
@@ -317,6 +333,8 @@ def _install_file(
             new = edit.apply(new)
         if new is not None:
             new.encode("utf-8")  # catch unwritable text before anything is shown or written
+        if new != old and _read_only(path):
+            raise Unsupported("it is read-only (someone locked it on purpose)")
     except Exception as exc:  # noqa: BLE001 - one odd file must never stop the others
         reason = exc if isinstance(exc, Unsupported) else f"of an unexpected {type(exc).__name__}"
         echo(f"  ! {_shown(home, path)}: skipped ({whats}) because {reason}. File left as is.")
@@ -424,7 +442,7 @@ def _backup_text(entry: dict | None) -> str | None:
     if not entry or not entry.get("backup"):
         return None
     try:
-        return Path(entry["backup"]).read_text(encoding="utf-8")
+        return Path(entry["backup"]).read_bytes().decode("utf-8")
     except (OSError, UnicodeDecodeError):
         return None
 
@@ -475,6 +493,10 @@ def _uninstall_file(
         return "kept"
     if restored == current:
         return "same"
+    if _read_only(path):
+        echo(f"  ! {_shown(home, path)}: left alone because it is read-only. Remove agentprint's "
+             "part by hand.")  # fmt: skip
+        return "kept"
     created = bool(entry and entry.get("created"))
     backup = _backup_text(entry)
     how = "edited"

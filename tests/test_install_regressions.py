@@ -1,6 +1,8 @@
 """Regressions from the independent review of install / uninstall. Fake homes only."""
 
 import json
+import os
+import stat
 import tomllib
 from pathlib import Path
 
@@ -294,3 +296,52 @@ def test_tables_codex_writes_inside_our_block_are_kept(tmp_path, monkeypatch):
     data = tomllib.loads(config.read_text())
     assert data == {"model": "o3", "mcp_servers": {"github": {"command": "gh-mcp"}}}
     assert "agentprint" not in config.read_text()
+
+
+# ---- 9. file permissions: private temp files, modes kept, read-only files left alone --------
+
+
+def test_read_only_file_is_not_edited(tmp_path, monkeypatch):
+    home = _claude_home(tmp_path)
+    settings = home / ".claude" / "settings.json"
+    settings.chmod(0o444)
+    _launch(monkeypatch, "/opt/agentprint")
+    out: list[str] = []
+    _install(home, echo=out.append)
+    assert settings.read_text() == "{}\n" and stat.S_IMODE(settings.stat().st_mode) == 0o444
+    assert any("read-only" in line for line in out) and any("by hand" in line for line in out)
+
+
+def test_temp_files_are_private_from_the_first_byte_and_modes_are_kept(tmp_path, monkeypatch):
+    home = _claude_home(tmp_path)
+    state = home / ".claude.json"
+    state.write_text("{}\n")
+    state.chmod(0o640)
+    opened: list[tuple[str, int, int]] = []
+    real_open = os.open
+
+    def spy(path, flags, mode=0o777, *args, **kwargs):
+        opened.append((str(path), flags, mode))
+        return real_open(path, flags, mode, *args, **kwargs)
+
+    monkeypatch.setattr(install.os, "open", spy)
+    _launch(monkeypatch, "/opt/agentprint")
+    _install(home)
+    temps = [(flags, mode) for path, flags, mode in opened if "agentprint-tmp" in path]
+    assert temps and all(mode == 0o600 and flags & os.O_EXCL for flags, mode in temps)
+    assert stat.S_IMODE(state.stat().st_mode) == 0o640
+    assert "agentprint" in state.read_text()
+    launcher = home / ".agentprint" / "bin" / "agentprint-hook"
+    assert stat.S_IMODE(launcher.stat().st_mode) == 0o755
+
+
+def test_crlf_line_endings_are_kept(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    rules = home / ".claude" / "CLAUDE.md"
+    rules.write_bytes(b"# mine\r\n- keep\r\n")
+    _launch(monkeypatch, "/opt/agentprint")
+    _install(home, ["claude-code"])
+    assert rules.read_bytes().startswith(b"# mine\r\n- keep\r\n")
+    _uninstall(home)
+    assert rules.read_bytes() == b"# mine\r\n- keep\r\n"
