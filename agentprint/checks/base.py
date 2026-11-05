@@ -38,7 +38,7 @@ class SecretCheck:
                     title=self.title,
                     agent=artifact.agent,
                     location=str(artifact.path),
-                    line=number,
+                    line=number or None,  # 0 = text from a database row
                     detail=f"{match.name}: {redact(match.value)}",
                     fix=self.fix,
                 )
