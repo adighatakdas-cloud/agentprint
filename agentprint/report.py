@@ -13,7 +13,7 @@ from rich.table import Table
 from . import __version__
 from .advice import Moment, advise
 from .models import Finding, Severity
-from .sanitize import clean, quote
+from .sanitize import FIX_LEN, clean, quote
 
 STYLE = {
     Severity.CRITICAL: "bold red",
@@ -43,6 +43,7 @@ def finding_dict(finding: Finding, moment: Moment = Moment.scan) -> dict:
     data = finding.to_dict()
     data["location"] = clean(finding.location)
     data["detail"] = clean(finding.detail)
+    data["fix"] = clean(finding.fix, FIX_LEN)
     advice = advise(finding, moment)
     data["fix_steps"] = advice.fix_steps
     data["ask_human"] = advice.ask_human
@@ -84,7 +85,7 @@ def print_table(findings: list[Finding], console: Console) -> None:
     console.print(table)
     console.print("[bold]How to fix[/bold]")
     for check_id, fix in sorted({(f.check_id, f.fix) for f in findings}):
-        console.print(f"  {check_id}: {escape(fix)}")
+        console.print(f"  {check_id}: {escape(clean(fix, FIX_LEN))}")
     counts = ", ".join(f"{n} {s}" for s, n in summary(findings).items() if n)
     console.print(f"{len(findings)} findings ({counts}). Secrets are shown redacted.")
 

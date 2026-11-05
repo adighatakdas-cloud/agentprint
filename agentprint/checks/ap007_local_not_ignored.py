@@ -12,6 +12,7 @@ Claude Code itself ignores settings.local.json. Not a git repo, or git missing: 
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 from collections.abc import Iterable
 from pathlib import Path
@@ -87,10 +88,11 @@ class LocalFileNotIgnored:
             rel, root = safe_snippet(rel_path, 200), safe_snippet(str(top), 200)
             if status == "tracked":
                 detail = f"{rel} is committed to git: everyone who clones the repo gets it"
+                # shlex.quote: inside double quotes a folder named $(...) would still run.
                 fix = (
-                    f'In {root} run: git rm --cached -- "{rel}" ; then add the line {rel} to '
-                    ".gitignore and commit both. Ask the human to rotate any key this file ever "
-                    "held: it stays in git history."
+                    f"In {shlex.quote(root)} run: git rm --cached -- {shlex.quote(rel)} ; then "
+                    f"add the line {rel} to .gitignore and commit both. Ask the human to rotate "
+                    "any key this file ever held: it stays in git history."
                 )
             else:
                 detail = f"{rel} is not in .gitignore: the next `git add .` would commit it"

@@ -15,7 +15,7 @@ from collections.abc import Collection, Sequence
 from pathlib import Path
 from urllib.parse import quote
 
-from . import __version__
+from . import __version__, sanitize
 from .models import Finding, Severity
 
 SCHEMA_URI = (
@@ -41,7 +41,9 @@ SECURITY_SEVERITY = {
 
 
 def _clean(text: str) -> str:
-    """Drop control, format (bidi) and other invisible characters; cap the length."""
+    """Drop escape sequences, control, format (bidi) and other invisible characters; cap the
+    length."""
+    text = sanitize.clean(text, MAX_TEXT)  # whole escape sequences, not just the ESC byte
     cleaned = "".join("?" if unicodedata.category(ch).startswith("C") else ch for ch in text)
     return cleaned if len(cleaned) <= MAX_TEXT else cleaned[: MAX_TEXT - 1] + "…"
 
@@ -117,7 +119,7 @@ def _rules(findings: Sequence[Finding]) -> list[dict]:
             "id": check_id,
             "shortDescription": {"text": f.title},
             "fullDescription": {"text": f.title},
-            "help": {"text": f.fix, "markdown": f"**How to fix:** {f.fix}"},
+            "help": {"text": _clean(f.fix), "markdown": f"**How to fix:** {_clean(f.fix)}"},
             "helpUri": f"{INFO_URI}#checks",
             "defaultConfiguration": {"level": LEVEL[f.severity]},
             "properties": {

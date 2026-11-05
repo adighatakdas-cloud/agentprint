@@ -87,7 +87,7 @@ def test_committed_personal_file_says_how_to_untrack(agents_project, isolated_gi
     [(where, detail)] = _ap007(scan(None, agents_project))
     assert where == ".gemini/.env" and "committed" in detail
     [finding] = [f for f in scan(None, agents_project) if f.check_id == "AP007"]
-    assert 'git rm --cached -- ".gemini/.env"' in finding.fix
+    assert "git rm --cached -- .gemini/.env " in finding.fix  # shell-quoted only when needed
 
 
 def test_project_in_a_subfolder_of_a_repo(tmp_path, agents_project, isolated_git):

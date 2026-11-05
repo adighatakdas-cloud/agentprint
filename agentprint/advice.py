@@ -18,7 +18,7 @@ from enum import StrEnum
 from .agents import ALL_AGENTS
 from .checks.ap005_mcp_inline_secret import _MARKER as MCP_MARKER
 from .models import Finding
-from .sanitize import clean, quote
+from .sanitize import FIX_LEN, clean, quote
 from .secrets import RULES
 
 
@@ -72,8 +72,14 @@ def adviser(check_id: str) -> Callable[[Adviser], Adviser]:
 
 
 def advise(finding: Finding, moment: Moment) -> Advice:
+    """Fix steps and ask_human items, every one cleaned (checks' own fix hints can embed
+    scanned paths, so no step reaches an agent with escape codes or hidden characters)."""
     fn = ADVISERS.get(finding.check_id)
-    return fn(finding, moment) if fn else Advice([finding.fix], [])
+    raw = fn(finding, moment) if fn else Advice([finding.fix], [])
+    return Advice(
+        [clean(step, FIX_LEN) for step in raw.fix_steps],
+        [clean(step, FIX_LEN) for step in raw.ask_human],
+    )
 
 
 # ---- helpers ---------------------------------------------------------------------------------

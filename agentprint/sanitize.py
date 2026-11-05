@@ -13,6 +13,7 @@ import re
 import unicodedata
 
 MAX_LEN = 300
+FIX_LEN = 1200  # fix hints and steps: agentprint's own words, but they can embed scanned paths
 _HEAD = 120
 
 # Terminal escape sequences, removed whole so no "[2J"-style residue is left behind.
@@ -26,7 +27,7 @@ _DROP = {"Cc", "Cf", "Cs", "Co", "Zl", "Zp"}
 _AS_SPACE = {"\t", "\n", "\r", "\v", "\f", " ", " ", "\x85"}
 
 
-def clean(text: str) -> str:
+def clean(text: str, limit: int = MAX_LEN) -> str:
     """Strip escape sequences and invisible characters, then cap the length."""
     text = _ESCAPES.sub("", text)
     text = "".join(
@@ -34,9 +35,9 @@ def clean(text: str) -> str:
         for ch in text
         if ch in _AS_SPACE or unicodedata.category(ch) not in _DROP
     )
-    if len(text) > MAX_LEN:
-        tail = MAX_LEN - _HEAD - 1
-        text = text[:_HEAD] + "…" + text[-tail:]
+    if len(text) > limit:
+        head = min(_HEAD, limit // 2)
+        text = text[:head] + "…" + text[-(limit - head - 1) :]
     return text
 
 
