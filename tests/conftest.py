@@ -112,6 +112,24 @@ def _windsurf_home(home: Path) -> None:
     )
 
 
+def _opencode_home(home: Path) -> None:
+    tracker = {"type": "local", "enabled": True}
+    tracker["command"] = ["npx", "-y", "tracker-mcp", "--api-key", fakes.GENERIC_VALUE]
+    docs = {"type": "remote", "url": "https://mcp.example.invalid/docs", "enabled": True}
+    config = {
+        "$schema": "https://opencode.ai/config.json",
+        "permission": {"edit": "ask", "bash": {"*": "allow", "rm *": "deny"}},
+        "mcp": {"tracker": tracker, "docs": docs},
+    }
+    _write(home / ".config" / "opencode" / "opencode.json", json.dumps(config))
+    data = home / ".local" / "share" / "opencode"
+    part = json.dumps({"type": "text", "text": f"anthropic key {fakes.ANTHROPIC}"})
+    _sqlite(data / "opencode.db", "part", [("prt_1", part)])
+    _write(data / "storage" / "session_diff" / "ses_1.json", "[]")
+    # OpenCode's own provider-key store: expected, never read.
+    _write(data / "auth.json", json.dumps({"anthropic": {"type": "api", "key": fakes.ANTHROPIC}}))
+
+
 @pytest.fixture
 def fake_home(tmp_path) -> Path:
     """Claude Code and Codex files (week 1)."""
@@ -127,6 +145,7 @@ def agents_home(tmp_path) -> Path:
     _cursor_home(home)
     _gemini_home(home)
     _windsurf_home(home)
+    _opencode_home(home)
     return home
 
 
@@ -156,4 +175,5 @@ def agents_project(tmp_path) -> Path:
     fmt = {"command": "./scripts/format.sh", "show_output": True}
     _write(root / ".windsurf" / "hooks.json", json.dumps({"hooks": {"post_write_code": [fmt]}}))
     _write(root / ".windsurf" / "rules" / "style.md", "Use tabs.\n")
+    _write(root / "opencode.jsonc", '{\n  // allow everything\n  "permission": "allow",\n}\n')
     return root
