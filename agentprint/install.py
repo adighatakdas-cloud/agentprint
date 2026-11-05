@@ -33,6 +33,7 @@ from .integrations.base import (
     BLOCK_EXIT,
     HOOK_MARK,
     MARK,
+    BlockEdit,
     Edit,
     FileEdit,
     Integration,
@@ -44,6 +45,7 @@ from .sanitize import clean
 from .secrets import find_secrets, redact
 
 STATE_DIR = ".agentprint"
+CORE = "agentprint"  # owner of files shared by every agent (the hook launcher)
 MAX_DIFF_LINES = 80
 Echo = Callable[[str], None]
 
@@ -234,12 +236,12 @@ def install(
         )
     state = State.load(home)
     changed = 0
-    sections: list[tuple[str, list[Edit]]] = [("agentprint", _core_edits(home, agentprint))]
-    sections += [(i.label, i.edits(home, env, launch)) for i in found]
-    for label, edits in sections:
+    sections = [(CORE, "agentprint", _core_edits(home, agentprint))]
+    sections += [(i.name, i.label, i.edits(home, env, launch)) for i in found]
+    for name, label, edits in sections:
         echo(f"\n== {label} ==")
         for path, group in _group(edits).items():
-            changed += _install_file(home, path, group, state, dry_run, echo)
+            changed += _install_file(home, path, group, state, dry_run, echo, name)
     if not dry_run and changed:
         state.save()
     echo("")
@@ -256,7 +258,13 @@ def install(
 
 
 def _install_file(
-    home: Path, path: Path, edits: list[Edit], state: State, dry_run: bool, echo: Echo
+    home: Path,
+    path: Path,
+    edits: list[Edit],
+    state: State,
+    dry_run: bool,
+    echo: Echo,
+    agent: str,
 ) -> int:
     old = _read(path)
     new = old
@@ -289,6 +297,7 @@ def _install_file(
             _private(home / STATE_DIR / "backups")
             entry["backup"] = str(backup)
         state.files[key] = entry
+    state.files[key]["agent"] = agent
     state.dirs.extend(d for d in _mkdirs(_real(path).parent) if d not in state.dirs)
     mode = next((e.mode for e in edits if isinstance(e, FileEdit)), None)
     _atomic_write(path, new, mode)
@@ -303,19 +312,32 @@ def _private(directory: Path) -> None:
 # ---- uninstall --------------------------------------------------------------------------------
 
 
+def _marker_reverts(path: Path) -> list[Edit]:
+    """Undo a marked block in a file whose location has moved since install."""
+    return [BlockEdit(path, "instructions", "", "md"), BlockEdit(path, "MCP server", "", "toml")]
+
+
 def uninstall(
     home: Path, env: Mapping[str, str], names: list[str] | None, dry_run: bool, echo: Echo
 ) -> None:
     launch = Launch(hook=str(home / STATE_DIR / "bin" / HOOK_MARK), mcp=("agentprint", "mcp"))
-    chosen = [ALL_INTEGRATIONS[n] for n in names] if names else list(ALL_INTEGRATIONS.values())
+    chosen = list(names) if names else list(ALL_INTEGRATIONS)
     state = State.load(home)
     echo(f"agentprint uninstall{' (dry run: nothing is written)' if dry_run else ''}")
-    edits: list[Edit] = [e for i in chosen for e in i.edits(home, env, launch)]
-    if not names:
-        edits += _core_edits(home, ["agentprint"])
-    grouped = _group(edits)
-    for key in state.files:  # files recorded at install whose location has since moved
-        grouped.setdefault(Path(key), [])
+    grouped: dict[Path, list[Edit]] = {}
+    for name in chosen:
+        grouped.update(_group(ALL_INTEGRATIONS[name].edits(home, env, launch)))
+    for key, entry in state.files.items():  # moved since install, e.g. AGENTS.override.md
+        if Path(key) not in grouped and (entry.get("agent") in chosen or not names):
+            grouped[Path(key)] = _marker_reverts(Path(key))
+    others = [
+        key
+        for key, entry in state.files.items()
+        if entry.get("agent") != CORE and Path(key) not in grouped
+    ]
+    last = not others  # nothing of another agent left: the launcher and state go too
+    if last:
+        grouped.update(_group(_core_edits(home, ["agentprint"])))
     changed = 0
     exact = True
     for path, group in grouped.items():
@@ -325,15 +347,16 @@ def uninstall(
     if dry_run:
         echo(f"\n{changed} file(s) would change. Run without --dry-run to apply.")
         return
-    if not names and exact:
+    if last and exact:
         shutil.rmtree(home / STATE_DIR / "backups", ignore_errors=True)
         state.path.unlink(missing_ok=True)
         for d in sorted(state.dirs, key=len, reverse=True):
             _rmdir_if_empty(Path(d))
         _rmdir_if_empty(home / STATE_DIR)
-    else:
+    elif state.files or (home / STATE_DIR).exists():
         state.save()
-        echo(f"Backups kept in {_shown(home, home / STATE_DIR / 'backups')}")
+        if (home / STATE_DIR / "backups").exists():
+            echo(f"Backups kept in {_shown(home, home / STATE_DIR / 'backups')}")
     echo(f"\nDone: {changed} file(s) changed." if changed else "\nNothing to remove.")
 
 

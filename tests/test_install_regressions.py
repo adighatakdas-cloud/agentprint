@@ -87,3 +87,26 @@ def test_plain_round_trip_is_still_byte_identical(home, monkeypatch):
     _install(home)
     _uninstall(home)
     assert snapshot(home) == before
+
+
+# ---- 2. uninstall --agent NAME touches only that agent's files -------------------------------
+
+
+def test_uninstall_one_agent_leaves_the_others(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "settings.json").write_text("{}\n")
+    (home / ".codex").mkdir()
+    (home / ".codex" / "config.toml").write_text('model = "o3"\n')
+    _launch(monkeypatch, "/opt/agentprint")
+    _install(home)
+    kept = (".claude", ".agentprint/bin")
+    claude_before = {k: v for k, v in snapshot(home).items() if k.startswith(kept)}
+    _uninstall(home, ["codex"])
+    after = snapshot(home)
+    assert {k: after.get(k) for k in claude_before} == claude_before  # Claude Code untouched
+    assert after[".codex/config.toml"] == b'model = "o3"\n'
+    assert ".codex/hooks.json" not in after and ".codex/AGENTS.md" not in after
+    _uninstall(home, ["claude-code"])  # the last agent: launcher and state go too
+    assert not (home / ".agentprint").exists()
+    assert (home / ".claude" / "settings.json").read_text() == "{}\n"
