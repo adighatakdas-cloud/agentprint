@@ -263,6 +263,25 @@ def test_pypi_oversized_sdist_is_noted_and_wheel_still_scanned(monkeypatch):
     assert SDIST not in web.urls()
 
 
+def test_pypi_failed_wheel_read_keeps_the_sdist_results():
+    web = _pypi_web({"setup.py": b"", ".claude/settings.local.json": LEAKY}, {"demo/x.py": b""})
+    web.add(WHEEL, b"", status=503)  # never recovers
+    rec = pypi.scan(_http(web), {"name": "demo", "version": "1.0"}, Tally())
+    assert rec["status"] == "partial"
+    assert [c["path"] for c in rec["candidates"]] == [".claude/settings.local.json"]
+    assert len(rec["secrets"]) == 1
+    [problem] = rec["archive_errors"]
+    assert problem.startswith("wheel: ")
+
+
+def test_pypi_release_with_no_readable_archive_is_an_error():
+    web = _pypi_web({"setup.py": b""}, {"demo/x.py": b""})
+    web.add(SDIST, b"", status=503)
+    web.add(WHEEL, b"", status=503)
+    rec = pypi.scan(_http(web), {"name": "demo", "version": "1.0"}, Tally())
+    assert (rec["status"], rec["reason"]) == ("error", "no archive could be read")
+
+
 def test_pypi_removed_release_is_gone():
     rec = pypi.scan(_http(Web()), {"name": "demo", "version": "1.0"}, Tally())
     assert rec["status"] == "gone"

@@ -119,17 +119,22 @@ def scan(http: Http, target: dict, tally: Tally, *, validate: bool = False) -> d
         rec.update(status="skipped", reason="no sdist or wheel")
         return rec
     rec["method"], rec["archive_errors"] = [], []
+    read = 0
     for archive, info in picks:
         try:
             listing = _listing(http, archive, info, tally, rec)
         except TooLarge:
             rec["too_large"].append(archive)
             continue
-        except PackError as exc:
+        except (PackError, HttpError) as exc:  # one bad archive must not sink the other
             rec["archive_errors"].append(f"{archive}: {str(exc)[:200]}")
             continue
         examine(rec, listing, archive, strip_root=archive == "sdist")
+        read += 1
     rec["method"] = "+".join(rec["method"]) or None
-    if rec["archive_errors"] and len(rec["archive_errors"]) == len(picks):
-        rec.update(status="error", reason="no archive could be read")
+    if rec["archive_errors"]:
+        if read:
+            rec.update(status="partial", reason="an archive could not be read")
+        else:
+            rec.update(status="error", reason="no archive could be read")
     return rec

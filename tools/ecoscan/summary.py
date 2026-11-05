@@ -27,7 +27,7 @@ def _eco(out: Path, eco: str, full: int) -> dict | None:
     meta_path = out / f"meta-{eco}.json"
     meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
     sessions = read_jsonl(out / f"sessions-{eco}.jsonl")
-    ok = [r for r in rows if r["status"] == "ok"]
+    ok = [r for r in rows if r["status"] in ("ok", "partial")]  # partial: some archive unread
     status = Counter(r["status"] for r in rows)
 
     by_agent_kind: Counter[str] = Counter()

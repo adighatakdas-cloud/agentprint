@@ -194,6 +194,15 @@ def test_summary_counts_packages_by_agent_kind_and_rule(tmp_path):
     assert "secret-pkg" not in json.dumps(s)  # counts only, never package names
 
 
+def test_partially_scanned_packages_still_count(tmp_path):
+    agents_md = ("AGENTS.md", "agents-md", "instructions", False)
+    rows = [_rec("p", status="partial", candidates=[agents_md])]
+    (tmp_path / "results-npm.jsonl").write_text(json.dumps(rows[0]) + "\n")
+    s = summarize(tmp_path)["npm"]
+    assert s["status"] == {"partial": 1}
+    assert s["with_candidates"] == 1
+
+
 def test_validation_downloads_are_left_out_of_the_projection(tmp_path):
     agents_md = ("AGENTS.md", "agents-md", "instructions", False)
     rows = [_rec(f"p{i}") for i in range(3)]

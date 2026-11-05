@@ -117,7 +117,7 @@ def new_record(eco: str, name: str, version: str | None = None) -> dict:
         "eco": eco,
         "name": name,
         "version": version,
-        "status": "ok",  # ok | gone | skipped | error
+        "status": "ok",  # ok | partial | gone | skipped | error
         "reason": None,
         "method": None,
         "files": 0,
