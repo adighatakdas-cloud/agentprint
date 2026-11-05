@@ -35,9 +35,10 @@ def check_listing(listing: PackageListing) -> list[Finding]:
         if rule is None:
             continue
         location = f"{listing.label}!{name}"
-        findings.append(
-            Finding(ID, rule.severity, TITLE, rule.agent, location, None, rule.why, FIX)
-        )
+        why = rule.why
+        if name in listing.skipped:
+            why += " Contents not scanned for keys (a link, too large, or archive limit reached)."
+        findings.append(Finding(ID, rule.severity, TITLE, rule.agent, location, None, why, FIX))
         text = listing.contents.get(name, b"").decode("utf-8", errors="replace")
         seen: set[str] = set()
         for match in find_secrets(text):

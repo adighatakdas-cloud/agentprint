@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import lzma
 import shutil
@@ -13,8 +14,12 @@ import zlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import IO
 
-MAX_CONTENT_BYTES = 10 * 1024 * 1024
+MAX_CONTENT_BYTES = 10 * 1024 * 1024  # largest single file whose content is read
+MAX_TOTAL_CONTENT_BYTES = 64 * 1024 * 1024  # all content read from one archive, together
+MAX_MEMBERS = 100_000  # entries (files, folders, links) in one archive
+MAX_UNPACKED_BYTES = 2 * 1024**3  # a .tar.gz must be fully unpacked just to list its names
 TIMEOUT_SECONDS = 300
 # Everything a damaged, truncated or unusual archive can raise while being read.
 ARCHIVE_ERRORS = (
@@ -39,31 +44,101 @@ class PackageListing:
     label: str  # shown before "!" in finding locations
     files: list[str]
     contents: dict[str, bytes] = field(default_factory=dict)  # only files `want` asked for
+    skipped: list[str] = field(default_factory=list)  # wanted, but content not read (see below)
+
+
+class _Collector:
+    """Builds a listing from archive entries, within fixed limits.
+
+    - More than MAX_MEMBERS entries: PackError, because a cut-off file list could hide agent files.
+    - Content over MAX_CONTENT_BYTES (one file) or MAX_TOTAL_CONTENT_BYTES (whole archive) is not
+      read; the name is still listed and also put in `skipped`. Links are listed, never followed.
+    - A name that appears twice is listed once, with the content of its last copy: that is the
+      copy tar, unzip, npm and pip leave on disk. Copies are never mixed together.
+    """
+
+    def __init__(self, label: str, want: Want) -> None:
+        self.label, self.want = label, want
+        self.files: dict[str, None] = {}  # dicts keep insertion order: an ordered set
+        self.contents: dict[str, bytes] = {}
+        self.skipped: dict[str, None] = {}
+        self.entries = 0
+        self.used = 0
+
+    def count(self) -> None:
+        self.entries += 1
+        if self.entries > MAX_MEMBERS:
+            raise PackError(f"archive {self.label} has more than {MAX_MEMBERS} entries")
+
+    def add(self, name: str, size: int, read: Callable[[], bytes] | None) -> None:
+        self.files.setdefault(name, None)
+        if not self.want(name):
+            return
+        old = self.contents.pop(name, None)  # a later copy replaces an earlier one
+        self.used -= len(old) if old is not None else 0
+        self.skipped.pop(name, None)
+        if read is None or size > MAX_CONTENT_BYTES or self.used + size > MAX_TOTAL_CONTENT_BYTES:
+            self.skipped[name] = None
+            return
+        data = read()[:size]
+        self.used += len(data)
+        self.contents[name] = data
+
+    def listing(self) -> PackageListing:
+        return PackageListing(self.label, list(self.files), self.contents, list(self.skipped))
+
+
+def _read_zip(fileobj: IO[bytes], out: _Collector) -> None:
+    # A zip lists its names in one directory at the end, so only wanted files are unpacked.
+    with zipfile.ZipFile(fileobj) as zf:
+        for info in zf.infolist():
+            out.count()
+            name = info.filename.replace("\\", "/")  # zips made on Windows can use backslashes
+            if not name.endswith("/"):
+                out.add(name, info.file_size, lambda info=info: zf.read(info))
+
+
+def _read_tar(fileobj: IO[bytes], out: _Collector) -> None:
+    unpacked = 0
+    with tarfile.open(fileobj=fileobj, mode="r:*") as tf:
+        for member in tf:  # one forward pass; entries are counted before they pile up
+            out.count()
+            unpacked += member.size
+            if unpacked > MAX_UNPACKED_BYTES:
+                raise PackError(
+                    f"archive {out.label} unpacks to more than {MAX_UNPACKED_BYTES} bytes"
+                )
+            if member.isfile():
+                handle = tf.extractfile(member)
+                out.add(member.name, member.size, handle.read if handle else None)
+            elif member.issym() or member.islnk():
+                out.add(member.name, 0, None)
+
+
+def read_archive_bytes(data: bytes, label: str, want: Want) -> PackageListing:
+    """Read a downloaded .tgz/.tar.gz/.whl/.zip held in memory. `label` names its type."""
+    return _read_archive(io.BytesIO(data), label, want)
 
 
 def read_archive(path: Path, want: Want) -> PackageListing:
     """Read a .tgz/.tar.gz/.whl/.zip in memory. Nothing is extracted to disk."""
-    contents: dict[str, bytes] = {}
     try:
-        if path.name.endswith((".whl", ".zip")):
-            with zipfile.ZipFile(path) as zf:
-                infos = [i for i in zf.infolist() if not i.is_dir()]
-                files = [i.filename for i in infos]
-                for info in infos:
-                    if want(info.filename) and info.file_size <= MAX_CONTENT_BYTES:
-                        contents[info.filename] = zf.read(info)
-        else:
-            with tarfile.open(path, "r:*") as tf:
-                members = [m for m in tf.getmembers() if m.isfile()]
-                files = [m.name for m in members]
-                for member in members:
-                    if want(member.name) and member.size <= MAX_CONTENT_BYTES:
-                        handle = tf.extractfile(member)
-                        if handle is not None:
-                            contents[member.name] = handle.read()
-    except ARCHIVE_ERRORS as exc:
+        with path.open("rb") as fh:
+            return _read_archive(fh, path.name, want)
+    except OSError as exc:
         raise PackError(f"cannot read archive {path}: {exc}") from exc
-    return PackageListing(label=path.name, files=files, contents=contents)
+
+
+def _read_archive(fileobj: IO[bytes], label: str, want: Want) -> PackageListing:
+    out = _Collector(label, want)
+    try:
+        if label.endswith((".whl", ".zip")):
+            _read_zip(fileobj, out)
+        else:
+            _read_tar(fileobj, out)
+    except ARCHIVE_ERRORS as exc:
+        raise PackError(f"cannot read archive {label}: {exc}") from exc
+    return out.listing()
 
 
 def _run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
