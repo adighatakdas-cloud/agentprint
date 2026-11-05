@@ -21,6 +21,10 @@ class Kind(StrEnum):
     # Personal notes and env files (CLAUDE.local.md, .gemini/.env). Keys there are expected, so
     # the content is not scanned; the only question is whether git would commit them (AP007).
     PERSONAL = "personal"
+    # An agent's own credential store (Codex auth.json, Hermes .env, Copilot providers.json).
+    # Keys are meant to be there, so the content is never scanned; only who can read the file
+    # is checked (AP008).
+    CREDENTIALS = "credentials"
 
 
 @dataclass(frozen=True)

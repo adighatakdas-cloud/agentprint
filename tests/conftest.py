@@ -177,3 +177,66 @@ def agents_project(tmp_path) -> Path:
     _write(root / ".windsurf" / "rules" / "style.md", "Use tabs.\n")
     _write(root / "opencode.jsonc", '{\n  // allow everything\n  "permission": "allow",\n}\n')
     return root
+
+
+# --- GitHub Copilot, Hermes Agent, Google Antigravity (structure verified 2026-11-05) ---------
+
+
+def _copilot_home(home: Path) -> None:
+    copilot = home / ".copilot"
+    context7 = {"type": "local", "command": "npx", "args": ["-y", "ctx7-mcp"], "tools": ["*"]}
+    context7["env"] = {"CONTEXT7_API_KEY": fakes.GENERIC_VALUE}
+    _write(copilot / "mcp-config.json", json.dumps({"mcpServers": {"context7": context7}}))
+    _write(
+        copilot / "settings.json",
+        '{\n  // user settings\n  "defaultPermissionMode": "allow-all",\n}\n',
+    )
+    hook = {"type": "command", "bash": "curl -s https://hooks.example.invalid/x", "timeoutSec": 30}
+    _write(
+        copilot / "hooks" / "notify.json",
+        json.dumps({"version": 1, "hooks": {"sessionEnd": [hook]}}),
+    )
+    event = {"type": "user.message", "data": {"content": f"use {fakes.SLACK}"}}
+    _write(copilot / "session-state" / "s-0001" / "events.jsonl", _jsonl(event))
+    _write(copilot / "logs" / "process-1-2.log", "started\n")
+    # Copilot's own credential stores: never secret-scanned.
+    _write(copilot / "config.json", json.dumps({"auth": {"token": fakes.GITHUB}}))
+    _write(copilot / "providers.json", json.dumps({"providers": [{"apiKey": fakes.OPENAI}]}))
+    user = home / "Library" / "Application Support" / "Code" / "User"
+    _write(
+        user / "settings.json",
+        '{\n  "chat.tools.global.autoApprove": true,\n  "editor.tabSize": 2\n}\n',
+    )
+    session = {"version": 3, "requests": [{"message": {"text": f"key {fakes.AWS}"}}]}
+    _write(user / "workspaceStorage" / "ab12" / "chatSessions" / "s1.json", json.dumps(session))
+
+
+def _copilot_project(root: Path) -> None:
+    github = root / ".github"
+    _write(github / "copilot" / "settings.json", json.dumps({"defaultPermissionMode": "manual"}))
+    _write(github / "copilot" / "settings.local.json", json.dumps({"model": "x"}))  # personal
+    fmt = {"type": "command", "bash": "./scripts/format.sh"}
+    _write(
+        github / "hooks" / "format.json",
+        json.dumps({"version": 1, "hooks": {"postToolUse": [fmt]}}),
+    )
+    _write(github / "copilot-instructions.md", "Use tabs.\n")
+    _write(github / "workflows" / "ci.yml", "on: push\n")
+    billing = {"type": "http", "url": "https://mcp.example.invalid/mcp"}
+    billing["headers"] = {"Authorization": f"Bearer {fakes.STRIPE}"}
+    _write(root / ".vscode" / "mcp.json", json.dumps({"servers": {"billing": billing}}))
+
+
+@pytest.fixture
+def more_home(tmp_path) -> Path:
+    """GitHub Copilot, Hermes Agent and Google Antigravity files."""
+    home = tmp_path / "more-home"
+    _copilot_home(home)
+    return home
+
+
+@pytest.fixture
+def more_project(tmp_path) -> Path:
+    root = tmp_path / "more-proj"
+    _copilot_project(root)
+    return root

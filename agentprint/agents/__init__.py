@@ -3,6 +3,7 @@
 from .base import Agent
 from .claude_code import ClaudeCode
 from .codex import Codex
+from .copilot import Copilot
 from .cursor import Cursor
 from .gemini import Gemini
 from .opencode import OpenCode
@@ -15,6 +16,7 @@ ALL_AGENTS: tuple[Agent, ...] = (
     Gemini(),
     Windsurf(),
     OpenCode(),
+    Copilot(),
 )
 
 
