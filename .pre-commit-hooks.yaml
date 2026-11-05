@@ -1,0 +1,15 @@
+# pre-commit hooks (https://pre-commit.com). Both check the whole project, so they run once
+# per commit and ignore the list of changed files.
+- id: agentprint-pack
+  name: agentprint pack
+  description: Block the commit if agent files (.claude/, .codex/ …) or keys would ship in your npm/PyPI package.
+  entry: agentprint pack
+  language: python
+  pass_filenames: false
+
+- id: agentprint-scan
+  name: agentprint scan
+  description: Block the commit if agent settings files in this repository hold API keys.
+  entry: agentprint scan --no-home
+  language: python
+  pass_filenames: false
