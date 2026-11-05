@@ -20,7 +20,8 @@ def estimate(eco: str, packages: int) -> tuple[int, float]:
 
 def describe(eco: str, packages: int) -> str:
     size, seconds = estimate(eco, packages)
+    took = f"{seconds / 3600:.1f} h" if seconds >= 3600 else f"{max(1, round(seconds / 60))} min"
     return (
-        f"{eco}: {packages} packages to scan; estimate about {size / 1e9:.1f} GB and "
-        f"{seconds / 3600:.1f} h (Nov 2026 pilot, default size caps)"
+        f"{eco}: {packages} packages to scan; estimate about {size / 1e9:.2f} GB and "
+        f"{took} (Nov 2026 pilot, default size caps)"
     )

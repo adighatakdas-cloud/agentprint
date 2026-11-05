@@ -13,7 +13,7 @@ from tests.test_ecoscan_registries import (
 from tests.test_ecoscan_run import Enumerator, _ok_scan
 from tools.ecoscan import npm, pypi
 from tools.ecoscan.__main__ import main
-from tools.ecoscan.estimate import estimate
+from tools.ecoscan.estimate import describe, estimate
 from tools.ecoscan.net import Tally
 from tools.ecoscan.run import run
 
@@ -63,6 +63,12 @@ def test_max_gb_stops_cleanly_and_a_rerun_continues(tmp_path):
 def test_estimate_comes_from_the_pilot_with_default_caps():
     assert estimate("npm", 1000) == (180_000_000, 630.0)
     assert estimate("pypi", 1000) == (730_000_000, 520.0)
+
+
+def test_estimate_text_stays_readable_for_small_shards():
+    assert "about 0.01 GB and 1 min" in describe("npm", 54)
+    assert "about 3.65 GB and 43 min" in describe("pypi", 5000)
+    assert "about 9.00 GB and 8.8 h" in describe("npm", 50_000)
 
 
 def test_estimate_is_shown_before_scanning(tmp_path):
