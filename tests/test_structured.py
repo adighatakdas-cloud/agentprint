@@ -64,3 +64,40 @@ def test_find_line_points_at_first_occurrence(tmp_path):
     assert find_line(f, "Bash(*)") == 3
     assert find_line(f, "nope") is None
     assert find_line(f, "") is None
+
+
+def test_loads_yaml_by_suffix(tmp_path):
+    f = tmp_path / "config.yaml"
+    f.write_text("approvals:\n  mode: smart\nmcp_servers:\n  gh:\n    command: npx\n")
+    assert load(f) == {"approvals": {"mode": "smart"}, "mcp_servers": {"gh": {"command": "npx"}}}
+    g = tmp_path / "x.yml"
+    g.write_text("- a\n- b\n")
+    assert load(g) == ["a", "b"]
+
+
+def test_yaml_tags_that_build_objects_are_refused(tmp_path):
+    f = tmp_path / "config.yaml"
+    f.write_text("!!python/object/apply:os.getcwd []\n")
+    assert load(f) is None
+
+
+def test_yaml_alias_bomb_is_refused(tmp_path):
+    lines = ["l0: &l0 [x, x, x, x, x, x, x, x, x]"]
+    for i in range(1, 25):
+        refs = ", ".join([f"*l{i - 1}"] * 9)
+        lines.append(f"l{i}: &l{i} [{refs}]")
+    f = tmp_path / "bomb.yaml"
+    f.write_text("\n".join(lines) + "\n")
+    assert load(f) is None
+
+
+def test_a_few_yaml_aliases_are_fine(tmp_path):
+    f = tmp_path / "config.yaml"
+    f.write_text("base: &b {timeout: 10}\nhooks:\n  pre_tool_call:\n    - *b\n")
+    assert load(f) == {"base": {"timeout": 10}, "hooks": {"pre_tool_call": [{"timeout": 10}]}}
+
+
+def test_broken_yaml_returns_none(tmp_path):
+    f = tmp_path / "config.yaml"
+    f.write_text("hooks:\n  - [unclosed\n")
+    assert load(f) is None

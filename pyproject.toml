@@ -10,6 +10,7 @@ authors = [{ name = "adighatakdas-cloud", email = "adi65das@gmail.com" }]
 keywords = ["security", "secrets", "ai-agents", "claude-code", "codex", "npm", "pypi"]
 dependencies = [
     "mcp>=2.3.0",
+    "pyyaml>=6.0.3",
     "rich>=15.0.0",
     "typer>=0.27.3",
 ]
