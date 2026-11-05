@@ -53,7 +53,7 @@ def edits(home: Path, env: Env, launch: Launch) -> list[Edit]:
             {
                 "name": "agentprint-guard",
                 "type": "command",
-                "command": launch.hook_command(NAME),
+                "command": launch.hook_command(NAME, reply(None).stdout),
                 "timeout": 60000,
             }
         ],

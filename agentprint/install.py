@@ -318,6 +318,14 @@ def _snippet(edits: list[Edit]) -> str:
     return "\n".join(parts)
 
 
+def _uses_launcher(path: Path) -> bool:
+    try:
+        text = _read(path)
+    except Unsupported:
+        return False
+    return text is not None and HOOK_MARK in text
+
+
 def _would_change(path: Path, edits: list[Edit]) -> bool:
     """True if installing `edits` into `path` would change it (no output, nothing written)."""
     try:
@@ -346,7 +354,7 @@ def _core_edits(home: Path, agentprint: list[str]) -> list[Edit]:
             home / STATE_DIR / "bin" / HOOK_MARK,
             "hook launcher (lets agents run agentprint safely)",
             launcher_script(agentprint),
-            mode=0o755,
+            mode=0o700,  # runnable by you only
         )
     ]
 
@@ -376,13 +384,15 @@ def install(
     state = State.load(home)
     changed = 0
     agents = [(i.name, i.label, i.edits(home, env, launch)) for i in found]
-    # The shared launcher only goes in when some agent file will really use it.
-    needed = any(
-        _would_change(path, group)
-        for _, _, edits in agents
-        for path, group in _group(edits).items()
+    agent_files = [(path, group) for _, _, edits in agents for path, group in _group(edits).items()]
+    # The shared launcher goes in when an agent file will use it, or when a hook installed
+    # earlier already uses it and the launcher is missing or out of date.
+    core_edits = _core_edits(home, agentprint)
+    needed = any(_would_change(path, group) for path, group in agent_files) or (
+        any(_would_change(edit.path, [edit]) for edit in core_edits)
+        and any(_uses_launcher(path) for path, _ in agent_files)
     )
-    core = [(CORE, "agentprint", _core_edits(home, agentprint))] if needed else []
+    core = [(CORE, "agentprint", core_edits)] if needed else []
     sections = core + agents
     try:
         for name, label, edits in sections:

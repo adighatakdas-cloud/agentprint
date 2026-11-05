@@ -332,7 +332,7 @@ def test_temp_files_are_private_from_the_first_byte_and_modes_are_kept(tmp_path,
     assert stat.S_IMODE(state.stat().st_mode) == 0o640
     assert "agentprint" in state.read_text()
     launcher = home / ".agentprint" / "bin" / "agentprint-hook"
-    assert stat.S_IMODE(launcher.stat().st_mode) == 0o755
+    assert stat.S_IMODE(launcher.stat().st_mode) == 0o700  # runnable by its owner only
 
 
 def test_crlf_line_endings_are_kept(tmp_path, monkeypatch):

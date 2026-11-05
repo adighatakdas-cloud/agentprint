@@ -76,7 +76,13 @@ def edits(home: Path, env: Env, launch: Launch) -> list[Edit]:
         "PreToolUse": [
             {
                 "matcher": "run_command",
-                "hooks": [{"type": "command", "command": launch.hook_command(NAME), "timeout": 60}],
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": launch.hook_command(NAME, reply(None).stdout),
+                        "timeout": 60,
+                    }
+                ],
             }
         ]
     }

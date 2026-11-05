@@ -37,8 +37,17 @@ class Launch:
     hook: str  # absolute path of the hook launcher script (~/.agentprint/bin/agentprint-hook)
     mcp: tuple[str, ...]  # argv that starts the MCP server
 
-    def hook_command(self, agent: str) -> str:
-        return f"{shlex.quote(self.hook)} --agent {agent}"
+    def hook_command(self, agent: str, allow: str = "") -> str:
+        """The command an agent's hook runs. If the launcher has gone missing (say ~/.agentprint
+        was deleted) it still answers "allow" itself: exit 0 plus `allow`, the agent's own
+        allow output, because some agents (Copilot) deny on any other exit and some (Cursor)
+        on empty output. Works whether the agent runs it through a shell or splits it."""
+        missing = (
+            f"{{ printf '%s\\n' {shlex.quote(allow.strip())}; exit 0; }}" if allow else "exit 0"
+        )
+        script = f'[ -x "$0" ] || {missing}; exec "$0" "$@"'
+        argv = ("/bin/sh", "-c", script, self.hook, "--agent", agent)
+        return " ".join(shlex.quote(part) for part in argv)
 
 
 @dataclass(frozen=True)
@@ -315,7 +324,7 @@ class FileEdit:
     path: Path
     what: str
     content: str
-    mode: int = 0o644
+    mode: int = 0o600  # private: AP008 must never flag agentprint's own files
 
     def apply(self, old: str | None) -> str:
         if old is None or old == self.content or HOOK_MARK in old or _owned(old):
