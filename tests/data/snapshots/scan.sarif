@@ -89,7 +89,7 @@
       },
       "originalUriBaseIds": {
         "%SRCROOT%": {
-          "uri": "file:///Users/Aditya/git-projects/agentprint-ui-polish/"
+          "uri": "file://<TMP>/"
         }
       },
       "results": [
@@ -104,7 +104,8 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "file://<TMP>/home/.claude/settings.json"
+                  "uri": "home/.claude/settings.json",
+                  "uriBaseId": "%SRCROOT%"
                 },
                 "region": {
                   "startLine": 1
@@ -127,7 +128,8 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "file://<TMP>/proj/.claude/settings.local.json"
+                  "uri": "proj/.claude/settings.local.json",
+                  "uriBaseId": "%SRCROOT%"
                 },
                 "region": {
                   "startLine": 1
@@ -150,7 +152,8 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "file://<TMP>/home/.codex/config.toml"
+                  "uri": "home/.codex/config.toml",
+                  "uriBaseId": "%SRCROOT%"
                 },
                 "region": {
                   "startLine": 2
@@ -173,7 +176,8 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "file://<TMP>/home/.claude/history.jsonl"
+                  "uri": "home/.claude/history.jsonl",
+                  "uriBaseId": "%SRCROOT%"
                 },
                 "region": {
                   "startLine": 1
@@ -196,7 +200,8 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "file://<TMP>/home/.claude/paste-cache/abc.txt"
+                  "uri": "home/.claude/paste-cache/abc.txt",
+                  "uriBaseId": "%SRCROOT%"
                 },
                 "region": {
                   "startLine": 1
@@ -219,7 +224,8 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "file://<TMP>/home/.claude/projects/-tmp-demo/s1.jsonl"
+                  "uri": "home/.claude/projects/-tmp-demo/s1.jsonl",
+                  "uriBaseId": "%SRCROOT%"
                 },
                 "region": {
                   "startLine": 1
@@ -242,7 +248,8 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "file://<TMP>/home/.codex/history.jsonl"
+                  "uri": "home/.codex/history.jsonl",
+                  "uriBaseId": "%SRCROOT%"
                 },
                 "region": {
                   "startLine": 1
@@ -265,7 +272,8 @@
             {
               "physicalLocation": {
                 "artifactLocation": {
-                  "uri": "file://<TMP>/home/.codex/sessions/2026/10/01/rollout-x.jsonl"
+                  "uri": "home/.codex/sessions/2026/10/01/rollout-x.jsonl",
+                  "uriBaseId": "%SRCROOT%"
                 },
                 "region": {
                   "startLine": 1

@@ -47,16 +47,19 @@ CASES = {
 
 
 @pytest.mark.parametrize("case", CASES)
-def test_snapshot(case, tmp_path, fake_home, fake_project):
+def test_snapshot(case, tmp_path, fake_home, fake_project, monkeypatch):
+    # SARIF's originalUriBaseIds is built from the process cwd; pin it so it becomes <TMP>/.
+    monkeypatch.chdir(tmp_path)
     command, fmt, filename = CASES[case]
     if command == "scan":
         args = ["scan", str(fake_project), "--home", str(fake_home), "--format", fmt]
     else:
         args = ["pack", str(_tarball(tmp_path)), "--format", fmt]
     result = runner.invoke(app, args)
+    assert result.exit_code == 1
     output = _normalise(result.output, tmp_path)
     path = SNAPSHOTS / filename
     if os.environ.get("AGENTPRINT_UPDATE_SNAPSHOTS") == "1":
-        path.write_text(output)
+        path.write_text(output, encoding="utf-8")
         pytest.skip(f"wrote {filename}")
-    assert output == path.read_text()
+    assert output == path.read_text(encoding="utf-8")
