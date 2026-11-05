@@ -58,10 +58,11 @@ def test_every_request_carries_the_research_user_agent():
     fake = Fake(ok())
     http, _ = _http(fake)
     http.get("https://example.org/x")
+    # The repo URL is the contact point; no personal email in a header sent to every host.
     assert (
         fake.calls[0][2]["User-Agent"]
         == USER_AGENT
-        == "agentprint-research/0.1 (security research)"
+        == "agentprint-research/0.1 (+https://github.com/adighatakdas-cloud/agentprint)"
     )
 
 

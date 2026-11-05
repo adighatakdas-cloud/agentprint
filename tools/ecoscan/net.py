@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
-USER_AGENT = "agentprint-research/0.1 (security research)"
+USER_AGENT = "agentprint-research/0.1 (+https://github.com/adighatakdas-cloud/agentprint)"
 MAX_RATE = 5.0  # requests per second per host, hard ceiling
 MAX_DECODED_BYTES = 256 * 1024 * 1024
 MAX_RETRY_AFTER = 900.0  # longer waits are still honored, but the request is given up

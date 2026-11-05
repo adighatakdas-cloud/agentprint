@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from tests import fakes
 from tests.test_ecoscan_registries import LEAKY, _http, _npm_web
 from tools.ecoscan.__main__ import main
@@ -222,6 +224,21 @@ def test_run_command_skips_about_an_hour_of_newest_changes(tmp_path, monkeypatch
     assert seen["rates"]["data.jsdelivr.com"] <= 100 / 60  # jsDelivr's fair-use line
     main(["run", "pypi", "--limit", "5", "--out", str(tmp_path), "--skip-newest", "0"])
     assert seen["recent"].keywords == {"skip_newest": 0}
+
+
+def test_request_rates_are_locked(tmp_path, monkeypatch, capsys):
+    seen = {}
+
+    def fake_run(eco, out, n, http, **kw):
+        seen.update(default=http.limiter.default, rates=http.limiter.rates)
+        return {"interrupted": False}
+
+    monkeypatch.setattr("tools.ecoscan.__main__.run", fake_run)
+    with pytest.raises(SystemExit):  # there is no way to ask for a faster rate
+        main(["run", "npm", "--limit", "5", "--out", str(tmp_path), "--rate", "5"])
+    main(["run", "npm", "--limit", "5", "--out", str(tmp_path)])
+    assert seen["default"] == 4.0
+    assert seen["rates"] == {"data.jsdelivr.com": 1.6, "replicate.npmjs.com": 1.0}
 
 
 def test_summary_command_prints_counts_only(tmp_path, capsys):

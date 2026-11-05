@@ -7,11 +7,13 @@ import json
 from functools import partial
 from pathlib import Path
 
-from .net import MAX_RATE, Http, RateLimiter
+from .net import Http, RateLimiter
 from .run import REGISTRIES, run
 from .summary import FULL_RUN, export_findings, render, summarize
 
-# Per-host ceilings. jsDelivr asks heavy users to stay under 100 requests a minute or ask first.
+# Fixed on purpose: volunteers cannot make the scan faster or ruder. Requests per second, per
+# host. jsDelivr asks heavy users to stay under 100 requests a minute or ask first.
+DEFAULT_RATE = 4.0
 HOST_RATES = {"data.jsdelivr.com": 1.6, "replicate.npmjs.com": 1.0}
 # About one hour of changes (measured Nov 2026): lets uploads, CDNs and spam removal settle.
 SKIP_NEWEST = {"npm": 15_000, "pypi": 2_000}
@@ -28,8 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     go.add_argument("eco", choices=["npm", "pypi"])
     go.add_argument("--limit", type=int, required=True, help="how many recent packages")
     go.add_argument("--out", type=Path, required=True, help="output folder (gitignored)")
-    go.add_argument("--workers", type=int, default=6)
-    go.add_argument("--rate", type=float, default=4.0, help=f"requests/s per host, ≤ {MAX_RATE}")
+    go.add_argument("--workers", type=int, default=6, choices=range(1, 9), metavar="1-8")
     go.add_argument(
         "--skip-newest",
         type=int,
@@ -55,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "run":
-        limiter = RateLimiter(default=args.rate, rates=HOST_RATES)
+        limiter = RateLimiter(default=DEFAULT_RATE, rates=HOST_RATES)
         skip = SKIP_NEWEST[args.eco] if args.skip_newest is None else args.skip_newest
         session = run(
             args.eco,

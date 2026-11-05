@@ -158,7 +158,7 @@ positives. Every hit is checked by hand before any disclosure.
 
 ## Politeness
 
-- `User-Agent: agentprint-research/0.1 (security research)` on every request.
+- `User-Agent: agentprint-research/0.1 (+https://github.com/adighatakdas-cloud/agentprint)` on every request: the repo is the contact point.
 - At most 5 requests a second per host, shared by all worker threads (default 4; jsDelivr
   1.6; the npm feed 1).
 - `429` and `5xx` replies and network errors are retried with exponential backoff (1, 2, 4 …
