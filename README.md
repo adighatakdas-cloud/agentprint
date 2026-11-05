@@ -14,7 +14,20 @@
 uvx agentprint install   # coming soon: works once agentprint is published to PyPI
 ```
 
-Run it once. After that your agent (Claude Code, Codex, Cursor, Gemini CLI, Windsurf / Devin Desktop, OpenCode) checks the package publishes and `git push` commands it recognises before they run. If one would leak an API key or a private agent file, the agent is stopped, told exactly what to fix, and told what to ask you to do (like replacing a leaked key).
+Run it once. After that your agent checks the package publishes and `git push` commands it recognises before they run. If one would leak an API key or a private agent file, the agent is stopped, told exactly what to fix, and told what to ask you to do (like replacing a leaked key).
+
+| Agent | Hook (blocks a leaky publish/push) | MCP server | Instructions note |
+|---|---|---|---|
+| Claude Code | `~/.claude/settings.json` | `~/.claude.json` | `~/.claude/CLAUDE.md` |
+| Codex | `~/.codex/hooks.json` (trust it once in `/hooks`) | `~/.codex/config.toml` | `~/.codex/AGENTS.md` |
+| Cursor | `~/.cursor/hooks.json` | `~/.cursor/mcp.json` | `~/.cursor/rules/agentprint.mdc` |
+| Gemini CLI | `~/.gemini/settings.json` | `~/.gemini/settings.json` | `~/.gemini/GEMINI.md` |
+| Windsurf (Cascade) | `~/.codeium/windsurf/hooks.json` | `~/.codeium/windsurf/mcp_config.json` | `memories/global_rules.md` |
+| Devin Desktop / CLI | `~/.config/devin/config.json` | `~/.config/devin/mcp_config.json` | `~/.devin/rules/agentprint.md` |
+| OpenCode | plugin `~/.config/opencode/plugins/agentprint.js` | `opencode.json` | `AGENTS.md` (only if it won't hide your `~/.claude/CLAUDE.md`) |
+| GitHub Copilot (CLI and VS Code) | `~/.copilot/hooks/agentprint.json` | `~/.copilot/mcp-config.json` | `~/.copilot/copilot-instructions.md` |
+| Hermes Agent | `~/.hermes/config.yaml` (**off until you approve it** in `hermes chat`) | `~/.hermes/config.yaml` | none: its only global file is the agent's persona, `SOUL.md` |
+| Antigravity | `~/.gemini/config/hooks.json` | `~/.gemini/config/mcp_config.json` | `~/.gemini/config/rules/agentprint.md` |
 
 What `install` changes, for each agent it finds on your computer:
 
@@ -33,7 +46,8 @@ From source today: `uv run agentprint install --dry-run`.
 - **The hooks need macOS or Linux.** On Windows, only the MCP server and the instructions note work for now.
 - **Spotting a publish is best effort.** agentprint reads the command line the agent is about to run; it isn't a shell. It follows `cd`, `&&`, `bash -c`, `npm run release` (by reading `package.json`), workspaces and release tools like changesets and lerna. A publish hidden in a Makefile, a shell script file or a heredoc can slip past the hook; the instructions note still tells the agent to check first.
 - **"Could not check" is not "OK".** When agentprint can't tell what would be uploaded (a folder held in a variable, a `pnpm --filter` selection, nothing built in `dist/` yet, git not installed), it lets the command run and says "agentprint could not check this…" so you and the agent know.
-- **Cursor's own approval still applies.** agentprint only adds a "deny" when it finds a problem; it never approves commands for you. If you use Claude Code too, Cursor also runs Claude Code's hooks, so the check can run twice.
+- **Your agents' own approvals still apply.** agentprint only adds a "deny" when it finds a problem; it never approves commands for you. If you use Claude Code too, Cursor also runs Claude Code's hooks, so the check can run twice.
+- **Hermes asks before it runs any new hook.** agentprint never approves its own hook: start `hermes chat` once and accept it. Until then (and in gateway or cron runs that never ask) the Hermes hook is off; the MCP server still works. agentprint edits `config.yaml` with a parser that keeps your comments and layout.
 - **Codex's `config.toml`:** agentprint's MCP entry sits in a marked block at the top of the file. If Codex ever writes its own settings inside that block, uninstall keeps those lines and removes only agentprint's. Not yet tested against a live Codex.
 
 ## What it will do
