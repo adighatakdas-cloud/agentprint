@@ -129,13 +129,13 @@ def _readable(severity):
         "/home/u/.hermes/.env",
         None,
         "readable by other users",
-        "chmod 600 /home/u/.hermes/.env",
+        "chmod -R go-rwx /home/u/.hermes",
     )
 
 
 def test_readable_credential_store_keeps_chmod_fix_and_asks_human_about_rotation():
     result = advise(_readable(Severity.HIGH), Moment.scan)
-    assert result.fix_steps == ["chmod 600 /home/u/.hermes/.env"]
+    assert result.fix_steps == ["chmod -R go-rwx /home/u/.hermes"]
     [ask] = result.ask_human
     assert "rotate" in ask.lower()
 
