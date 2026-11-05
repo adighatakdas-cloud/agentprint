@@ -108,7 +108,12 @@ def _indent(text: str | None) -> int | str:
 
 def dump_json(data: dict, like: str | None) -> str:
     """JSON in the original file's indent style (2 spaces if new)."""
-    return json.dumps(data, indent=_indent(like), ensure_ascii=False) + "\n"
+    text = json.dumps(data, indent=_indent(like), ensure_ascii=False) + "\n"
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:  # a lone surrogate escape (\ud83d) can only be written escaped
+        text = json.dumps(data, indent=_indent(like), ensure_ascii=True) + "\n"
+    return text
 
 
 @dataclass(frozen=True)
@@ -220,7 +225,11 @@ def _ours(item: object) -> bool:
 def put_hook(config: dict, event: str, entry: dict, container: str = "hooks") -> None:
     """Add `entry` to config[container][event], replacing an older agentprint entry in place."""
     hooks = config.setdefault(container, {})
+    if not isinstance(hooks, dict):
+        raise Unsupported(f'its "{container}" value is not a JSON object')
     entries = hooks.setdefault(event, [])
+    if not isinstance(entries, list):
+        raise Unsupported(f'its "{container}.{event}" value is not a JSON list')
     ours = [i for i, item in enumerate(entries) if _ours(item)]
     if not ours:
         entries.append(entry)

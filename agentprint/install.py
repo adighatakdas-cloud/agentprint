@@ -117,6 +117,10 @@ def _read(path: Path) -> str | None:
         return _real(path).read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
+    except UnicodeDecodeError as exc:
+        raise Unsupported("it is not UTF-8 text") from exc
+    except OSError as exc:
+        raise Unsupported(f"it can't be read ({exc.strerror or type(exc).__name__})") from exc
 
 
 def _mkdirs(directory: Path) -> list[str]:
@@ -238,12 +242,14 @@ def install(
     changed = 0
     sections = [(CORE, "agentprint", _core_edits(home, agentprint))]
     sections += [(i.name, i.label, i.edits(home, env, launch)) for i in found]
-    for name, label, edits in sections:
-        echo(f"\n== {label} ==")
-        for path, group in _group(edits).items():
-            changed += _install_file(home, path, group, state, dry_run, echo, name)
-    if not dry_run and changed:
-        state.save()
+    try:
+        for name, label, edits in sections:
+            echo(f"\n== {label} ==")
+            for path, group in _group(edits).items():
+                changed += _install_file(home, path, group, state, dry_run, echo, name)
+    finally:  # whatever happens, uninstall must know what was changed
+        if not dry_run and changed:
+            state.save()
     echo("")
     if changed == 0:
         echo("Everything is already set up. Nothing changed.")
@@ -266,42 +272,54 @@ def _install_file(
     echo: Echo,
     agent: str,
 ) -> int:
-    old = _read(path)
-    new = old
-    whats = []
-    for edit in edits:
-        try:
+    whats = "; ".join(edit.what for edit in edits)
+    try:
+        old = _read(path)
+        new = old
+        for edit in edits:
             new = edit.apply(new)
-            whats.append(edit.what)
-        except Unsupported as exc:
-            echo(f"  ! {_shown(home, path)}: skipped ({edit.what}) because {exc}.")
-            echo("    Add this by hand if you want it:")
+        if new is not None:
+            new.encode("utf-8")  # catch unwritable text before anything is shown or written
+    except Exception as exc:  # noqa: BLE001 - one odd file must never stop the others
+        reason = exc if isinstance(exc, Unsupported) else f"of an unexpected {type(exc).__name__}"
+        echo(f"  ! {_shown(home, path)}: skipped ({whats}) because {reason}. File left as is.")
+        echo("    Add this by hand if you want it:")
+        for edit in edits:
             echo("\n".join("      " + line for line in _snippet(edit).splitlines()))
-    if new == old or new is None:
-        if whats:
-            echo(f"  {_shown(home, path)}: already set up ({'; '.join(whats)})")
         return 0
-    echo(f"  {_shown(home, path)}: {'; '.join(whats)}")
+    if new == old or new is None:
+        echo(f"  {_shown(home, path)}: already set up ({whats})")
+        return 0
+    echo(f"  {_shown(home, path)}: {whats}")
     for line in diff(old, new, _shown(home, path)):
         echo(line)
     if dry_run:
         return 1
+    try:
+        _write_with_backup(home, path, old, new, edits, state, agent)
+    except OSError as exc:
+        echo(f"  ! {_shown(home, path)}: could not write it ({exc}). File left as is.")
+        return 0
+    return 1
+
+
+def _write_with_backup(
+    home: Path, path: Path, old: str | None, new: str, edits: list[Edit], state: State, agent: str
+) -> None:
     key = str(path)
-    if key not in state.files:  # keep the backup from before the first install
-        entry: dict = {"created": old is None, "backup": None}
-        if old is not None:
-            backup = _backup_path(home, path)
-            state.dirs.extend(d for d in _mkdirs(backup.parent) if d not in state.dirs)
-            backup.write_bytes(_real(path).read_bytes())
-            backup.chmod(0o600)
-            _private(home / STATE_DIR / "backups")
-            entry["backup"] = str(backup)
-        state.files[key] = entry
-    state.files[key]["agent"] = agent
+    entry = state.files.get(key) or {"created": old is None, "backup": None}
+    if old is not None and not entry.get("backup") and not entry.get("created"):
+        backup = _backup_path(home, path)  # taken once, before the first change
+        state.dirs.extend(d for d in _mkdirs(backup.parent) if d not in state.dirs)
+        backup.write_bytes(_real(path).read_bytes())
+        backup.chmod(0o600)
+        _private(home / STATE_DIR / "backups")
+        entry["backup"] = str(backup)
     state.dirs.extend(d for d in _mkdirs(_real(path).parent) if d not in state.dirs)
     mode = next((e.mode for e in edits if isinstance(e, FileEdit)), None)
     _atomic_write(path, new, mode)
-    return 1
+    entry["agent"] = agent
+    state.files[key] = entry
 
 
 def _private(directory: Path) -> None:
@@ -401,7 +419,10 @@ def _uninstall_file(
 ) -> str:
     key = str(path)
     entry = state.files.get(key)
-    current = _read(path)
+    try:
+        current = _read(path)
+    except Unsupported:  # not UTF-8 or unreadable: agentprint never wrote it like that
+        return "same"
     if current is None or (entry is None and MARK not in current):
         if not dry_run:
             state.files.pop(key, None)

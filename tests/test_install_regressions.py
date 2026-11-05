@@ -89,6 +89,79 @@ def test_plain_round_trip_is_still_byte_identical(home, monkeypatch):
     assert snapshot(home) == before
 
 
+# ---- 3. odd files never crash install halfway; state is always saved -------------------------
+
+
+def _claude_home(tmp_path) -> Path:
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "settings.json").write_text("{}\n")
+    return home
+
+
+@pytest.mark.parametrize(
+    "gemini_settings",
+    [
+        b'{"theme": "caf\xe9"}\n',  # not UTF-8
+        b'{"hooks": []}\n',  # hooks is a list
+        b'{"hooks": {"BeforeTool": {}}}\n',  # event is an object
+        b'{"mcpServers": []}\n',  # servers is a list
+    ],
+)
+def test_odd_file_is_skipped_and_the_rest_installs(tmp_path, monkeypatch, gemini_settings):
+    home = _claude_home(tmp_path)
+    (home / ".gemini").mkdir()
+    settings = home / ".gemini" / "settings.json"
+    settings.write_bytes(gemini_settings)
+    _launch(monkeypatch, "/opt/agentprint")
+    out: list[str] = []
+    _install(home, echo=out.append)
+    assert settings.read_bytes() == gemini_settings  # left untouched
+    assert any("by hand" in line for line in out)
+    assert "agentprint-hook" in (home / ".claude" / "settings.json").read_text()
+    assert (home / ".agentprint" / "state.json").is_file()
+    _uninstall(home)
+    assert settings.read_bytes() == gemini_settings
+
+
+def test_lone_surrogate_escape_in_json_does_not_crash(tmp_path, monkeypatch):
+    home = _claude_home(tmp_path)
+    state = home / ".claude.json"
+    original = '{\n  "projects": {"/x": {"history": [{"display": "hi \\ud83d"}]}}\n}\n'
+    state.write_text(original)
+    _launch(monkeypatch, "/opt/agentprint")
+    _install(home, dry_run=True)
+    _install(home)
+    data = json.loads(state.read_text(encoding="utf-8"))
+    assert data["mcpServers"]["agentprint"]["command"] == "/opt/agentprint"
+    assert data["projects"]["/x"]["history"][0]["display"] == "hi \ud83d"
+    _uninstall(home)
+    assert state.read_text() == original
+
+
+def test_unexpected_error_in_one_file_still_saves_state(tmp_path, monkeypatch):
+    home = _claude_home(tmp_path)
+    (home / ".codex").mkdir()
+    _launch(monkeypatch, "/opt/agentprint")
+    real_write = install._atomic_write
+
+    def flaky(path, text, mode=None):
+        if path.name == "hooks.json":
+            raise PermissionError("disk said no")
+        real_write(path, text, mode)
+
+    monkeypatch.setattr(install, "_atomic_write", flaky)
+    out: list[str] = []
+    _install(home, echo=out.append)
+    assert any("hooks.json" in line and "could not" in line for line in out)
+    assert not (home / ".codex" / "hooks.json").exists()
+    assert "agentprint-hook" in (home / ".claude" / "settings.json").read_text()
+    assert (
+        str(home / ".claude" / "settings.json")
+        in json.loads((home / ".agentprint" / "state.json").read_text())["files"]
+    )
+
+
 # ---- 2. uninstall --agent NAME touches only that agent's files -------------------------------
 
 
