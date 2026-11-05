@@ -195,3 +195,18 @@ def test_gemini_cli_is_found_by_its_own_files(tmp_path, marker):
     target = home / ".gemini" / marker
     target.mkdir() if marker == "tmp" else target.write_text("{}\n")
     assert "Gemini CLI" in _install(home, dry_run=True)
+
+
+# ---- 7. help lists every agent ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize("command", ["guard", "install", "uninstall"])
+def test_help_lists_every_agent(command):
+    from typer.testing import CliRunner
+
+    from agentprint.cli import app
+    from agentprint.integrations import ALL_INTEGRATIONS
+
+    text = " ".join(CliRunner().invoke(app, [command, "--help"]).output.split())
+    for name in ALL_INTEGRATIONS:
+        assert name in text, (command, name)
