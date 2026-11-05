@@ -51,6 +51,12 @@ Every secret is shown redacted (first 4 characters + length). `scan` is fully of
 
 Cursor, Gemini CLI, Windsurf and OpenCode are next.
 
+## Help scan npm and PyPI
+
+We measure how often agent files (and keys inside them) ship in newly published packages,
+and tell maintainers privately first. Volunteers each scan a small shard: see
+[docs/VOLUNTEER_SCAN.md](docs/VOLUNTEER_SCAN.md).
+
 ## Tech
 
 Python 3.11+, [uv](https://docs.astral.sh/uv/), typer, rich, pytest, ruff.

@@ -4,7 +4,8 @@
 question: **how many recently published npm and PyPI packages ship files written by AI
 coding agents, and how many of those files contain strings shaped like API keys?**
 
-This page describes how the scan works. It holds no results.
+This page describes how the scan works. It holds no results. To run a shard of a scan
+round yourself, read [docs/VOLUNTEER_SCAN.md](../../docs/VOLUNTEER_SCAN.md).
 
 ## Ground rules
 
@@ -159,47 +160,76 @@ positives. Every hit is checked by hand before any disclosure.
 ## Politeness
 
 - `User-Agent: agentprint-research/0.1 (+https://github.com/adighatakdas-cloud/agentprint)` on every request: the repo is the contact point.
-- At most 5 requests a second per host, shared by all worker threads (default 4; jsDelivr
-  1.6; the npm feed 1).
+- Fixed request rates, shared by all worker threads: 4 a second per host, 1.6 for jsDelivr,
+  1 for the npm feed (never above 5). There is no option to raise them.
 - `429` and `5xx` replies and network errors are retried with exponential backoff (1, 2, 4 …
   seconds plus jitter, up to 5 retries). `Retry-After` (seconds or a date) is honored, and
   it pauses **every** thread's requests to that host, not just the one that got it.
 - Timeouts on every connection; keep-alive connections; gzip for JSON.
-- Size caps: 32 MB per JSON reply, 64 MB per download, 64 MB of Range reads per zip.
+- Size caps: 32 MB per JSON reply and 64 MB of Range reads per zip. By default, npm packages
+  that unpack to more than 150 MB are skipped (jsDelivr does not list them either) and PyPI
+  sdists over 10 MB are not downloaded: in the pilot these were a few percent of packages
+  but most of the bandwidth. `--npm-max-mb` and `--sdist-max-mb` raise them, up to 256 MB.
+  `--max-gb` stops a run at a download budget.
 - Archives are untrusted input. agentprint's reader caps entries per archive (100,000) and
   the unpacked size of a tar (2 GB), caps the content it reads, never follows links, and
   never writes to disk.
 
 ## Output
 
-Everything goes to the folder given with `--out` (keep it under the git-ignored `scans/`):
+Everything goes to the folder given with `--out` (keep it under the git-ignored `scans/`),
+split into two parts that are never mixed:
 
 | File | Contents |
 |---|---|
-| `targets-<eco>.jsonl` | the package list, fetched once; a resumed run reuses it |
-| `meta-<eco>.json` | what fetching the list cost |
-| `results-<eco>.jsonl` | one line per finished package: status, method, file count, candidate paths, redacted findings, bytes, requests, seconds |
-| `sessions-<eco>.jsonl` | start, end and package count of each run |
-| `summary.json` | counts only (no names, paths or values), plus a full-run projection |
-| `findings-<eco>.jsonl` | one line per redacted finding, for hand triage |
+| `public/summary.json` | **PUBLIC.** Counts only: no package names, versions, paths or values. Safe to post. |
+| `private/findings.jsonl` | **PRIVATE.** One line per key-shaped string: package, version, path, line, rule, redacted value. Sent privately, never posted. |
+| `private/targets-<eco>.jsonl` | the package list, fetched once; a resumed run reuses it |
+| `private/meta-<eco>.json` | the round (window, shard) and what fetching the list cost |
+| `private/results-<eco>.jsonl` | one line per finished package: status, method, file count, candidate paths, redacted findings, bytes, requests, seconds |
+| `private/sessions-<eco>.jsonl` | start, end and package count of each run |
+
+Statuses: `ok`; `partial` (one of a release's archives could not be read, the rest was);
+`skipped` (over a size cap); `gone` (removed from the registry); `error`.
 
 A run can be stopped at any time (Ctrl-C) and started again with the same command. It picks
-up where it stopped; a half-written last line is ignored.
+up where it stopped; a half-written last line is ignored. A folder belongs to one round and
+shard: resuming it with another `--window` or `--shard` is refused.
+
+## Rounds and shards
+
+A **round** is a fixed stretch of registry history, the same for everyone in it:
+
+- npm: `--window FROM:TO` is a range of replication-feed change numbers; the round holds every
+  live package whose latest change is in it. (A package changed again after `TO` moves out of
+  the window and is picked up by the next round.)
+- PyPI: `--window FROM:TO` is a range of changelog serials; the round holds the newest release
+  of every project released in it. The changelog never changes, so every volunteer gets the
+  same list.
+
+`--shard K/N` splits a round between N volunteers: a package belongs to shard K when the
+SHA-256 hash of its name (PEP 503-normalized for PyPI) modulo N is K - 1. The shards never
+overlap and together cover the whole round. `python -m tools.ecoscan window npm|pypi` prints
+current bounds for a new round, and `merge` adds the shards' public summaries together.
 
 ## Running it
 
 ```bash
-uv run python -m tools.ecoscan run npm  --limit 2000 --validate-pct 5 --out scans/ecoscan/pilot
-uv run python -m tools.ecoscan run pypi --limit 2000 --out scans/ecoscan/pilot
-uv run python -m tools.ecoscan summary --out scans/ecoscan/pilot --full 50000
+uv run python -m tools.ecoscan window npm --packages 50000      # organizer: pick the bounds
+uv run python -m tools.ecoscan run npm --window FROM:TO --shard 3/10 --out scans/round-1/npm-3
+uv run python -m tools.ecoscan summary --out scans/round-1/npm-3  # rebuild both outputs
+uv run python -m tools.ecoscan merge round-1-summaries/*.json --out round-1-total.json
 ```
 
-npm and PyPI use different hosts, so the two can run at the same time.
+The November 2026 pilot used `--limit 2000` (the newest packages, newest hour left out)
+instead of a window. npm and PyPI use different hosts, so the two can run at the same time.
 
 ## Known limits
 
 - npm: the `latest` tag is scanned, not every version, so a leak only in a prerelease is missed.
 - PyPI: one wheel per release; a leak in only one platform's wheel would be missed.
+- npm windows are read at scan time, so volunteers who start days apart can see slightly
+  different lists (packages republished in between move out of the window).
 - jsDelivr's lists are trusted for packages with no candidate path. The validation sample
   measures how far that trust holds.
 - Files bigger than the size caps are not downloaded; they are counted as `too_large`.
