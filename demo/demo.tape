@@ -39,19 +39,19 @@ Wait
 Sleep 4s
 Ctrl+L
 
-# 2. Before `npm publish`: the package would ship .claude/settings.local.json with a key in it.
+# 2. Wire agentprint into every agent it finds (dry run: shows the changes, writes nothing).
+Type "agentprint install --dry-run --home fake-home"
+Sleep 400ms
+Enter
+Wait
+Sleep 2500ms
+Ctrl+L
+
+# 3. Before `npm publish`: the package would ship .claude/settings.local.json with a key in it.
 #    This is the answer an AI agent gets (from the hook, the MCP tool or this command):
 #    the verdict first, then fix steps it can do itself, then what only the human can do.
 Type "agentprint pack my-app --format agent"
 Sleep 400ms
 Enter
 Wait
-Sleep 5s
-Ctrl+L
-
-# 3. Wire agentprint into every agent it finds (dry run: shows the changes, writes nothing).
-Type "agentprint install --dry-run --home fake-home"
-Sleep 400ms
-Enter
-Wait
-Sleep 3500ms
+Sleep 6s
