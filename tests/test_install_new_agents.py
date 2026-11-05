@@ -128,12 +128,20 @@ def test_hermes_flush_list_style_is_followed(tmp_path):
     assert text.startswith(flush) and "\n  - matcher: terminal\n    command: /" in text
 
 
-def test_hermes_without_config_yaml_gets_a_new_one(tmp_path):
+def test_hermes_without_config_yaml_is_left_alone_and_shown_the_snippet(tmp_path):
+    # A config.yaml holding only agentprint's keys might stop Hermes applying its defaults, so
+    # agentprint never creates one: it prints what to add and how to get Hermes to make it.
     home = tmp_path / "home"
-    (home / ".hermes").mkdir(parents=True)
-    _install(home, ["hermes"])
-    data = yaml.safe_load((home / ".hermes" / "config.yaml").read_text())
-    assert "agentprint" in data["mcp_servers"] and data["hooks"]["pre_tool_call"]
+    (home / ".hermes" / "skills").mkdir(parents=True)
+    before = snapshot(home)
+    out = _install(home, ["hermes"])
+    assert snapshot(home) == before  # nothing written anywhere, nothing recorded
+    assert "run Hermes once" in out and "agentprint install again" in out
+    snippet = yaml.safe_load(
+        "\n".join(line[6:] for line in out.splitlines() if line.startswith("      "))
+    )
+    assert snippet["mcp_servers"]["agentprint"]["command"] == AGENTPRINT
+    assert snippet["hooks"]["pre_tool_call"][0]["matcher"] == "terminal"
 
 
 def test_hermes_unreadable_yaml_is_skipped_with_a_snippet(tmp_path):
@@ -199,6 +207,7 @@ def test_dry_run_over_all_nine_agents_is_a_coherent_plan(tmp_path):
                    ".config/opencode", ".copilot", ".hermes", ".gemini/antigravity"):  # fmt: skip
         (home / folder).mkdir(parents=True)
     _write(home / ".gemini" / "settings.json", "{}\n")
+    _write(home / ".hermes" / "config.yaml", HERMES_CONFIG)  # Hermes writes it on first run
     before = snapshot(home)
     out = _install(home, dry_run=True)
     assert snapshot(home) == before

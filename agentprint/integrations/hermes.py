@@ -47,6 +47,13 @@ from .base import (
 )
 
 NAME = "hermes"
+# Ruling: never create config.yaml. It's unverified whether Hermes still applies its own
+# defaults when a config.yaml appears holding only agentprint's keys, and silently changing how
+# Hermes behaves is worse than a missing hook. Cost: one extra run of install after Hermes's.
+NO_CONFIG = (
+    "Hermes hasn't created its config.yaml yet: run Hermes once (or `hermes config`) so it "
+    "makes one, then run agentprint install again"
+)
 
 
 def config_dir(home: Path, env: Env) -> Path:
@@ -64,12 +71,14 @@ def edits(home: Path, env: Env, launch: Launch) -> list[Edit]:
             "hook: check publish/push before the terminal tool runs (needs your approval)",
             add=lambda c: put_hook(c, "pre_tool_call", entry),
             remove=lambda c: drop_hook(c, "pre_tool_call"),
+            missing=NO_CONFIG,
         ),
         YamlEdit(
             config,
             "MCP server",
             add=lambda c: put_key(c, ("mcp_servers", "agentprint"), server),
             remove=lambda c: drop_key(c, ("mcp_servers", "agentprint")),
+            missing=NO_CONFIG,
         ),
     ]
 

@@ -196,6 +196,7 @@ class YamlEdit:
     what: str
     add: Callable[[dict], None]
     remove: Callable[[dict], None]
+    missing: str = ""  # if set, never create the file: this is why (shown to the user)
 
     def _change(self, text: str | None, fn: Callable[[dict], None]) -> str | None:
         data, parser = _load_yaml(text)
@@ -208,6 +209,8 @@ class YamlEdit:
         return buffer.getvalue()
 
     def apply(self, old: str | None) -> str:
+        if old is None and self.missing:
+            raise Unsupported(self.missing)
         new = self._change(old, self.add)
         return old if new is None and old is not None else (new or "")
 

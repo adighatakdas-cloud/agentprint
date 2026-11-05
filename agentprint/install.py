@@ -305,14 +305,29 @@ def changes(old: str | None, new: str | None, edits: list[Edit]) -> list[str]:
     return ["    " + line for line in shown]
 
 
-def _snippet(edit: Edit) -> str:
-    if isinstance(edit, JsonEdit):
+def _snippet(edits: list[Edit]) -> str:
+    """What to add by hand to one file: every agentprint entry for it, in its format."""
+    if all(isinstance(e, JsonEdit | YamlEdit) for e in edits):
         sample: dict = {}
-        edit.add(sample)
-        return json.dumps(sample, indent=2)
-    if isinstance(edit, FileEdit):
-        return edit.content
-    return edit.apply(None)
+        for edit in edits:
+            edit.add(sample)
+        return _render(sample, edits)
+    parts = []
+    for edit in edits:
+        parts.append(edit.content if isinstance(edit, FileEdit) else edit.apply(None))
+    return "\n".join(parts)
+
+
+def _would_change(path: Path, edits: list[Edit]) -> bool:
+    """True if installing `edits` into `path` would change it (no output, nothing written)."""
+    try:
+        old = _read(path)
+        new = old
+        for edit in edits:
+            new = edit.apply(new)
+    except Exception:  # noqa: BLE001 - a file that can't be edited won't change
+        return False
+    return new != old
 
 
 # ---- install ----------------------------------------------------------------------------------
@@ -360,8 +375,15 @@ def install(
         )
     state = State.load(home)
     changed = 0
-    sections = [(CORE, "agentprint", _core_edits(home, agentprint))]
-    sections += [(i.name, i.label, i.edits(home, env, launch)) for i in found]
+    agents = [(i.name, i.label, i.edits(home, env, launch)) for i in found]
+    # The shared launcher only goes in when some agent file will really use it.
+    needed = any(
+        _would_change(path, group)
+        for _, _, edits in agents
+        for path, group in _group(edits).items()
+    )
+    core = [(CORE, "agentprint", _core_edits(home, agentprint))] if needed else []
+    sections = core + agents
     try:
         for name, label, edits in sections:
             echo(f"\n== {label} ==")
@@ -406,8 +428,7 @@ def _install_file(
         reason = exc if isinstance(exc, Unsupported) else f"of an unexpected {type(exc).__name__}"
         echo(f"  ! {_shown(home, path)}: skipped ({whats}) because {reason}. File left as is.")
         echo("    Add this by hand if you want it:")
-        for edit in edits:
-            echo("\n".join("      " + line for line in _snippet(edit).splitlines()))
+        echo("\n".join("      " + line for line in _snippet(edits).splitlines()))
         return 0
     if new == old or new is None:
         echo(f"  {_shown(home, path)}: already set up ({whats})")
