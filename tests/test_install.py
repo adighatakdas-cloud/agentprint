@@ -68,7 +68,8 @@ def test_dry_run_changes_nothing_but_shows_diffs(home):
     result = run("install", "--home", str(home), "--dry-run")
     assert result.exit_code == 0, result.output
     assert snapshot(home) == before
-    assert "+++" in result.output and "dry run" in result.output.lower()
+    added = [line.strip() for line in result.output.splitlines() if line.strip().startswith("+")]
+    assert any("agentprint" in line for line in added) and "dry run" in result.output.lower()
 
 
 def test_install_wires_every_detected_agent(home):

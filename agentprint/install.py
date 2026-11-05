@@ -168,20 +168,57 @@ def _redact_line(line: str) -> str:
     return clean(line)
 
 
-def diff(old: str | None, new: str | None, label: str) -> list[str]:
-    lines = list(
-        difflib.unified_diff(
-            (old or "").splitlines(),
-            (new or "").splitlines(),
-            fromfile=f"a/{label}" if old is not None else "/dev/null",
-            tofile=f"b/{label}" if new is not None else "/dev/null",
-            n=2,
-            lineterm="",
+def _json_delta(before: object, after: object) -> tuple[object, object]:
+    """(what `after` adds, what it removes) relative to `before`; None when nothing."""
+    if isinstance(before, dict) and isinstance(after, dict):
+        added, removed = {}, {}
+        for key in [*after, *(k for k in before if k not in after)]:  # file order, stable
+            if key not in before:
+                added[key] = after[key]
+            elif key not in after:
+                removed[key] = before[key]
+            else:
+                plus, minus = _json_delta(before[key], after[key])
+                if plus is not None:
+                    added[key] = plus
+                if minus is not None:
+                    removed[key] = minus
+        return added or None, removed or None
+    if isinstance(before, list) and isinstance(after, list):
+        added = [item for item in after if item not in before]
+        removed = [item for item in before if item not in after]
+        return added or None, removed or None
+    return (None, None) if before == after else (after, before)
+
+
+def changes(old: str | None, new: str | None, edits: list[Edit]) -> list[str]:
+    """The lines agentprint adds (+) or removes (-), and nothing else from the file.
+
+    A JSON file is compared as data, so re-indenting a compact file doesn't print every line
+    of it, and none of the user's other values (database URLs, tokens) are ever shown."""
+    if any(isinstance(e, JsonEdit) for e in edits):
+        try:
+            before, after = json.loads(old or "{}"), json.loads(new or "{}")
+        except ValueError:
+            return ["    (contents not shown)"]
+        added, removed = _json_delta(before, after)
+        lines = (
+            [f"-{line}" for line in json.dumps(removed, indent=2).splitlines()] if removed else []
         )
-    )
+        lines += [f"+{line}" for line in json.dumps(added, indent=2).splitlines()] if added else []
+        if old is not None and new is not None and added and not removed:
+            lines.append(" (the rest of the file keeps its values; JSON may be re-indented)")
+    else:
+        lines = [
+            line
+            for line in difflib.unified_diff(
+                (old or "").splitlines(), (new or "").splitlines(), n=0, lineterm=""
+            )
+            if line[:1] in "+-" and not line.startswith(("+++", "---"))
+        ]
     shown = [_redact_line(line) for line in lines[:MAX_DIFF_LINES]]
     if len(lines) > MAX_DIFF_LINES:
-        shown.append(f"... ({len(lines) - MAX_DIFF_LINES} more diff lines)")
+        shown.append(f"... ({len(lines) - MAX_DIFF_LINES} more lines)")
     return ["    " + line for line in shown]
 
 
@@ -291,7 +328,7 @@ def _install_file(
         echo(f"  {_shown(home, path)}: already set up ({whats})")
         return 0
     echo(f"  {_shown(home, path)}: {whats}")
-    for line in diff(old, new, _shown(home, path)):
+    for line in changes(old, new, edits):
         echo(line)
     if dry_run:
         return 1
@@ -446,7 +483,7 @@ def _uninstall_file(
     elif backup is not None and _same(restored, backup, edits):
         restored, how = backup, "restored"
     echo(f"  {_shown(home, path)}: {'removed' if restored is None else how}")
-    for line in diff(current, restored, _shown(home, path)):
+    for line in changes(current, restored, edits):
         echo(line)
     if dry_run:
         return how

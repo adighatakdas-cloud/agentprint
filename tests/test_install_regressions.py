@@ -183,3 +183,32 @@ def test_uninstall_one_agent_leaves_the_others(tmp_path, monkeypatch):
     _uninstall(home, ["claude-code"])  # the last agent: launcher and state go too
     assert not (home / ".agentprint").exists()
     assert (home / ".claude" / "settings.json").read_text() == "{}\n"
+
+
+# ---- 4. the diff shows agentprint's own lines only, never the user's other values -----------
+
+PRIVATE = ("FAKEpassw0rd", "lin_api_FAKE", "db.internal", "pg-mcp")
+
+
+def test_diff_never_shows_other_values_from_the_users_config(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".cursor").mkdir(parents=True)
+    env = {
+        "DATABASE_URL": "postgres://admin:FAKEpassw0rd@db.internal:5432/prod",
+        "LINEAR_TOKEN": "lin_api_FAKEFAKEFAKEFAKE",
+    }
+    compact = json.dumps({"mcpServers": {"db": {"command": "pg-mcp", "env": env}}}) + "\n"
+    (home / ".cursor" / "mcp.json").write_text(compact)  # compact: re-indenting touches every line
+    (home / ".cursor" / "rules.md").write_text("x")
+    _launch(monkeypatch, "/opt/agentprint")
+    for run in (
+        lambda out: _install(home, ["cursor"], dry_run=True, echo=out.append),
+        lambda out: _install(home, ["cursor"], echo=out.append),
+        lambda out: _uninstall(home, ["cursor"], echo=out.append),
+    ):
+        out: list[str] = []
+        run(out)
+        text = "\n".join(out)
+        assert not any(secret in text for secret in PRIVATE), text
+        assert '"agentprint"' in text  # agentprint's own entry is still shown
+    assert (home / ".cursor" / "mcp.json").read_text() == compact
