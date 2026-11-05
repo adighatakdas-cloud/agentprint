@@ -105,6 +105,12 @@ def test_copilot_package_rules():
     assert matches("package/.copilot/providers.json") == ["copilot"]
     assert matches("package/.copilot/session-store.db") == ["copilot"]
     assert matches("x/workspaceStorage/ab/chatSessions/s.jsonl") == ["copilot"]
+    assert matches("x/workspaceStorage/ab/chatEditingSessions/e/state.json") == ["copilot"]
+    assert matches("User/globalStorage/emptyWindowChatSessions/s.json") == ["copilot"]
+    # A chat app's own source is not VS Code chat history.
+    assert matches("package/src/chatSessions/index.ts") == []
+    assert matches("package/lib/chatEditingSessions/store.js") == []
+    assert matches("package/src/transferredChatSessions/a.ts") == []
     assert matches("package/.vscode/mcp.json") == ["copilot"]
     assert matches("package/.github/copilot/settings.json") == []
     assert matches("package/.github/copilot-instructions.md") == []

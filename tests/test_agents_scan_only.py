@@ -42,7 +42,11 @@ def _agents_matching(name):
         ("package/.pi/mcp.json", "pi"),
         ("package/.openclaw/.env", "openclaw"),
         ("package/.clawdbot/credentials/oauth.json", "openclaw"),
-        ("package/warp.sqlite", "warp"),
+        (
+            "x/Library/Group Containers/2BBY89MBSN.dev.warp/Library/Application Support/"
+            "dev.warp.Warp-Stable/warp.sqlite",
+            "warp",
+        ),
         ("package/.roo/mcp.json", "roo-code"),
         ("package/roo-code-settings.json", "roo-code"),
         ("package/.augment/session.json", "augment"),
@@ -77,6 +81,11 @@ def test_each_rule_matches_its_file_for_one_agent(member, agent):
         "package/docs/aider.md",
         "package/.env.example",
         "package/src/warp.ts",
+        # Look-alike names in ordinary source or test data.
+        "package/warp.sqlite",
+        "package/test/fixtures/warp.sqlite",
+        "package/src/kilo.db",
+        "package/data/kilo.db",
     ],
 )
 def test_instruction_files_and_look_alikes_are_not_flagged(member):

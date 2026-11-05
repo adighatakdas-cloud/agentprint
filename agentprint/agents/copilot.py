@@ -125,9 +125,10 @@ class Copilot:
         ),
         PackageRule(
             NAME,
+            # Only where VS Code keeps them, so a chat app's own src/chatSessions/ is fine.
             re.compile(
-                r"(^|/)(chatSessions|chatEditingSessions|emptyWindowChatSessions"
-                r"|transferredChatSessions)/"
+                r"(^|/)workspaceStorage/[^/]+/(chatSessions|chatEditingSessions)/"
+                r"|(^|/)globalStorage/(emptyWindowChatSessions|transferredChatSessions)/"
             ),
             Severity.HIGH,
             "VS Code chat sessions (Copilot chat history and edit snapshots).",

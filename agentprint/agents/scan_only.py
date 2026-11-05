@@ -106,7 +106,7 @@ SCAN_ONLY_AGENTS: tuple[ScanOnlyAgent, ...] = (
         "kilo",
         [
             (
-                r"(^|/)\.local/share/kilo/|(^|/)kilo\.db$",
+                r"(^|/)\.local/share/kilo/",  # kilo.db, auth.json; not any file named kilo.db
                 H,
                 "Kilo Code session database, snapshots or auth.json.",
             ),
@@ -208,7 +208,8 @@ SCAN_ONLY_AGENTS: tuple[ScanOnlyAgent, ...] = (
         "warp",
         [
             (
-                r"(^|/)warp\.sqlite(-wal|-shm)?$",
+                # Only inside Warp's own data folder (dev.warp.Warp-Stable, -Preview, ...).
+                r"(^|/)dev\.warp\.Warp-[^/]+/warp\.sqlite(-wal|-shm)?$",
                 H,
                 "Warp terminal database: commands, terminal output and AI conversations.",
             ),
