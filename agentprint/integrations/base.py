@@ -343,7 +343,7 @@ def _owned(text: str) -> bool:
 
 
 def _ours(item: object) -> bool:
-    return HOOK_MARK in json.dumps(item)
+    return HOOK_MARK in json.dumps(item, default=str)  # YAML can hold dates and the like
 
 
 def put_hook(config: dict, event: str, entry: dict, container: str = "hooks") -> None:

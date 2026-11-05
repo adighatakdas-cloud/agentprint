@@ -512,8 +512,15 @@ def uninstall(
     changed = 0
     exact = True
     for path, group in grouped.items():
-        result = _uninstall_file(home, path, group, state, dry_run, echo)
-        changed += result != "same"
+        try:
+            result = _uninstall_file(home, path, group, state, dry_run, echo)
+        except Exception as exc:  # noqa: BLE001 - one bad file must not stop the others
+            echo(
+                f"  ! {_shown(home, path)}: could not undo it ({type(exc).__name__}); left as "
+                "is. Run agentprint uninstall again later."
+            )
+            result = "kept"
+        changed += result not in {"same", "kept"}
         exact = exact and result in {"same", "restored", "removed"}
     if dry_run:
         echo(f"\n{changed} file(s) would change. Run without --dry-run to apply.")
