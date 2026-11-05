@@ -117,19 +117,20 @@ def _read_tar(fileobj: IO[bytes], out: _Collector) -> None:
 
 def read_archive_bytes(data: bytes, label: str, want: Want) -> PackageListing:
     """Read a downloaded .tgz/.tar.gz/.whl/.zip held in memory. `label` names its type."""
-    return _read_archive(io.BytesIO(data), label, want)
+    return read_archive_fileobj(io.BytesIO(data), label, want)
 
 
 def read_archive(path: Path, want: Want) -> PackageListing:
     """Read a .tgz/.tar.gz/.whl/.zip in memory. Nothing is extracted to disk."""
     try:
         with path.open("rb") as fh:
-            return _read_archive(fh, path.name, want)
+            return read_archive_fileobj(fh, path.name, want)
     except OSError as exc:
         raise PackError(f"cannot read archive {path}: {exc}") from exc
 
 
-def _read_archive(fileobj: IO[bytes], label: str, want: Want) -> PackageListing:
+def read_archive_fileobj(fileobj: IO[bytes], label: str, want: Want) -> PackageListing:
+    """Read any seekable binary file object. `label` (a file name) decides zip or tar."""
     out = _Collector(label, want)
     try:
         if label.endswith((".whl", ".zip")):
