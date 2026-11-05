@@ -6,7 +6,7 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
-authors = [{ name = "adighatakdas-cloud" }]
+authors = [{ name = "adighatakdas-cloud", email = "adi65das@gmail.com" }]
 keywords = ["security", "secrets", "ai-agents", "claude-code", "codex", "npm", "pypi"]
 dependencies = [
     "rich>=15.0.0",
