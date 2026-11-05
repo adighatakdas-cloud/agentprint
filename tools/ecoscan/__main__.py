@@ -37,6 +37,13 @@ def main(argv: list[str] | None = None) -> int:
         help="leave out this many newest feed entries (default: about one hour's worth)",
     )
     go.add_argument(
+        "--redo",
+        action="append",
+        default=[],
+        choices=["error", "skipped", "gone"],
+        help="scan again packages whose last result had this status (repeatable)",
+    )
+    go.add_argument(
         "--validate-pct",
         type=int,
         default=0,
@@ -57,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
             Http(limiter),
             workers=args.workers,
             validate_pct=args.validate_pct,
+            redo=set(args.redo),
             recent=partial(REGISTRIES[args.eco].recent, skip_newest=skip),
         )
         return 130 if session["interrupted"] else 0

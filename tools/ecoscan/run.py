@@ -93,15 +93,21 @@ def run(
     validate_pct: int = 0,
     recent: Callable | None = None,
     scan: Callable | None = None,
+    redo: set[str] = frozenset(),
     log: Callable[[str], None] = print,
 ) -> dict:
-    """Scan up to `n` recent packages. Safe to stop with Ctrl-C and run again to continue."""
+    """Scan up to `n` recent packages. Safe to stop with Ctrl-C and run again to continue.
+
+    `redo`: scan again the packages whose newest result has one of these statuses (for
+    example after a fix). The new line is appended; readers keep the newest line per package.
+    """
     out.mkdir(parents=True, exist_ok=True)
     recent = recent or REGISTRIES[eco].recent
     scan = scan or REGISTRIES[eco].scan
     targets = _targets(eco, out, n, http, recent, log)
     results_path = out / f"results-{eco}.jsonl"
-    done = {row.get("key") for row in read_jsonl(results_path)}
+    newest = {row.get("key"): row.get("status") for row in read_jsonl(results_path)}
+    done = {k for k, status in newest.items() if status not in redo}
     todo = [t for t in targets if key(t) not in done]
     log(f"{eco}: {len(targets)} targets, {len(done & {key(t) for t in targets})} already done")
 

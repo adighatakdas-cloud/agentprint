@@ -85,6 +85,27 @@ def test_half_written_result_line_is_ignored_on_resume(tmp_path):
     assert len(seen) == 1
 
 
+def test_redo_rescans_only_packages_with_the_given_status(tmp_path):
+    enum = Enumerator(["p0", "p1", "p2"])
+
+    def first(http, target, tally, *, validate=False):
+        rec = _ok_scan(http, target, tally)
+        if target["name"] == "p1":
+            rec["status"] = "skipped"
+        return rec
+
+    run("npm", tmp_path, 3, None, workers=1, recent=enum, scan=first, log=lambda m: None)
+    seen = []
+
+    def again(http, target, tally, *, validate=False):
+        seen.append(target["name"])
+        return _ok_scan(http, target, tally)
+
+    run("npm", tmp_path, 3, None, recent=enum, scan=again, redo={"skipped"}, log=lambda m: None)
+    assert seen == ["p1"]
+    assert summarize(tmp_path)["npm"]["status"] == {"ok": 3}  # the newest line per package wins
+
+
 def test_scan_errors_are_recorded_not_raised(tmp_path):
     def broken(http, target, tally, *, validate=False):
         raise KeyError("dist")
