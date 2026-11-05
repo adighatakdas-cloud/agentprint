@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from collections.abc import Collection
 from enum import StrEnum
 from pathlib import Path
@@ -11,10 +13,11 @@ import typer
 from rich.console import Console
 
 from . import __version__
+from .advice import Moment
 from .checks.ap006_package_leak import check_listing, is_agent_file
 from .models import Finding
 from .pack import PackError, collect
-from .report import FailOn, exit_code, print_table, to_json
+from .report import FailOn, exit_code, print_table, to_agent, to_json
 from .sarif import to_sarif
 from .scanner import scan as run_scan
 
@@ -30,6 +33,7 @@ class Format(StrEnum):
     table = "table"
     json = "json"
     sarif = "sarif"
+    agent = "agent"  # compact text for an AI coding agent: verdict first, fix steps, ask_human
 
 
 FormatOpt = Annotated[Format, typer.Option("--format", "-f", help="Output format.")]
@@ -55,12 +59,19 @@ def main(
 
 
 def _emit(
-    findings: list[Finding], fmt: Format, package: Path | None = None, labels: Collection[str] = ()
+    findings: list[Finding],
+    fmt: Format,
+    fail_on: FailOn,
+    moment: Moment,
+    package: Path | None = None,
+    labels: Collection[str] = (),
 ) -> None:
     if fmt is Format.json:
-        typer.echo(to_json(findings))
+        typer.echo(to_json(findings, moment))
     elif fmt is Format.sarif:
         typer.echo(to_sarif(findings, package=package, labels=labels))
+    elif fmt is Format.agent:
+        typer.echo(to_agent(findings, fail_on, moment))
     else:
         print_table(findings, Console())
 
@@ -84,7 +95,7 @@ def scan(
             typer.secho(f"error: {target} does not exist or is not a directory", err=True, fg="red")
             raise typer.Exit(2)
     findings = run_scan(home_dir, path)
-    _emit(findings, fmt)
+    _emit(findings, fmt, fail_on, Moment.scan)
     raise typer.Exit(exit_code(findings, fail_on))
 
 
@@ -109,5 +120,104 @@ def pack(
         typer.secho(f"error: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(2) from exc
     findings = [finding for listing in listings for finding in check_listing(listing)]
-    _emit(findings, fmt, package=target, labels=[listing.label for listing in listings])
+    labels = [listing.label for listing in listings]
+    _emit(findings, fmt, fail_on, Moment.publish, package=target, labels=labels)
     raise typer.Exit(exit_code(findings, fail_on))
+
+
+@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+def guard(
+    agent: Annotated[
+        str,
+        typer.Option(
+            help="Agent calling the hook: claude-code, codex, cursor, gemini, windsurf, "
+            "devin or opencode."
+        ),
+    ] = "claude-code",
+    fail_on: FailOnOpt = FailOn.high,
+) -> None:
+    """Hook entry point for AI agents: stop a publish or git push that would leak.
+
+    Reads the agent's hook JSON on stdin and answers in that agent's own format. Only package
+    publishes and `git push` are checked; everything else passes straight through. If
+    agentprint itself fails, the command is allowed. `agentprint install` sets this up.
+    """
+    from .hook import run_hook  # imported here so other commands stay fast to start
+
+    reply = run_hook(agent, sys.stdin.read(), os.environ, fail_on)
+    if reply.stdout:
+        typer.echo(reply.stdout)
+    if reply.stderr:
+        typer.echo(reply.stderr, err=True)
+    raise typer.Exit(reply.exit_code)
+
+
+@app.command()
+def mcp() -> None:
+    """Run agentprint as an MCP server on stdin/stdout, for AI agents.
+
+    Tools: check_package, check_push, scan_secrets, explain_finding. `agentprint install`
+    registers it with your agents.
+    """
+    from .mcp_server import build_server
+
+    build_server().run()
+
+
+AgentsOpt = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--agent",
+        help="Only this agent (repeatable): claude-code, codex, cursor, gemini, windsurf, "
+        "devin, opencode. Default: every agent found.",
+    ),
+]
+DryRunOpt = Annotated[bool, typer.Option("--dry-run", help="Show the changes, write nothing.")]
+SetupHomeOpt = Annotated[
+    Path | None,
+    typer.Option(help="Home folder whose agent config to change. Default: yours."),
+]
+
+
+def _setup_args(agents: list[str] | None, home: Path | None) -> tuple[Path, dict[str, str]]:
+    from .integrations import ALL_INTEGRATIONS
+
+    unknown = [name for name in agents or [] if name not in ALL_INTEGRATIONS]
+    if unknown:
+        typer.secho(
+            f"error: unknown agent {', '.join(unknown)}. Known: {', '.join(ALL_INTEGRATIONS)}",
+            err=True,
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(2)
+    if home is None:
+        return Path.home(), dict(os.environ)  # honour CODEX_HOME, CLAUDE_CONFIG_DIR, ...
+    if not home.is_dir():
+        typer.secho(f"error: {home} is not a directory", err=True, fg=typer.colors.RED)
+        raise typer.Exit(2)
+    return home, {}
+
+
+@app.command()
+def install(agent: AgentsOpt = None, dry_run: DryRunOpt = False, home: SetupHomeOpt = None) -> None:
+    """Set agentprint up inside every AI coding agent on this computer.
+
+    For each agent found it adds a hook that checks publishes and pushes (where the agent
+    supports hooks), the agentprint MCP server, and a short note in the agent's global rules.
+    Every change is shown as a diff and backed up first. `agentprint uninstall` undoes it.
+    """
+    from .install import install as run_install
+
+    home_dir, env = _setup_args(agent, home)
+    run_install(home_dir, env, agent, dry_run, typer.echo)
+
+
+@app.command()
+def uninstall(
+    agent: AgentsOpt = None, dry_run: DryRunOpt = False, home: SetupHomeOpt = None
+) -> None:
+    """Remove everything `agentprint install` added, restoring the files exactly."""
+    from .install import uninstall as run_uninstall
+
+    home_dir, env = _setup_args(agent, home)
+    run_uninstall(home_dir, env, agent, dry_run, typer.echo)
