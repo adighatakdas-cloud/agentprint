@@ -4,6 +4,8 @@ import tarfile
 import xmlrpc.client
 import zipfile
 
+import pytest
+
 from agentprint.secrets import redact
 from tests import fakes
 from tools.ecoscan import npm, pypi
@@ -177,6 +179,23 @@ def test_npm_recent_can_skip_the_newest_changes():
     # The very newest versions are often not on jsDelivr yet, or get removed within minutes.
     got = npm.recent(_http(_feed_web()), 3, Tally(), window=4, skip_newest=10)
     assert [t["name"] for t in got] == ["p20", "p19", "p17"]
+
+
+def test_npm_oversized_tarball_keeps_the_jsdelivr_names(monkeypatch):
+    monkeypatch.setattr(npm, "MAX_TARBALL_BYTES", 10)
+    files = {"index.js": b"1", ".claude/settings.local.json": LEAKY}
+    rec = npm.scan(_http(_npm_web(files, files)), {"name": "demo"}, Tally())
+    assert (rec["status"], rec["too_large"]) == ("ok", ["tarball"])
+    assert [c["path"] for c in rec["candidates"]] == [".claude/settings.local.json"]
+    assert rec["not_scanned"] == [".claude/settings.local.json"]
+    assert rec["files"] == 2
+
+
+def test_npm_oversized_tarball_without_a_list_is_skipped(monkeypatch):
+    monkeypatch.setattr(npm, "MAX_TARBALL_BYTES", 10)
+    files = {"index.js": b"1"}
+    with pytest.raises(TooLarge):
+        npm.scan(_http(_npm_web(files, files, jsdelivr_status=403)), {"name": "demo"}, Tally())
 
 
 def test_npm_removed_tarball_is_gone_not_an_error():

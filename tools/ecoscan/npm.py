@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from agentprint.pack import read_archive_bytes
+from agentprint.pack import PackageListing, read_archive_bytes
 
 from .detect import examine, is_candidate, new_record
-from .net import Http, HttpError, Tally, json_of
+from .net import Http, HttpError, Tally, TooLarge, json_of
 
 REPLICATE = "https://replicate.npmjs.com/registry"
 REGISTRY = "https://registry.npmjs.org"
@@ -90,12 +90,21 @@ def scan(http: Http, target: dict, tally: Tally, *, validate: bool = False) -> d
 
     if listed is not None:
         rec["method"] = "jsdelivr+tarball"
-    resp = http.get(
-        tarball,
-        headers={"Accept-Encoding": "identity"},
-        max_bytes=MAX_TARBALL_BYTES,
-        tally=tally,
-    )
+    try:
+        resp = http.get(
+            tarball,
+            headers={"Accept-Encoding": "identity"},
+            max_bytes=MAX_TARBALL_BYTES,
+            tally=tally,
+        )
+    except TooLarge:
+        if listed is None:
+            raise
+        # Keep what jsDelivr's list shows; the candidates' contents stay unscanned.
+        rec["too_large"].append("tarball")
+        unread = [p for p in listed if is_candidate(p)]
+        examine(rec, PackageListing("package.tgz", listed, {}, unread), "tarball", strip_root=False)
+        return rec
     if resp.status == 404:  # npm removes spam and malware tarballs; the manifest lags behind
         rec.update(status="gone", reason="tarball removed")
         return rec
