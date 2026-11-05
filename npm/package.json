@@ -1,0 +1,40 @@
+{
+  "name": "agentprint",
+  "version": "0.1.0-dev.0",
+  "description": "Find the keys and agent files AI coding agents leave behind, before they ship in your package. Runs the agentprint Python CLI through uvx or pipx.",
+  "keywords": [
+    "security",
+    "secrets",
+    "ai-agents",
+    "claude-code",
+    "codex",
+    "prepublish",
+    "npm-pack"
+  ],
+  "homepage": "https://github.com/adighatakdas-cloud/agentprint#readme",
+  "bugs": {
+    "url": "https://github.com/adighatakdas-cloud/agentprint/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adighatakdas-cloud/agentprint.git",
+    "directory": "npm"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "adighatakdas-cloud",
+    "email": "adi65das@gmail.com"
+  },
+  "bin": {
+    "agentprint": "bin/agentprint.js"
+  },
+  "files": [
+    "bin/agentprint.js"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

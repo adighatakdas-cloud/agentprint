@@ -23,3 +23,8 @@ jobs:
       - run: uv run pytest -m "integration or not integration"  # unit + integration
       - name: agentprint checks its own package
         run: uv run agentprint pack . --fail-on high
+      - name: npm wrapper tests
+        working-directory: npm
+        run: npm test
+      - name: agentprint checks the npm wrapper package
+        run: uv run agentprint pack npm --fail-on high
