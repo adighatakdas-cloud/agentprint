@@ -96,18 +96,31 @@ repos:
 
 | ID | What it finds | Severity |
 |---|---|---|
-| AP001 | API key in an agent's history, transcript, paste cache or edit backups | high |
-| AP002 | API key in an agent settings / allowlist / MCP config file | critical |
-| AP006 | Agent file (e.g. `.claude/settings.local.json`) would ship in your npm/PyPI package | high/medium |
+| AP001 | API key in an agent's history, transcript, paste cache, edit backups or chat database | high |
+| AP002 | API key in an agent settings / allowlist file | critical |
+| AP003 | Over-broad permission: `Bash(*)`, `bypassPermissions`, Codex `never` + `danger-full-access`, Cursor `Shell(*)` / `approvalMode: unrestricted`, Gemini bare `run_shell_command` / trusted MCP server, Windsurf allow-listed shell, OpenCode `"allow"` | medium |
+| AP004 | Agent hook (or Codex `notify`) runs a network command: curl, wget, nc, `\| sh`, Invoke-WebRequest, a URL | medium |
+| AP005 | API key written inline in an MCP server entry (env, headers, args, URL); replaces AP002 for that key | high |
+| AP006 | Agent file (e.g. `.claude/settings.local.json`) would ship in your npm/PyPI package | high/medium/low |
+| AP007 | Personal agent file (`.claude/settings.local.json`, `CLAUDE.local.md`, `.gemini/.env`) in a git repo but not gitignored, or already committed | low |
+
+Every finding carries a fix written for the AI agent that reads it: which file, which setting to change, which line to add to `.gitignore`, and what to ask the human (rotating a key).
 
 ## Supported agents
 
-| Agent | Verified |
-|---|---|
-| Claude Code | 2026-10-08, macOS |
-| Codex | 2026-10-08, macOS |
+| Agent | What is read | Verified |
+|---|---|---|
+| Claude Code | `~/.claude/` history, transcripts, paste cache, file backups; settings; `~/.claude.json` and `.mcp.json` MCP servers | 2026-10-08, macOS |
+| Codex | `~/.codex/` history, sessions, attachments; `config.toml` (+ project), `hooks.json` | 2026-10-08, macOS |
+| Cursor | `~/.cursor/` agent transcripts, `mcp.json`, `cli-config.json`, `hooks.json`; IDE chat history in `state.vscdb` (SQLite) | 2026-11-05, macOS |
+| Gemini CLI | `~/.gemini/settings.json` (+ project), chats and logs in `~/.gemini/tmp/` | 2026-11-05, macOS (folders only; file names from docs) |
+| Windsurf | `~/.codeium/windsurf/` `mcp_config.json`, `hooks.json`, memories; command allow list in the editor's `settings.json` | 2026-11-05, macOS (folders only; file names from docs) |
+| OpenCode | `opencode.json(c)` (global + project); session database `opencode.db` (SQLite) and storage | 2026-11-05, macOS |
 
-Cursor, Gemini CLI, Windsurf and OpenCode are next.
+Login stores where a key is expected (`~/.codex/auth.json`, `~/.gemini/oauth_creds.json` and `.env`, OpenCode `auth.json`) are never read.
+SQLite chat databases are opened read-only, and at most 64 MB of text is read from each.
+
+Not covered yet: Windsurf Cascade conversations (binary `.pb` files) and its new Devin Desktop paths; Cursor's IDE auto-run mode (stored inside `state.vscdb`); OpenCode plugins (JavaScript); Google Antigravity (`~/.gemini/antigravity/`).
 
 ## Tech
 

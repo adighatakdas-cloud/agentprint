@@ -23,7 +23,7 @@ def test_scan_json_end_to_end(fake_home, fake_project):
     )
     assert result.exit_code == 1
     data = json.loads(result.output)
-    assert data["summary"] == {"critical": 3, "high": 5, "medium": 0, "low": 0}
+    assert data["summary"] == {"critical": 2, "high": 6, "medium": 0, "low": 0}
 
 
 def test_scan_never_prints_a_full_key(fake_home, fake_project):
