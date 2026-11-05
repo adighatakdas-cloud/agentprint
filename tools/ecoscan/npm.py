@@ -37,30 +37,54 @@ def recent(
     `skip_newest` leaves out the newest changes (about 15,000 an hour in Nov 2026): minutes-old
     versions are often not on jsDelivr yet, and spam is often removed within the hour.
     """
-    root = json_of(http.get(f"{REPLICATE}/", tally=tally, max_bytes=MAX_JSON_BYTES), "npm root")
-    hi = int(root["update_seq"]) - skip_newest
+    hi = head(http, tally) - skip_newest
     window = window or max(4 * n, 1000)
     found: dict[str, int] = {}
     while len(found) < n and hi > 0:
         lo = max(0, hi - window)
-        since = lo
-        while since < hi:
-            url = f"{REPLICATE}/_changes?since={since}&limit={PAGE}"
-            page = json_of(http.get(url, tally=tally, max_bytes=MAX_JSON_BYTES), "npm changes")
-            rows = page.get("results") or []
-            for row in rows:
-                seq = int(row["seq"])
-                if seq > hi:
-                    break
-                if not row.get("deleted") and not str(row["id"]).startswith("_design/"):
-                    found.setdefault(str(row["id"]), seq)
-            last = int(page.get("last_seq") or since)
-            if not rows or last <= since:
-                break
-            since = last
+        for name, seq in _live(http, lo, hi, tally).items():
+            found.setdefault(name, seq)
         hi, window = lo, window * 2
-    newest = sorted(found.items(), key=lambda item: -item[1])[:n]
-    return [{"name": name, "seq": seq} for name, seq in newest]
+    return _newest_first(found)[:n]
+
+
+def head(http: Http, tally: Tally) -> int:
+    """The newest change number in the replication feed."""
+    root = json_of(http.get(f"{REPLICATE}/", tally=tally, max_bytes=MAX_JSON_BYTES), "npm root")
+    return int(root["update_seq"])
+
+
+def in_range(http: Http, lo: int, hi: int, tally: Tally) -> list[dict]:
+    """Every live package whose latest change number is in (lo, hi], newest first.
+
+    This is a scan round's window. A package changed again after `hi` has moved past the
+    window and is left out; the next round picks it up.
+    """
+    return _newest_first(_live(http, lo, hi, tally))
+
+
+def _newest_first(found: dict[str, int]) -> list[dict]:
+    return [{"name": name, "seq": seq} for name, seq in sorted(found.items(), key=lambda i: -i[1])]
+
+
+def _live(http: Http, lo: int, hi: int, tally: Tally) -> dict[str, int]:
+    found: dict[str, int] = {}
+    since = lo
+    while since < hi:
+        url = f"{REPLICATE}/_changes?since={since}&limit={PAGE}"
+        page = json_of(http.get(url, tally=tally, max_bytes=MAX_JSON_BYTES), "npm changes")
+        rows = page.get("results") or []
+        for row in rows:
+            seq = int(row["seq"])
+            if seq > hi:
+                break
+            if not row.get("deleted") and not str(row["id"]).startswith("_design/"):
+                found.setdefault(str(row["id"]), seq)
+        last = int(page.get("last_seq") or since)
+        if not rows or last <= since:
+            break
+        since = last
+    return found
 
 
 def scan(http: Http, target: dict, tally: Tally, *, validate: bool = False) -> dict:

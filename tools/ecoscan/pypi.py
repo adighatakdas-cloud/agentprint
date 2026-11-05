@@ -52,36 +52,61 @@ def recent(
     the newest changelog serials (about 1,900 an hour in Nov 2026), so files have finished
     uploading.
     """
-    hi = int(_rpc(http, "changelog_last_serial", tally=tally)) - skip_newest
+    hi = head(http, tally) - skip_newest
     found: dict[str, dict] = {}
     removed: set[tuple[str, str | None]] = set()
     while len(found) < n and hi > 0:
         lo = max(0, hi - step)
-        rows, since = [], lo
-        while since < hi:  # page forward in case the server caps rows per call
-            batch = _rpc(http, "changelog_since_serial", since, tally=tally)
-            if not batch:
-                break
-            rows += [r for r in batch if r[4] <= hi]
-            top = max(r[4] for r in batch)
-            if top >= hi or top <= since:
-                break
-            since = top
-        for name, version, _when, action, serial in sorted(rows, key=lambda r: -r[4]):
-            key = _norm(name)
-            if action == "remove project":
-                removed.add((key, None))
-            elif action == "remove release":
-                removed.add((key, version))
-            elif (
-                action == "new release"
-                and key not in found
-                and (key, version) not in removed
-                and (key, None) not in removed
-            ):
-                found[key] = {"name": name, "version": version, "serial": serial}
+        _pick(_events(http, lo, hi, tally), found, removed)
         hi = lo
     return sorted(found.values(), key=lambda t: -t["serial"])[:n]
+
+
+def head(http: Http, tally: Tally) -> int:
+    """The newest changelog serial."""
+    return int(_rpc(http, "changelog_last_serial", tally=tally))
+
+
+def in_range(http: Http, lo: int, hi: int, tally: Tally) -> list[dict]:
+    """The newest release of every project released in serials (lo, hi], newest first.
+
+    This is a scan round's window. The changelog never changes, so every volunteer gets the
+    same list (releases deleted later show up as "gone" when scanned).
+    """
+    found: dict[str, dict] = {}
+    _pick(_events(http, lo, hi, tally), found, set())
+    return sorted(found.values(), key=lambda t: -t["serial"])
+
+
+def _events(http: Http, lo: int, hi: int, tally: Tally) -> list:
+    rows, since = [], lo
+    while since < hi:  # page forward in case the server caps rows per call
+        batch = _rpc(http, "changelog_since_serial", since, tally=tally)
+        if not batch:
+            break
+        rows += [r for r in batch if r[4] <= hi]
+        top = max(r[4] for r in batch)
+        if top >= hi or top <= since:
+            break
+        since = top
+    return rows
+
+
+def _pick(rows: list, found: dict, removed: set) -> None:
+    """Newest first: keep each project's newest release unless it was removed afterwards."""
+    for name, version, _when, action, serial in sorted(rows, key=lambda r: -r[4]):
+        key = _norm(name)
+        if action == "remove project":
+            removed.add((key, None))
+        elif action == "remove release":
+            removed.add((key, version))
+        elif (
+            action == "new release"
+            and key not in found
+            and (key, version) not in removed
+            and (key, None) not in removed
+        ):
+            found[key] = {"name": name, "version": version, "serial": serial}
 
 
 def _listing(http: Http, archive: str, info: dict, tally: Tally, rec: dict):

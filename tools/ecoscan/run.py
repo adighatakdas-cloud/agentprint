@@ -21,6 +21,7 @@ from pathlib import Path
 from . import npm, pypi
 from .detect import new_record
 from .net import Http, Tally, TooLarge
+from .shard import shard_of
 
 REGISTRIES = {"npm": npm, "pypi": pypi}
 PRIVATE_NOTE = """\
@@ -58,26 +59,41 @@ def read_jsonl(path: Path) -> list[dict]:
     return rows
 
 
-def _targets(eco, out: Path, n: int, http, recent, log) -> list[dict]:
+def _targets(eco, out: Path, n, http, recent, log, window, shard) -> list[dict]:
     path = private_dir(out) / f"targets-{eco}.jsonl"
+    meta_path = private_dir(out) / f"meta-{eco}.json"
+    wanted = {"window": list(window) if window else None, "shard": list(shard)}
     if path.exists():
+        meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        for field, value in wanted.items():
+            if meta.get(field) != value:
+                raise ValueError(
+                    f"{out} was started with {field} {meta.get(field)}, not {value}; "
+                    "use a new --out folder for another round or shard"
+                )
         return read_jsonl(path)
-    log(f"{eco}: listing the {n} most recent packages")
+    where = f"window {window[0]}:{window[1]}" if window else f"the {n} most recent"
+    log(f"{eco}: listing packages in {where}")
     tally, start = Tally(), time.monotonic()
-    targets = recent(http, n, tally)
+    listed = recent(http, n, tally)
+    k, total = shard
+    targets = [t for t in listed if shard_of(t["name"], total, eco) == k]
+    log(f"{eco}: shard {k}/{total} holds {len(targets)} of {len(listed)} packages")
     tmp = path.with_suffix(".tmp")
     tmp.write_text("".join(json.dumps(t) + "\n" for t in targets), encoding="utf-8")
     os.replace(tmp, path)  # all or nothing
     meta = {
         "eco": eco,
+        **wanted,
         "requested": n,
+        "listed": len(listed),
         "targets": len(targets),
         "created": time.time(),
         "enumeration_bytes": tally.bytes,
         "enumeration_requests": tally.requests,
         "enumeration_seconds": round(time.monotonic() - start, 3),
     }
-    (private_dir(out) / f"meta-{eco}.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return targets
 
 
@@ -103,9 +119,11 @@ def _one(eco, http, target, scan, validate: bool) -> dict:
 def run(
     eco: str,
     out: Path,
-    n: int,
+    n: int | None,
     http: Http | None,
     *,
+    window: tuple[int, int] | None = None,
+    shard: tuple[int, int] = (1, 1),
     workers: int = 6,
     validate_pct: int = 0,
     recent: Callable | None = None,
@@ -113,16 +131,25 @@ def run(
     redo: set[str] = frozenset(),
     log: Callable[[str], None] = print,
 ) -> dict:
-    """Scan up to `n` recent packages. Safe to stop with Ctrl-C and run again to continue.
+    """Scan one shard of a round. Safe to stop with Ctrl-C and run again to continue.
 
+    The round is either a fixed `window` of registry history (everything in it; `n`, if set,
+    caps it) or the `n` most recent packages. `shard` (K, N) keeps only the packages whose
+    name hashes to K, so N volunteers can split a round without overlap.
     `redo`: scan again the packages whose newest result has one of these statuses (for
     example after a fix). The new line is appended; readers keep the newest line per package.
     """
     private_dir(out).mkdir(parents=True, exist_ok=True)
     (private_dir(out) / "README.txt").write_text(PRIVATE_NOTE, encoding="utf-8")
+    if recent is None and window is not None:
+        lo, hi = window
+
+        def recent(http, n, tally):
+            return REGISTRIES[eco].in_range(http, lo, hi, tally)[:n]
+
     recent = recent or REGISTRIES[eco].recent
     scan = scan or REGISTRIES[eco].scan
-    targets = _targets(eco, out, n, http, recent, log)
+    targets = _targets(eco, out, n, http, recent, log, window, shard)
     results_path = private_dir(out) / f"results-{eco}.jsonl"
     newest = {row.get("key"): row.get("status") for row in read_jsonl(results_path)}
     done = {k for k, status in newest.items() if status not in redo}
