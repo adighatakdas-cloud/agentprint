@@ -21,7 +21,7 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
-from .base import artifacts, dig, hook_commands, is_blanket_command, mcp_servers
+from .base import artifacts, dig, from_home, hook_commands, is_blanket_command, mcp_servers
 
 NAME = "cursor"
 
@@ -109,6 +109,7 @@ class Cursor:
         ),
     )
 
+    @from_home
     def discover_home(self, home: Path) -> Iterator[Artifact]:
         base = home / ".cursor"
         users = _user_dirs(home)

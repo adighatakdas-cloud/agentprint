@@ -119,7 +119,10 @@ def _rules(findings: Sequence[Finding]) -> list[dict]:
             "id": check_id,
             "shortDescription": {"text": f.title},
             "fullDescription": {"text": f.title},
-            "help": {"text": _clean(f.fix), "markdown": f"**How to fix:** {_clean(f.fix)}"},
+            "help": {
+                "text": sanitize.safe_step(f.fix),
+                "markdown": f"**How to fix:** {sanitize.safe_step(f.fix)}",
+            },
             "helpUri": f"{INFO_URI}#checks",
             "defaultConfiguration": {"level": LEVEL[f.severity]},
             "properties": {

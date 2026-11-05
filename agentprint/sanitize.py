@@ -27,18 +27,35 @@ _DROP = {"Cc", "Cf", "Cs", "Co", "Zl", "Zp"}
 _AS_SPACE = {"\t", "\n", "\r", "\v", "\f", " ", " ", "\x85"}
 
 
-def clean(text: str, limit: int = MAX_LEN) -> str:
-    """Strip escape sequences and invisible characters, then cap the length."""
+def clean(text: str, limit: int | None = MAX_LEN) -> str:
+    """Strip escape sequences and invisible characters, then cap the length (prose only: never
+    use this on a fix step or anything that may hold a command; see `safe_step`)."""
     text = _ESCAPES.sub("", text)
     text = "".join(
         " " if ch in _AS_SPACE else ch
         for ch in text
         if ch in _AS_SPACE or unicodedata.category(ch) not in _DROP
     )
-    if len(text) > limit:
+    if limit is not None and len(text) > limit:
         head = min(_HEAD, limit // 2)
         text = text[:head] + "…" + text[-(limit - head - 1) :]
     return text
+
+
+# Shown instead of a fix step that can't be shown whole and unchanged. Plain words, no command.
+SAFE_STEP = (
+    "The exact fix is too long or holds unusual characters, so agentprint does not show it (a "
+    "shortened or altered command could run part of a file name). Fix the files named in where "
+    "by hand, one at a time, as the finding title describes."
+)
+
+
+def safe_step(text: str, limit: int = FIX_LEN) -> str:
+    """A fix step exactly as written, or SAFE_STEP. Never shortened, never edited: cutting or
+    cleaning a shell-quoted command can break its quoting and run part of a hostile file name."""
+    if len(text) <= limit and clean(text, None) == text:
+        return text
+    return SAFE_STEP
 
 
 def quote(text: str) -> str:

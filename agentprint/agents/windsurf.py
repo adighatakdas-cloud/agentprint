@@ -24,7 +24,7 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
-from .base import artifacts, hook_commands, is_blanket_command, mcp_servers
+from .base import artifacts, from_home, hook_commands, is_blanket_command, mcp_servers
 
 NAME = "windsurf"
 
@@ -69,6 +69,7 @@ class Windsurf:
         ),
     )
 
+    @from_home
     def discover_home(self, home: Path) -> Iterator[Artifact]:
         base = home / ".codeium" / "windsurf"
         yield from artifacts(

@@ -20,7 +20,7 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
-from .base import artifacts, is_blanket_command, mcp_servers
+from .base import artifacts, from_home, is_blanket_command, mcp_servers
 
 NAME = "opencode"
 
@@ -75,14 +75,16 @@ class OpenCode:
         ),
     )
 
+    @from_home
     def discover_home(self, home: Path) -> Iterator[Artifact]:
         config = home / ".config" / "opencode"
         data = home / ".local" / "share" / "opencode"
         yield from artifacts(NAME, Kind.SETTINGS, *(config / name for name in _CONFIG_NAMES))
-        # auth.json and mcp-auth.json are OpenCode's own key stores: expected, not scanned.
         yield from artifacts(
             NAME, Kind.HISTORY, data / "opencode.db", data / "storage", data / "log"
         )
+        # OpenCode's own key stores: never secret-scanned, only checked for who can read them.
+        yield from artifacts(NAME, Kind.CREDENTIALS, data / "auth.json", data / "mcp-auth.json")
 
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         yield from artifacts(NAME, Kind.SETTINGS, *(root / name for name in _CONFIG_NAMES))

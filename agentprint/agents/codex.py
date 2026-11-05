@@ -14,7 +14,7 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, Grant, HookCommand, Kind, PackageRule, Severity
 from ..structured import load
-from .base import artifacts, hook_commands, mcp_servers
+from .base import artifacts, from_home, hook_commands, mcp_servers
 
 NAME = "codex"
 
@@ -79,10 +79,13 @@ class Codex:
         ),
     )
 
+    @from_home
     def discover_home(self, home: Path) -> Iterator[Artifact]:
         base = home / ".codex"
-        # auth.json is Codex's own login store; a token there is expected, so it is not scanned.
+        # auth.json is Codex's own login store: a token there is expected, so it is never
+        # secret-scanned, only checked for who can read it (AP008).
         yield from artifacts(NAME, Kind.SETTINGS, base / "config.toml", base / "hooks.json")
+        yield from artifacts(NAME, Kind.CREDENTIALS, base / "auth.json")
         yield from artifacts(
             NAME,
             Kind.HISTORY,

@@ -26,6 +26,10 @@ BLOCKS = {
     "devin": "json",  # https://docs.devin.ai/cli/extensibility/hooks/overview
     "opencode": "json",  # our plugin reads stdout JSON
     "windsurf": "exit2",  # Cascade: only exit 2 blocks (archived docs.windsurf.com hooks page)
+    # Copilot: JSON deny on exit 0 (exit 2 also denies; ANY other non-zero exit denies too).
+    "copilot": "json",  # https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-hooks-reference
+    "hermes": "json",  # https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks
+    "antigravity": "json",  # exit codes ignored: https://antigravity.google/docs/hooks/
 }
 
 

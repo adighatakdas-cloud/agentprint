@@ -15,11 +15,14 @@ from rich.console import Console
 from . import __version__
 from .advice import Moment
 from .checks.ap006_package_leak import check_listing, is_agent_file
+from .integrations import ALL_INTEGRATIONS
 from .models import Finding
 from .pack import PackError, collect
 from .report import FailOn, exit_code, print_table, to_agent, to_json
 from .sarif import to_sarif
 from .scanner import scan as run_scan
+
+AGENT_NAMES = ", ".join(ALL_INTEGRATIONS)  # help text stays in step with the integrations
 
 app = typer.Typer(
     add_completion=False,
@@ -129,10 +132,7 @@ def pack(
 def guard(
     agent: Annotated[
         str,
-        typer.Option(
-            help="Agent calling the hook: claude-code, codex, cursor, gemini, windsurf, "
-            "devin or opencode."
-        ),
+        typer.Option(help=f"Agent calling the hook: {AGENT_NAMES}."),
     ] = "claude-code",
     fail_on: FailOnOpt = FailOn.high,
 ) -> None:
@@ -168,8 +168,8 @@ AgentsOpt = Annotated[
     list[str] | None,
     typer.Option(
         "--agent",
-        help="Only this agent (repeatable): claude-code, codex, cursor, gemini, windsurf, "
-        "devin, opencode. Default: every agent found.",
+        help=f"Only this agent (repeatable): {AGENT_NAMES} (gemini-cli also means gemini). "
+        "Default: every agent found.",
     ),
 ]
 DryRunOpt = Annotated[bool, typer.Option("--dry-run", help="Show the changes, write nothing.")]
@@ -179,9 +179,17 @@ SetupHomeOpt = Annotated[
 ]
 
 
-def _setup_args(agents: list[str] | None, home: Path | None) -> tuple[Path, dict[str, str]]:
+# Names used in scan findings that differ from the integration's name.
+AGENT_ALIASES = {"gemini-cli": "gemini"}
+
+
+def _setup_args(
+    agents: list[str] | None, home: Path | None
+) -> tuple[Path, dict[str, str], list[str] | None]:
     from .integrations import ALL_INTEGRATIONS
 
+    if agents:
+        agents = [AGENT_ALIASES.get(name, name) for name in agents]
     unknown = [name for name in agents or [] if name not in ALL_INTEGRATIONS]
     if unknown:
         typer.secho(
@@ -191,11 +199,11 @@ def _setup_args(agents: list[str] | None, home: Path | None) -> tuple[Path, dict
         )
         raise typer.Exit(2)
     if home is None:
-        return Path.home(), dict(os.environ)  # honour CODEX_HOME, CLAUDE_CONFIG_DIR, ...
+        return Path.home(), dict(os.environ), agents  # honour CODEX_HOME, CLAUDE_CONFIG_DIR, ...
     if not home.is_dir():
         typer.secho(f"error: {home} is not a directory", err=True, fg=typer.colors.RED)
         raise typer.Exit(2)
-    return home, {}
+    return home, {}, agents
 
 
 @app.command()
@@ -208,16 +216,16 @@ def install(agent: AgentsOpt = None, dry_run: DryRunOpt = False, home: SetupHome
     """
     from .install import install as run_install
 
-    home_dir, env = _setup_args(agent, home)
-    run_install(home_dir, env, agent, dry_run, typer.echo)
+    home_dir, env, names = _setup_args(agent, home)
+    run_install(home_dir, env, names, dry_run, typer.echo)
 
 
 @app.command()
 def uninstall(
     agent: AgentsOpt = None, dry_run: DryRunOpt = False, home: SetupHomeOpt = None
 ) -> None:
-    """Remove everything `agentprint install` added, restoring the files exactly."""
+    """Remove what `agentprint install` added, keeping any changes you made since."""
     from .install import uninstall as run_uninstall
 
-    home_dir, env = _setup_args(agent, home)
-    run_uninstall(home_dir, env, agent, dry_run, typer.echo)
+    home_dir, env, names = _setup_args(agent, home)
+    run_uninstall(home_dir, env, names, dry_run, typer.echo)

@@ -12,7 +12,7 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
-from .base import artifacts, dig, hook_commands, is_blanket_command, mcp_servers
+from .base import artifacts, dig, from_home, hook_commands, is_blanket_command, mcp_servers
 
 NAME = "claude-code"
 
@@ -78,6 +78,7 @@ class ClaudeCode:
         ),
     )
 
+    @from_home
     def discover_home(self, home: Path) -> Iterator[Artifact]:
         base = home / ".claude"
         yield from artifacts(
@@ -96,6 +97,8 @@ class ClaudeCode:
             base / "projects",  # full transcripts, per project
             base / "file-history",  # backups of files Claude edited (can include .env)
         )
+        # Login token on Linux and Windows (macOS uses the Keychain): permission check only.
+        yield from artifacts(NAME, Kind.CREDENTIALS, base / ".credentials.json")
 
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         yield from artifacts(NAME, Kind.SETTINGS, root / ".claude" / "settings.json")

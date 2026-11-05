@@ -92,7 +92,11 @@ def _drop_hook(config: dict) -> None:
 
 def edits(home: Path, env: Env, launch: Launch) -> list[Edit]:
     base = config_dir(home, env)
-    entry = {"command": launch.hook_command(NAME), "timeout": 60, "matcher": MATCHER}
+    entry = {
+        "command": launch.hook_command(NAME, reply(None).stdout),
+        "timeout": 60,
+        "matcher": MATCHER,
+    }
     server = mcp_entry(launch, type="stdio")
     return [
         JsonEdit(

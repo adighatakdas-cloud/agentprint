@@ -21,7 +21,15 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
-from .base import artifacts, dig, hook_commands, is_blanket_command, mcp_servers
+from .base import (
+    artifacts,
+    dig,
+    from_home,
+    gemini_folder,
+    hook_commands,
+    is_blanket_command,
+    mcp_servers,
+)
 
 NAME = "gemini-cli"
 
@@ -82,16 +90,24 @@ class Gemini:
         ),
     )
 
+    @from_home
     def discover_home(self, home: Path) -> Iterator[Artifact]:
-        base = home / ".gemini"
-        # Not read: .env and oauth_creds.json are where credentials are expected to live.
+        base = gemini_folder(home)  # honours GEMINI_CLI_HOME
         yield from artifacts(NAME, Kind.SETTINGS, base / "settings.json")
         yield from artifacts(NAME, Kind.HISTORY, base / "tmp")
+        # Where Gemini CLI keeps keys and login tokens on purpose: permission check only.
+        yield from artifacts(
+            NAME,
+            Kind.CREDENTIALS,
+            base / ".env",
+            base / "oauth_creds.json",
+            base / "google_accounts.json",
+        )
 
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         base = root / ".gemini"
         yield from artifacts(NAME, Kind.SETTINGS, base / "settings.json")
-        yield from artifacts(NAME, Kind.PERSONAL, base / ".env", personal=True)
+        yield from artifacts(NAME, Kind.CREDENTIALS, base / ".env", personal=True)
 
     def read_config(self, artifact: Artifact) -> AgentConfig:
         if artifact.path.name != "settings.json":

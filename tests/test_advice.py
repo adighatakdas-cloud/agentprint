@@ -118,3 +118,32 @@ def test_mcp_inline_secret_keeps_the_check_fix_and_asks_human_to_rotate():
     assert ROTATE_AT["github"] in ask
     assert _MARKER.strip() not in ask
     assert fakes.GITHUB not in repr(result)
+
+
+def _readable(severity):
+    return Finding(
+        "AP008",
+        severity,
+        "Agent data readable by other users",
+        "hermes",
+        "/home/u/.hermes/.env",
+        None,
+        "readable by other users",
+        "chmod -R go-rwx /home/u/.hermes",
+    )
+
+
+def test_readable_credential_store_keeps_chmod_fix_and_asks_human_about_rotation():
+    result = advise(_readable(Severity.HIGH), Moment.scan)
+    assert result.fix_steps == ["chmod -R go-rwx /home/u/.hermes"]
+    [ask] = result.ask_human
+    assert "rotate" in ask.lower()
+
+
+def test_readable_ordinary_file_needs_nothing_from_the_human():
+    assert advise(_readable(Severity.MEDIUM), Moment.scan).ask_human == []
+
+
+def test_explain_ap008_has_its_own_explanation():
+    assert advice.explain("AP008").startswith("AP008 Agent data readable by other users")
+    assert "other" in advice.explain("AP008")

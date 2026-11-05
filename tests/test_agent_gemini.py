@@ -14,18 +14,20 @@ def _config(path):
     return Gemini().read_config(Artifact("gemini-cli", Kind.SETTINGS, path))
 
 
-def test_gemini_home_files_skip_login_and_env_files(agents_home):
+def test_gemini_home_files_list_login_and_env_files_only_as_credential_stores(agents_home):
     assert _rel(Gemini().discover_home(agents_home), agents_home) == {
         (Kind.SETTINGS, ".gemini/settings.json", False),
         (Kind.HISTORY, ".gemini/tmp/0f3a9c/chats/session-2026-10-01T10-00-s1.json", False),
         (Kind.HISTORY, ".gemini/tmp/0f3a9c/shell_history", False),
+        (Kind.CREDENTIALS, ".gemini/oauth_creds.json", False),
+        (Kind.CREDENTIALS, ".gemini/.env", False),
     }
 
 
 def test_gemini_project_files(agents_project):
     assert _rel(Gemini().discover_project(agents_project), agents_project) == {
         (Kind.SETTINGS, ".gemini/settings.json", False),
-        (Kind.PERSONAL, ".gemini/.env", True),
+        (Kind.CREDENTIALS, ".gemini/.env", True),  # a key store: personal, never scanned
     }
 
 

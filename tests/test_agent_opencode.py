@@ -16,11 +16,12 @@ def _config(path):
     return OpenCode().read_config(Artifact("opencode", Kind.SETTINGS, path))
 
 
-def test_opencode_home_files_skip_auth_json(agents_home):
+def test_opencode_home_files_list_auth_json_only_as_a_credential_store(agents_home):
     assert _rel(OpenCode().discover_home(agents_home), agents_home) == {
         (Kind.SETTINGS, ".config/opencode/opencode.json"),
         (Kind.HISTORY, ".local/share/opencode/opencode.db"),
         (Kind.HISTORY, ".local/share/opencode/storage/session_diff/ses_1.json"),
+        (Kind.CREDENTIALS, ".local/share/opencode/auth.json"),
     }
 
 

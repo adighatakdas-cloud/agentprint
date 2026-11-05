@@ -1,7 +1,11 @@
-"""Safe loading of agent config files (JSON, JSONC, TOML). Never raises.
+"""Safe loading of agent config files (JSON, JSONC, TOML, YAML). Never raises.
 
 A broken, half-written, binary or huge file loads as None: the structured checks (AP003-AP005)
 then skip it, while the line-based secret checks still read it as text.
+
+YAML (Hermes Agent's config.yaml) is read with PyYAML's SafeLoader, so tags that would build
+Python objects are refused, and a document using more than MAX_YAML_ALIASES aliases is refused
+too (an "alias bomb" could otherwise make a tiny file expand into a huge structure).
 """
 
 from __future__ import annotations
@@ -12,9 +16,35 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from .files import iter_lines
 
 MAX_BYTES = 32 * 1024 * 1024
+MAX_YAML_ALIASES = 100
+
+
+class _SafeYamlLoader(yaml.SafeLoader):
+    """SafeLoader that gives up after MAX_YAML_ALIASES aliases."""
+
+    def __init__(self, stream: str) -> None:
+        super().__init__(stream)
+        self._aliases = 0
+
+    def compose_node(self, parent: Any, index: Any) -> Any:
+        if self.check_event(yaml.AliasEvent):
+            self._aliases += 1
+            if self._aliases > MAX_YAML_ALIASES:
+                raise yaml.YAMLError("too many YAML aliases")
+        return super().compose_node(parent, index)
+
+
+def _load_yaml(text: str) -> Any:
+    loader = _SafeYamlLoader(text)
+    try:
+        return loader.get_single_data()
+    finally:
+        loader.dispose()
 
 
 def strip_jsonc(text: str) -> str:
@@ -74,6 +104,8 @@ def _load_cached(path: str, _mtime_ns: int, _size: int) -> Any:
     try:
         if path.endswith(".toml"):
             return tomllib.loads(text)
+        if path.endswith((".yaml", ".yml")):
+            return _load_yaml(text)
         try:
             return json.loads(text)
         except ValueError:
