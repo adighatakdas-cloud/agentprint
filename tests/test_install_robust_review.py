@@ -171,3 +171,27 @@ def test_alias_bomb_is_refused_quickly(tmp_path):
     assert time.perf_counter() - start < 5
     assert "skipped" in out
     assert (home / ".hermes" / "config.yaml").read_text() == BOMB
+
+
+# ---- 6. Gemini CLI is found by its own files, not by ~/.gemini --------------------------------
+
+
+def test_antigravity_only_home_gets_no_gemini_cli_files(tmp_path):
+    home = tmp_path / "home"
+    (home / ".gemini" / "antigravity").mkdir(parents=True)
+    out = _install(home)
+    assert "Gemini CLI" not in out
+    assert not (home / ".gemini" / "settings.json").exists()
+    assert not (home / ".gemini" / "GEMINI.md").exists()
+    assert (home / ".gemini" / "config" / "hooks.json").exists()  # Antigravity's own
+
+
+@pytest.mark.parametrize(
+    "marker", ["settings.json", "oauth_creds.json", "google_accounts.json", "GEMINI.md", "tmp"]
+)
+def test_gemini_cli_is_found_by_its_own_files(tmp_path, marker):
+    home = tmp_path / "home"
+    (home / ".gemini").mkdir(parents=True)
+    target = home / ".gemini" / marker
+    target.mkdir() if marker == "tmp" else target.write_text("{}\n")
+    assert "Gemini CLI" in _install(home, dry_run=True)

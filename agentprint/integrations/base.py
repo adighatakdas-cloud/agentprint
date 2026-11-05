@@ -472,5 +472,6 @@ class Integration:
     found_by: Callable[[Path, Env], list[Path]] | None = None
 
     def installed(self, home: Path, env: Env) -> bool:
-        folders = self.found_by(home, env) if self.found_by else [self.config_dir(home, env)]
-        return any(folder.is_dir() for folder in folders)
+        if self.found_by:  # files or folders that only this agent creates
+            return any(path.exists() for path in self.found_by(home, env))
+        return self.config_dir(home, env).is_dir()

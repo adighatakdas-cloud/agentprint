@@ -45,6 +45,18 @@ def config_dir(home: Path, env: Env) -> Path:
     return root / ".gemini"
 
 
+# Ruling: ~/.gemini alone doesn't mean Gemini CLI is installed: Antigravity keeps its own data
+# in ~/.gemini too. Gemini CLI is found by files it writes itself (settings, login, chat
+# history in tmp/, its GEMINI.md). Cost: a Gemini CLI that has never been run or signed into
+# isn't wired until it has. https://geminicli.com/docs/reference/configuration
+MARKERS = ("settings.json", "oauth_creds.json", "google_accounts.json", "installation_id",
+           "GEMINI.md", "tmp", "commands", "extensions")  # fmt: skip
+
+
+def found_by(home: Path, env: Env) -> list[Path]:
+    return [config_dir(home, env) / name for name in MARKERS]
+
+
 def edits(home: Path, env: Env, launch: Launch) -> list[Edit]:
     settings = config_dir(home, env) / "settings.json"
     entry = {
@@ -109,4 +121,5 @@ INTEGRATION = Integration(
     edits=edits,
     parse_hook=parse_hook,
     reply=reply,
+    found_by=found_by,
 )
