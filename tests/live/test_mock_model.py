@@ -115,3 +115,35 @@ def test_login_shells_still_find_the_fake_npm(tmp_path, shell):
                            text=True, check=True).stdout.strip()  # fmt: skip
     assert found == str(bin_dir / "npm")
     assert env["npm_config_dry_run"] == "true"  # and a real npm could only dry-run anyway
+
+
+SHELL_GEMINI = {
+    "functionDeclarations": [
+        {
+            "name": "run_shell_command",
+            "parametersJsonSchema": {
+                "type": "object",
+                "properties": {"command": {"type": "string"}},
+                "required": ["command"],
+            },
+        }
+    ]
+}
+
+
+def test_gemini_api_function_call_then_text(script):
+    with MockModel(script) as url:
+        body = {"contents": [{"role": "user", "parts": [{"text": "go"}]}], "tools": [SHELL_GEMINI]}
+        first = post(f"{url}/v1beta/models/mock-model:streamGenerateContent?alt=sse", body)
+        chunk = json.loads(first.split("data: ", 1)[1])
+        [part] = chunk["candidates"][0]["content"]["parts"]
+        assert part["functionCall"] == {
+            "name": "run_shell_command",
+            "args": {"command": "npm publish"},
+        }
+        response = {"error": "agentprint: BLOCK — 1"}
+        result = {"functionResponse": {"name": "run_shell_command", "response": response}}
+        body = {"contents": [{"role": "user", "parts": [result]}], "tools": [SHELL_GEMINI]}
+        second = json.loads(post(f"{url}/v1beta/models/mock-model:generateContent", body))
+        assert second["candidates"][0]["content"]["parts"][0]["text"]
+    assert "agentprint: BLOCK — 1" in script.tool_results()[0]

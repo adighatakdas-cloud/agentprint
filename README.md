@@ -48,7 +48,22 @@ From source today: `uv run agentprint install --dry-run`.
 - **"Could not check" is not "OK".** When agentprint can't tell what would be uploaded (a folder held in a variable, a `pnpm --filter` selection, nothing built in `dist/` yet, git not installed), it lets the command run and says "agentprint could not check this…" so you and the agent know.
 - **Your agents' own approvals still apply.** agentprint only adds a "deny" when it finds a problem; it never approves commands for you. If you use Claude Code too, Cursor also runs Claude Code's hooks, so the check can run twice.
 - **Hermes asks before it runs any new hook.** agentprint never approves its own hook: start `hermes chat` once and accept it. Until then (and in gateway or cron runs that never ask) the Hermes hook is off; the MCP server still works. agentprint only edits `config.yaml` if Hermes has already created it, and leaves your own lines, comments, indentation and line endings as they were; its entries go first in each section. If the file is missing, can't be read safely, or the section uses YAML anchors (`&`, `*`, `<<`), it changes nothing and prints what to add by hand.
-- **Codex's `config.toml`:** agentprint's MCP entry sits in a marked block at the top of the file. If Codex ever writes its own settings inside that block, uninstall keeps those lines and removes only agentprint's. Not yet tested against a live Codex.
+- **Codex's `config.toml`:** agentprint's MCP entry sits in a marked block at the top of the file. If Codex ever writes its own settings inside that block, uninstall keeps those lines and removes only agentprint's.
+
+### Tested inside real agents
+
+The live tests (`tests/live/`, run nightly and on pull requests that touch the hooks) start the real agent program with a pretend model on your own computer: no account, no real key, a throwaway home folder. The pretend model asks the agent to run `npm publish` or `git push` (fake versions that only leave a marker file), after `agentprint install`. Each test checks that a package or repo with a leaked key is **stopped and the model is told why**, that a clean one **goes ahead**, and that `agentprint uninstall` takes agentprint back out.
+
+| Agent | Version tested | What the live test proves |
+|---|---|---|
+| Claude Code | 2.1.318 | hook blocks leaky publish/push, reason reaches the model; clean ones run |
+| Codex | 0.166.0 | same (run with `--dangerously-bypass-hook-trust`, the documented way to run a hook unattended; you trust it once in `/hooks`) |
+| OpenCode | 1.19.5 | same, through agentprint's OpenCode plugin |
+| Gemini CLI | 0.67.0 | same |
+| GitHub Copilot CLI | 1.0.105 | same, with your own model key (BYOK), no GitHub login |
+| Hermes Agent | 0.19.0 | same (run with `--accept-hooks`, the documented way to approve a hook unattended; you approve it once in `hermes chat`) |
+| Cursor, Windsurf, Antigravity | – | docs-verified only: desktop apps with no headless mode to drive in a test |
+| Devin Desktop / Devin CLI | – | docs-verified only: needs a Devin account to run |
 
 ## What it will do
 

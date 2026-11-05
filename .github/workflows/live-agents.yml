@@ -2,7 +2,7 @@ name: Live agents
 
 # Runs real agent CLIs (pinned versions) against a local mock model, in a throwaway HOME, to
 # prove agentprint's hooks block a leaky publish/push inside each agent. No accounts, no real
-# keys, no network to any model provider: see tests/live/.
+# keys, no network to any model provider: see tests/live/. One job per agent, in parallel.
 
 on:
   pull_request:
@@ -24,7 +24,18 @@ permissions:
 jobs:
   live:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { cli: claude-code, tests: test_live_claude_code.py }
+          - { cli: codex, tests: test_live_codex.py }
+          - { cli: opencode, tests: test_live_opencode.py }
+          - { cli: gemini, tests: test_live_gemini.py }
+          - { cli: copilot, tests: test_live_copilot.py }
+          - { cli: hermes, tests: test_live_hermes.py }
+    name: live (${{ matrix.cli }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -35,9 +46,9 @@ jobs:
           node-version: "22"
           package-manager-cache: false
       - run: uv sync --locked
-      - name: Install the agent CLIs (exact versions, into a temp folder)
-        run: uv run python -m tests.live.install_clis "$RUNNER_TEMP/agents" __AGENTS__
-      - name: Live agent tests
+      - name: Install ${{ matrix.cli }} (exact version, into a temp folder)
+        run: uv run python -m tests.live.install_clis "$RUNNER_TEMP/agents" "${{ matrix.cli }}"
+      - name: Live tests for ${{ matrix.cli }}
         env:
           AGENTPRINT_LIVE_TOOLS: ${{ runner.temp }}/agents
-        run: uv run pytest -m live -v --durations=0
+        run: uv run pytest -m live -v --durations=0 "tests/live/${{ matrix.tests }}"

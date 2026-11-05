@@ -31,10 +31,15 @@ _ids = itertools.count(1)
 def _shell_tool(tools: list[dict]) -> tuple[str, dict] | None:
     """(name, JSON schema of its arguments) of the request's shell tool, if any."""
     by_name = {}
+    flat: list[dict] = []
     for tool in tools or []:
+        flat += tool.get("functionDeclarations") or [tool]  # Gemini groups its functions
+    for tool in flat:
         fn = tool.get("function") if isinstance(tool.get("function"), dict) else tool
         name = fn.get("name")
-        schema = fn.get("input_schema") or fn.get("parameters") or {}
+        schema = (
+            fn.get("input_schema") or fn.get("parameters") or fn.get("parametersJsonSchema") or {}
+        )
         if isinstance(name, str):
             by_name[name] = schema
     for name in SHELL_TOOLS:
@@ -97,6 +102,9 @@ class Script:
             for item in items:
                 if isinstance(item, dict) and item.get("type") == "function_call_output":
                     found.append(_text(item.get("output")))
+            found += [
+                json.dumps(r.get("response"), ensure_ascii=False) for r in _gemini_results(body)
+            ]
         return found
 
     def reply(self, body: dict) -> tuple[str, dict] | None:
@@ -130,10 +138,40 @@ def _has_tool_result(body: dict) -> bool:
         ):
             return True
     items = body.get("input") if isinstance(body.get("input"), list) else []
-    return any(isinstance(i, dict) and i.get("type") == "function_call_output" for i in items)
+    if any(isinstance(i, dict) and i.get("type") == "function_call_output" for i in items):
+        return True
+    return bool(_gemini_results(body))
+
+
+def _gemini_results(body: dict) -> list[dict]:
+    """functionResponse parts of a Gemini API request."""
+    return [
+        part["functionResponse"]
+        for content in body.get("contents") or []
+        if isinstance(content, dict)
+        for part in content.get("parts") or []
+        if isinstance(part, dict) and isinstance(part.get("functionResponse"), dict)
+    ]
 
 
 # ---- wire formats ------------------------------------------------------------------------------
+
+
+def gemini(body: dict, decision) -> tuple[dict, list[tuple[str, dict]]]:
+    """(JSON response, SSE chunks) for the Gemini API (generateContent / stream)."""
+    if decision:
+        name, args = decision
+        part = {"functionCall": {"name": name, "args": args}}
+    else:
+        part = {"text": FINAL_TEXT}
+    response = {
+        "candidates": [
+            {"content": {"role": "model", "parts": [part]}, "finishReason": "STOP", "index": 0}
+        ],
+        "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2},
+        "modelVersion": "mock-model",
+    }
+    return response, [("", response)]
 
 
 def anthropic(body: dict, decision) -> tuple[dict, list[tuple[str, dict]]]:
@@ -293,20 +331,24 @@ class _Handler(BaseHTTPRequestHandler):
             body = {}
         path = self.path.split("?", 1)[0]
         self.script.log(path, body)
-        if path.endswith("/count_tokens"):
-            self._send(200, {"input_tokens": 1})
+        if path.endswith("/count_tokens") or path.endswith(":countTokens"):
+            self._send(200, {"input_tokens": 1, "totalTokens": 1})
             return
+        stream = bool(body.get("stream"))
         if path.endswith("/messages"):
             build, stream_prefix = anthropic, True
         elif path.endswith("/chat/completions"):
             build, stream_prefix = chat, False
         elif path.endswith("/responses"):
             build, stream_prefix = responses, True
+        elif path.endswith(":generateContent") or path.endswith(":streamGenerateContent"):
+            build, stream_prefix = gemini, False
+            stream = path.endswith(":streamGenerateContent")  # Gemini says it in the URL
         else:
             self._send(404, {"error": {"message": f"mock: no route {path}"}})
             return
         response, events = build(body, self.script.reply(body))
-        if not body.get("stream"):
+        if not stream:
             self._send(200, response)
             return
         self.send_response(200)
