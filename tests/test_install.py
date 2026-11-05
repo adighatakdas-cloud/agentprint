@@ -237,3 +237,18 @@ def test_setup_help_lists_every_agent_and_does_not_overclaim():
         assert name in install_help
     uninstall_help = " ".join(run("uninstall", "--help").output.split())
     assert "exactly" not in uninstall_help
+
+
+def test_relative_home_gives_hooks_an_absolute_launcher_path(home, monkeypatch):
+    # Agents run hooks from any folder, so a relative launcher path would never be found.
+    monkeypatch.chdir(home.parent)
+    assert run("install", "--home", home.name, "--agent", "claude-code").exit_code == 0
+    settings = json.loads((home / ".claude" / "settings.json").read_text())
+    [command] = [
+        h["command"]
+        for group in settings["hooks"]["PreToolUse"]
+        for h in group["hooks"]
+        if "agentprint-hook" in h["command"]
+    ]
+    assert str(home / ".agentprint" / "bin" / "agentprint-hook") in command
+    assert " home/.agentprint" not in command
