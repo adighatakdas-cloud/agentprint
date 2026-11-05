@@ -1,147 +1,199 @@
 # agentprint
 
-> Find the secrets and risky permissions your AI coding agents leave behind — on your machine and in the packages you publish. Offline. No account.
-
-[![CI](https://github.com/adighatakdas-cloud/agentprint/actions/workflows/ci.yml/badge.svg)](https://github.com/adighatakdas-cloud/agentprint/actions)
-
-**Status:** building — v0.1 in progress.
-
-## Use it with your AI agent
-
 **The security check your AI coding agent runs for you.**
 
+[![CI](https://github.com/adighatakdas-cloud/agentprint/actions/workflows/ci.yml/badge.svg)](https://github.com/adighatakdas-cloud/agentprint/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/adighatakdas-cloud/agentprint/blob/main/LICENSE)
+
+![agentprint finds keys and risky settings left by an AI agent, blocks a package that would leak a key, and previews what install changes](https://raw.githubusercontent.com/adighatakdas-cloud/agentprint/main/docs/demo.gif)
+
+AI coding agents (Claude Code, Codex, Cursor, Gemini CLI and others) write files as they work:
+chat history, settings, permission lists. Keys you paste end up in those files, and those files
+end up in the packages you publish. agentprint is an offline command-line tool that finds:
+
+- **API keys** left in agents' history and settings files;
+- **risky permissions and hooks**, such as `Bash(*)`, auto-approve modes, or hooks that call the network;
+- **agent files other users can read** on a shared machine;
+- **agent files about to ship** in your npm or PyPI package, such as `.claude/settings.local.json`.
+
+`agentprint install` puts the check *inside* each agent. Before the agent publishes a package or
+runs `git push`, agentprint looks at what would be uploaded. If something would leak, the agent
+is stopped and told how to fix it, and it asks you only for what it can't do itself: replacing
+a leaked key.
+
+**Status:** v0.1, pre-release. The `uvx` and `npx` commands work after the first release; until
+then, [run it from source](#from-source).
+
+## Why
+
+- **Agent files leak into packages.** In April 2026 Lakera
+  [reported](https://bdtechtalks.com/2026/04/27/claude-code-api-token-leak/) that of about 46,500
+  npm packages it scanned, 428 shipped `.claude/settings.local.json`, and 33 files in 30
+  packages held credentials. Conventional secret scanning tends to miss these files.
+- **We measured it too.** Our [pilot scan](https://github.com/adighatakdas-cloud/agentprint/blob/main/docs/pilot-2026-11.md)
+  of the newest 1,976 npm packages and 1,997 PyPI releases (5 November 2026, counts only) found
+  agent files in 2.1% of npm packages and 9.2% of PyPI releases. 1 npm and 6 PyPI packages
+  shipped files that should never ship. That sample held no key-shaped strings.
+- **History files keep what you paste.** Agents save prompts and transcripts as plain text in
+  your home folder, where any program you run can read them. A June 2026 Hermes Agent advisory
+  ([CVE-2026-53870](https://github.com/advisories/GHSA-99f9-j8r3-p853)) covers such files being
+  created readable by every user on the machine.
+
+## Quickstart
+
+> Works after the first release. Until then, use [from source](#from-source).
+
 ```bash
-uvx agentprint install   # coming soon: works once agentprint is published to PyPI
+uvx agentprint scan       # 1. check this machine and the current folder
+uvx agentprint install    # 2. put agentprint inside every AI coding agent it finds
 ```
 
-Run it once. After that your agent checks the package publishes and `git push` commands it recognises before they run. If one would leak an API key or a private agent file, the agent is stopped, told exactly what to fix, and told what to ask you to do (like replacing a leaked key).
+3. That's it. Your agents now check before `npm publish`, `uv publish`, `git push` and similar,
+   fix what they find, and tell you which keys to replace.
 
-| Agent | Hook (blocks a leaky publish/push) | MCP server | Instructions note |
-|---|---|---|---|
-| Claude Code | `~/.claude/settings.json` | `~/.claude.json` | `~/.claude/CLAUDE.md` |
-| Codex | `~/.codex/hooks.json` (trust it once in `/hooks`) | `~/.codex/config.toml` | `~/.codex/AGENTS.md` |
-| Cursor | `~/.cursor/hooks.json` | `~/.cursor/mcp.json` | `~/.cursor/rules/agentprint.mdc` |
-| Gemini CLI | `~/.gemini/settings.json` | `~/.gemini/settings.json` | `~/.gemini/GEMINI.md` |
-| Windsurf (Cascade) | `~/.codeium/windsurf/hooks.json` | `~/.codeium/windsurf/mcp_config.json` | `memories/global_rules.md` |
-| Devin Desktop / CLI | `~/.config/devin/config.json` | `~/.config/devin/mcp_config.json` | `~/.devin/rules/agentprint.md` |
-| OpenCode | plugin `~/.config/opencode/plugins/agentprint.js` | `opencode.json` | `AGENTS.md` (only if it won't hide your `~/.claude/CLAUDE.md`) |
-| GitHub Copilot | `~/.copilot/hooks/agentprint.json` (checked against the Copilot CLI docs; VS Code uses it only where it runs the same hooks as the CLI, and its shell tool name there is unverified) | `~/.copilot/mcp-config.json` | `~/.copilot/copilot-instructions.md` |
-| Hermes Agent | `~/.hermes/config.yaml` (**off until you approve it** in `hermes chat`) | `~/.hermes/config.yaml` | none: its only global file is the agent's persona, `SOUL.md` |
-| Antigravity | `~/.gemini/config/hooks.json` | `~/.gemini/config/mcp_config.json` | `~/.gemini/config/rules/agentprint.md` |
-
-What `install` changes, for each agent it finds on your computer:
-
-- **A hook** (where the agent supports them): before the agent runs `npm publish`, `pnpm -r publish`, `npx changeset publish`, `uv publish`, `twine upload`, `git push` and similar, agentprint checks what would be uploaded. Everything else runs untouched. If agentprint itself breaks, the command goes ahead.
-- **An MCP server entry**, so the agent can ask agentprint to check a package or repo on its own.
-- **A short note** in the agent's global instructions file, telling it to run the check and never print your keys.
-
-Before writing, it prints the lines it adds to each file (never your other settings), and it saves a backup of each file in `~/.agentprint/backups`. Running it twice changes nothing. Preview first with `uvx agentprint install --dry-run`.
-
-**To undo:** `uvx agentprint uninstall` takes out only what agentprint added and leaves your own changes alone. A file you haven't touched since comes back byte for byte. `uninstall --agent codex` undoes just one agent. Codex users: Codex runs a new hook only after you trust it — type `/hooks` in Codex once after installing.
-
-From source today: `uv run agentprint install --dry-run`.
-
-**What it can't promise:**
-
-- **The hooks need macOS or Linux.** On Windows, only the MCP server and the instructions note work for now.
-- **Spotting a publish is best effort.** agentprint reads the command line the agent is about to run; it isn't a shell. It follows `cd`, `&&`, `bash -c`, `npm run release` (by reading `package.json`), workspaces and release tools like changesets and lerna. A publish hidden in a Makefile, a shell script file or a heredoc can slip past the hook; the instructions note still tells the agent to check first.
-- **"Could not check" is not "OK".** When agentprint can't tell what would be uploaded (a folder held in a variable, a `pnpm --filter` selection, nothing built in `dist/` yet, git not installed), it lets the command run and says "agentprint could not check this…" so you and the agent know.
-- **Your agents' own approvals still apply.** agentprint only adds a "deny" when it finds a problem; it never approves commands for you. If you use Claude Code too, Cursor also runs Claude Code's hooks, so the check can run twice.
-- **Hermes asks before it runs any new hook.** agentprint never approves its own hook: start `hermes chat` once and accept it. Until then (and in gateway or cron runs that never ask) the Hermes hook is off; the MCP server still works. agentprint only edits `config.yaml` if Hermes has already created it, and leaves your own lines, comments, indentation and line endings as they were; its entries go first in each section. If the file is missing, can't be read safely, or the section uses YAML anchors (`&`, `*`, `<<`), it changes nothing and prints what to add by hand.
-- **Codex's `config.toml`:** agentprint's MCP entry sits in a marked block at the top of the file. If Codex ever writes its own settings inside that block, uninstall keeps those lines and removes only agentprint's.
-
-### Tested inside real agents
-
-The live tests (`tests/live/`, run nightly and on pull requests that touch the hooks) start the real agent program with a pretend model on your own computer: no account, no real key, a throwaway home folder. The pretend model asks the agent to run `npm publish` or `git push` (fake versions that only leave a marker file), after `agentprint install`. Each test checks that a package or repo with a leaked key is **stopped and the model is told why**, that a clean one **goes ahead**, and that `agentprint uninstall` takes agentprint back out.
-
-| Agent | Version tested | What the live test proves |
-|---|---|---|
-| Claude Code | 2.1.318 | hook blocks leaky publish/push, reason reaches the model; clean ones run |
-| Codex | 0.166.0 | same (run with `--dangerously-bypass-hook-trust`, the documented way to run a hook unattended; you trust it once in `/hooks`) |
-| OpenCode | 1.19.5 | same, through agentprint's OpenCode plugin |
-| Gemini CLI | 0.67.0 | same |
-| GitHub Copilot CLI | 1.0.105 | same, with your own model key (BYOK), no GitHub login |
-| Hermes Agent | 0.19.0 | same (run with `--accept-hooks`, the documented way to approve a hook unattended; you approve it once in `hermes chat`) |
-| Cursor, Windsurf, Antigravity | – | docs-verified only: desktop apps with no headless mode to drive in a test |
-| Devin Desktop / Devin CLI | – | docs-verified only: needs a Devin account to run |
-
-## What it will do
-
-- Find API keys pasted into Claude Code, Codex, Cursor, Gemini CLI, Windsurf, OpenCode, GitHub Copilot, Hermes Agent and Google Antigravity history files
-- Flag over-broad agent permissions (`Bash(*)`, auto-approve modes), hooks that call the network, and agent files other users on the machine can read
-- Catch `.claude/` and other agent folders (24 agents) before they ship inside your npm or PyPI package
-- Output for humans, JSON and SARIF; run as a GitHub Action, a pre-publish script or a pre-commit hook
-
-## Run it (from source)
+### From source
 
 ```bash
 git clone https://github.com/adighatakdas-cloud/agentprint && cd agentprint
 uv sync
-uv run agentprint scan          # your machine + current folder
+uv run agentprint scan
 ```
 
-More:
+More (prefix with `uv run` from source):
 
 ```bash
-uv run agentprint scan --no-home .     # just this repo
-uv run agentprint pack .               # what would ship in your npm/PyPI package
-uv run agentprint pack my-pkg-1.0.tgz  # an already-built package (.tgz, .tar.gz, .whl, .zip)
-uv run agentprint scan --format json   # machine-readable output
-uv run agentprint pack . --format sarif > agentprint.sarif   # for GitHub code scanning
-uv run agentprint pack . --format agent  # short report for an AI agent: verdict, fix steps, ask_human
+agentprint scan --no-home .            # only this project, not your home folder
+agentprint pack .                      # what your npm/PyPI package would publish
+agentprint pack dist/my-pkg-1.0.tgz    # an already-built package (.tgz, .tar.gz, .whl, .zip)
+agentprint scan --format json          # also: sarif, agent (short report for an AI agent)
+agentprint install --dry-run           # show what install would change, write nothing
+agentprint uninstall                   # take agentprint back out of every agent
 ```
 
-Exit codes: `0` nothing at or above `--fail-on` (default `high`), `1` findings, `2` usage/packaging error.
-Every secret is shown redacted (first 4 characters + length). `scan` is fully offline.
-`pack` on a Python project runs `uv build`, which executes the project's build backend and may download it from PyPI — use it on projects you trust, or pass an already-built archive.
+Exit codes: `0` nothing at or above `--fail-on` (default `high`), `1` findings, `2` usage or
+packaging error. `pack` on a Python project runs `uv build`, which runs the project's build
+backend and may download it: use it on projects you trust, or pass an already-built archive.
 
-## Install and use in CI
+## What it checks
 
-> Available after the first release. Until then, run it from source as above.
+| ID | What it finds | Severity |
+|---|---|---|
+| AP001 | API key in an agent's history, transcript, paste cache, edit backups or chat database | high |
+| AP002 | API key in an agent settings or allowlist file | critical |
+| AP003 | Over-broad permission: `Bash(*)`, `bypassPermissions`, auto-approve modes ([per agent](https://github.com/adighatakdas-cloud/agentprint/blob/main/docs/supported-agents.md#what-ap003-flags-in-each-agent)) | medium |
+| AP004 | Agent hook that calls the network: `curl`, `wget`, `nc`, `\| sh`, a URL | medium |
+| AP005 | API key written inline in an MCP server entry (env, headers, args, URL) | critical |
+| AP006 | Agent file (e.g. `.claude/settings.local.json`, `.aider.chat.history.md`) would ship in your npm/PyPI package | high, medium or low |
+| AP007 | Personal agent file (e.g. `.claude/settings.local.json`, `CLAUDE.local.md`) in a git repo but not gitignored, or already committed | low |
+| AP008 | Agent history, settings or key store readable by other users on this machine (macOS and Linux) | medium; high for key stores |
 
-```bash
-uvx agentprint scan     # with uv (Python)
-npx agentprint-cli pack # with npm; runs the same tool through uvx or pipx
+Keys are found by pattern: Anthropic, OpenAI, GitHub, AWS, Stripe, Slack and Google formats,
+plus a generic "secret-looking name = random-looking value" rule. Every finding carries a fix
+written for the AI agent that reads it: which file, which setting, which line to add to
+`.gitignore`, and what to ask the human.
+
+## Works inside your AI agent
+
+`agentprint install` finds the agents on your computer and adds three things to each:
+
+- **A hook** that runs before the agent's shell commands. Only package publishes (`npm`, `pnpm`,
+  `yarn` and `bun publish`, `uv publish`, `twine upload`, changesets, lerna, ...) and `git push`
+  are checked; everything else runs untouched.
+- **An MCP server** (`agentprint mcp`) with the tools `check_package`, `check_push`,
+  `scan_secrets` and `explain_finding`, so the agent can check on its own.
+- **A short note** in the agent's global instructions: check before publishing or pushing, and
+  never print a key.
+
+When a publish would leak, this is what the agent reads (shortened):
+
+```text
+agentprint: BLOCK — 2 problems to fix before publishing
+[1] critical AP002 Secret in agent file inside package (claude-code)
+    where: "my-app-1.0.0.tgz!.claude/settings.local.json" line 4
+    fix:
+      - Delete the key from the source file ".claude/settings.local.json" in the project (line 4) ...
+    ask_human:
+      - Rotate the OpenAI API key that starts "sk-p…(len 56)": revoke it and create a new one at ...
+[2] high AP006 Agent file would ship in package (claude-code)
+    fix:
+      - Add the line ".claude/" to .npmignore in the package folder ...
+Do every fix step, tell the human each ask_human item, then re-run the same agentprint check.
 ```
 
-**Stop a leaky `npm publish`.** Add to your `package.json`:
+Before it writes anything, `install` prints the lines it adds to each file and backs the file up
+in `~/.agentprint/backups`. Running it twice changes nothing. **To undo:** `agentprint uninstall`
+takes out only what agentprint added (`--agent codex` for one agent); a file you haven't touched
+since comes back byte for byte.
+
+Good to know:
+
+- **Codex** runs a new hook only after you trust it: type `/hooks` in Codex once after installing.
+- **Hermes Agent** asks before it runs any new hook, and agentprint never approves its own. Start
+  `hermes chat` once and accept it. Until then, and in gateway or cron runs that never ask, the
+  hook is off; the MCP server still works.
+- **Hooks need macOS or Linux.** On Windows, only the MCP server and the note are installed for now.
+- **agentprint only ever blocks, never approves.** Your agents' own approval rules still apply,
+  and if agentprint itself fails, the command runs, with a note that it could not check.
+- **Spotting a publish is best effort.** agentprint reads the command line; it isn't a shell. It
+  follows `cd`, `&&`, `bash -c`, package scripts, workspaces and release tools, but a publish
+  hidden in a Makefile, a script file or a heredoc can slip past (the note still tells the agent
+  to check). When unsure what would be uploaded, it says "could not check", never "OK".
+
+## Supported agents
+
+| Agent | Scan | Install | Tested |
+|---|---|---|---|
+| Claude Code | yes | hook, MCP, note | live in CI |
+| Codex | yes | hook, MCP, note | live in CI |
+| OpenCode | yes | plugin, MCP, note | live in CI |
+| Gemini CLI | yes | hook, MCP, note | live in CI |
+| GitHub Copilot | yes (CLI and VS Code) | hook, MCP, note | live in CI (Copilot CLI) |
+| Hermes Agent | yes | hook (after you approve it), MCP | live in CI |
+| Cursor | yes | hook, MCP, note | docs-verified |
+| Windsurf | yes | hook, MCP, note | docs-verified |
+| Google Antigravity | yes | hook, MCP, note | docs-verified |
+| Devin Desktop / CLI | not yet (its new folders) | hook, MCP, note | docs-verified |
+
+**Scan-only** (15 more): Aider, Cline, Kilo Code, Qwen Code, Crush, Goose, Kiro, Factory Droid,
+Continue, Zed, Pi, OpenClaw, Warp, Roo Code, Augment. agentprint knows which of their files must
+never ship in a package and which personal files they write inside a project.
+
+**Live in CI:** a nightly job runs the real agent program against a scripted mock model (no
+account, no real key, a throwaway home folder) and checks that a leaky `npm publish` or `git push`
+is stopped with the reason reaching the model, and a clean one goes ahead. **Docs-verified:**
+built from the agent's documentation and real folders, not driven end to end (desktop apps with
+no headless mode, or an account needed). Versions and file paths:
+[docs/supported-agents.md](https://github.com/adighatakdas-cloud/agentprint/blob/main/docs/supported-agents.md).
+
+## Use it in CI
+
+> Works after the first release.
+
+**Stop a leaky `npm publish`.** In `package.json` (the npm name `agentprint` belongs to an
+unrelated project, so the wrapper is `agentprint-cli`; it runs the same tool through uvx or pipx):
 
 ```json
-"scripts": {
-  "prepublishOnly": "npx agentprint-cli pack"
-}
+"scripts": { "prepublishOnly": "npx agentprint-cli pack" }
 ```
 
-**GitHub Action.** Add `.github/workflows/agentprint.yml`:
+**GitHub Action.** In `.github/workflows/agentprint.yml`:
 
 ```yaml
-name: agentprint
 on: [push, pull_request]
-permissions:
-  contents: read
-  security-events: write  # only needed for upload-sarif
+permissions: { contents: read, security-events: write }  # security-events: for upload-sarif
 jobs:
   agentprint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: adighatakdas-cloud/agentprint@v0.1.0  # better: pin the release's commit SHA
-        with:
-          command: pack        # or scan
-          upload-sarif: true   # show results in the repo's Security tab
+        with: { command: pack, upload-sarif: true }  # command: pack or scan
 ```
 
-| Input | Default | Meaning |
-|---|---|---|
-| `command` | `pack` | `pack`: what your npm/PyPI package would publish. `scan`: agent settings files in the repo. |
-| `path` | `.` | Project directory, or a built `.tgz`/`.whl` for `pack`. |
-| `fail-on` | `high` | Fail on findings at or above `low`, `medium`, `high`, `critical`; `none` only reports. |
-| `upload-sarif` | `false` | Upload results to code scanning. Needs `security-events: write`; private repos also need GitHub Code Security. |
+Inputs: `command`, `path` (default `.`), `fail-on` (default `high`; `none` only reports),
+`upload-sarif` (default `false`). Outputs: `exit-code`, `sarif-file`.
 
-The step fails with agentprint's own exit code (`1` findings, `2` error), after the SARIF upload.
-Outputs: `exit-code` and `sarif-file`.
-
-**pre-commit.** Add to `.pre-commit-config.yaml`:
+**pre-commit.** In `.pre-commit-config.yaml`:
 
 ```yaml
 repos:
@@ -152,57 +204,55 @@ repos:
       - id: agentprint-scan   # keys in this repo's agent settings
 ```
 
-## Checks
+## Privacy
 
-| ID | What it finds | Severity |
-|---|---|---|
-| AP001 | API key in an agent's history, transcript, paste cache, edit backups or chat database | high |
-| AP002 | API key in an agent settings / allowlist file | critical |
-| AP003 | Over-broad permission: `Bash(*)`, `bypassPermissions`, Codex `never` + `danger-full-access`, Cursor `Shell(*)` / `approvalMode: unrestricted`, Gemini bare `run_shell_command` / trusted MCP server, Windsurf allow-listed shell, OpenCode `"allow"`, Copilot `allow-all` / VS Code `chat.tools.global.autoApprove`, Hermes `approvals.mode: off` / `hooks_auto_accept`, Antigravity `always-proceed` / `command(*)` | medium |
-| AP004 | Agent hook (or Codex `notify`) runs a network command: curl, wget, nc, `\| sh`, Invoke-WebRequest, a URL | medium |
-| AP005 | API key written inline in an MCP server entry (env, headers, args, URL); replaces AP002 for that key | critical |
-| AP006 | Agent file (e.g. `.claude/settings.local.json`, `.aider.chat.history.md`, `.hermes/`) would ship in your npm/PyPI package | high/medium/low |
-| AP007 | Personal agent file (`.claude/settings.local.json`, `CLAUDE.local.md`, `.gemini/.env`, `.github/copilot/settings.local.json`, Aider transcripts) in a git repo but not gitignored, or already committed | low |
-| AP008 | Agent history, settings or credential store readable by other users on this machine (file mode and every folder above it); fix is an exact `chmod 600`. POSIX only | medium; high for key stores or files holding a key |
+- **Offline.** `scan` makes no network calls. No telemetry, no account.
+- **Keys are redacted the moment they are found**, to their first 4 characters and length
+  (`sk-a…(len 108)`), in every output format.
+- **Found keys are never used**: not sent anywhere, not tested, not even to check whether they
+  still work.
+- **Credential stores are never read.** Files where a key belongs (`~/.codex/auth.json`,
+  `~/.hermes/.env`, ...) are only checked for who can read them.
+- **Downloads happen only when you start them:** `uvx`/`npx` fetching agentprint, and `pack`
+  running your own `npm pack --dry-run` or `uv build`.
 
-Every finding carries a fix written for the AI agent that reads it: which file, which setting to change, which line to add to `.gitignore`, and what to ask the human (rotating a key).
+## Alternatives
 
-## Supported agents
+Checked against each project's README on 5 November 2026. These tools do different jobs and
+work well side by side.
 
-| Agent | What is read | Verified |
-|---|---|---|
-| Claude Code | `~/.claude/` history, transcripts, paste cache, file backups; settings; `~/.claude.json` and `.mcp.json` MCP servers | 2026-10-08, macOS |
-| Codex | `~/.codex/` history, sessions, attachments; `config.toml` (+ project), `hooks.json` | 2026-10-08, macOS |
-| Cursor | `~/.cursor/` agent transcripts, `mcp.json`, `cli-config.json`, `hooks.json`; IDE chat history in `state.vscdb` (SQLite) | 2026-11-05, macOS |
-| Gemini CLI | `~/.gemini/settings.json` (+ project), chats and logs in `~/.gemini/tmp/` | 2026-11-05, macOS (folders only; file names from docs) |
-| Windsurf | `~/.codeium/windsurf/` `mcp_config.json`, `hooks.json`, memories; command allow list in the editor's `settings.json` | 2026-11-05, macOS (folders only; file names from docs) |
-| OpenCode | `opencode.json(c)` (global + project); session database `opencode.db` (SQLite) and storage | 2026-11-05, macOS |
-| GitHub Copilot (CLI + VS Code) | `~/.copilot/` session history, logs, `settings.json`, `mcp-config.json`, `hooks/`; VS Code chat sessions and `settings.json`; project `.github/copilot/`, `.github/hooks/`, `.vscode/mcp.json` | 2026-11-05, macOS |
-| Hermes Agent | `~/.hermes/` `config.yaml` (approvals, hooks, MCP), `state.db` history (SQLite), sessions, memories, skills, `SOUL.md`; profiles | 2026-11-05, macOS (folder only; file names from docs) |
-| Google Antigravity | `~/.gemini/antigravity*/brain/` transcripts and artifacts; `~/.gemini/config/hooks.json` and `mcp_config.json`; CLI `settings.json`; project `.agents/` | 2026-11-05, macOS |
+| Tool | What it focuses on | Account or network | License |
+|---|---|---|---|
+| [AgentShield](https://github.com/affaan-m/agentshield) | Claude Code setups (`~/.claude/`): secrets, permissions, hooks, MCP servers, prompt-injection vectors; `--fix`, GitHub Action, SARIF | none for the scan; an optional deep-analysis mode calls Claude with your API key | MIT |
+| [snyk/agent-scan](https://github.com/snyk/agent-scan) | MCP servers and skills across many agents: prompt injection, tool poisoning, malware in skills | needs a Snyk account and `SNYK_TOKEN`; starts or connects to MCP servers (with consent) to read their tools | Apache-2.0 |
+| [agentsweep](https://github.com/Ishannaik/agent-sweep) | secrets in agent history files across 32 agents, with in-place redaction | none, offline | MIT |
+| [gitleaks](https://github.com/gitleaks/gitleaks), [trufflehog](https://github.com/trufflesecurity/trufflehog) | secrets anywhere in git history and files; not specific to AI agents | none for gitleaks; trufflehog can verify keys with their providers | MIT; AGPL-3.0 |
+| **agentprint** | keys, permissions, hooks and file modes across 9 agents' files, plus agent files in npm/PyPI packages; installs itself into 10 agents as a pre-publish and pre-push check | none, offline; never uses a key it finds | MIT |
 
-**Scan-only** (package rules for `agentprint pack`, plus the files they write inside a project): Aider, Cline, Kilo Code, Qwen Code, Crush, Goose, Kiro, Factory Droid, Continue, Zed, Pi, OpenClaw, Warp, Roo Code, Augment. Their instruction and rules files (`AGENTS.md`, `.clinerules/`, `.goosehints`, …) are never treated as leaks.
+## How it works
 
-Credential stores where a key is expected (`~/.codex/auth.json`, `~/.gemini/oauth_creds.json` and `.env`, OpenCode `auth.json`, `~/.hermes/.env` and `auth.json`, `~/.copilot/providers.json` and `config.json`, Antigravity `mcp_oauth_tokens.json`) are never read; AP008 only checks who can read them.
-SQLite chat databases are opened read-only, and at most 64 MB of text is read from each. Hermes `config.yaml` is read with a safe YAML loader.
+One module per agent knows where that agent keeps its files; one module per check (AP001 to
+AP008) decides what is risky; per-agent integrations translate hook payloads and replies. The
+design and its safety decisions are in
+[docs/ARCHITECTURE.md](https://github.com/adighatakdas-cloud/agentprint/blob/main/docs/ARCHITECTURE.md).
 
-Not covered yet: Windsurf Cascade conversations and older Antigravity conversations (binary `.pb` files) and Windsurf's new Devin Desktop paths; Cursor's IDE auto-run mode (stored inside `state.vscdb`); OpenCode plugins (JavaScript); Hermes outbound webhooks.
+Tech: Python 3.11+, [uv](https://docs.astral.sh/uv/), typer, rich, the MCP Python SDK, pytest,
+ruff. A thin npm wrapper runs the same Python tool.
 
 ## Help scan npm and PyPI
 
-We measure how often agent files (and keys inside them) ship in newly published packages,
-and tell maintainers privately first. Volunteers each scan a small shard: see
-[docs/VOLUNTEER_SCAN.md](docs/VOLUNTEER_SCAN.md).
+We measure how often agent files, and keys inside them, ship in newly published packages, and
+tell maintainers privately first. Volunteers each scan a small shard and post counts only:
+see [docs/VOLUNTEER_SCAN.md](https://github.com/adighatakdas-cloud/agentprint/blob/main/docs/VOLUNTEER_SCAN.md).
 
-## Tech
+## Contributing
 
-Python 3.11+, [uv](https://docs.astral.sh/uv/), typer, rich, pytest, ruff.
+Adding an agent takes one new file and one registry line: see
+[CONTRIBUTING.md](https://github.com/adighatakdas-cloud/agentprint/blob/main/CONTRIBUTING.md) and the
+[good first issues](https://github.com/adighatakdas-cloud/agentprint/blob/main/docs/good-first-issues.md).
 
-## Security
+## Security and license
 
-Found a security problem in agentprint? See [SECURITY.md](SECURITY.md). agentprint never sends
-your data anywhere.
-
-## License
-
-MIT
+Found a security problem in agentprint? Please report it privately, as
+[SECURITY.md](https://github.com/adighatakdas-cloud/agentprint/blob/main/SECURITY.md) explains.
+agentprint is released under the [MIT License](https://github.com/adighatakdas-cloud/agentprint/blob/main/LICENSE).
