@@ -2,17 +2,31 @@
 
 For each detected agent this adds, through the agent's own mechanisms: a hook that checks
 publishes and pushes (where the agent has hooks), an MCP server entry, and a short instruction
-block in its global rules file. It prints a diff of every change, backs each file up first, is
-idempotent, and `uninstall` puts every file back byte for byte when it hasn't changed since.
+block in its global rules file. It prints agentprint's own added/removed lines, backs each file
+up first, is idempotent, and `uninstall` takes out only what agentprint added (restoring the
+original bytes when nothing else in the file changed).
 
 Ruling (how agents start agentprint): hooks call a small launcher script,
-~/.agentprint/bin/agentprint-hook, which runs `<agentprint> guard` and turns every failure into
-"allow" (exit 1). <agentprint> is the absolute path of a permanent install if one is on PATH,
-else `uvx agentprint` by absolute path. Why: uv exits 2 on its own errors, and exit 2 means
-"block" to Claude Code, Codex, Gemini CLI and Cursor; without the launcher a cold uv cache or
-an offline laptop could block every shell command. Absolute paths also survive Gemini CLI's
-sanitized hook environment and GUI apps that don't see the shell PATH. Cost if wrong: one extra
-file on disk, and POSIX only (no Windows hooks yet).
+~/.agentprint/bin/agentprint-hook, which runs `<agentprint> guard`. <agentprint> is the absolute
+path of a permanent install if one is on PATH, else `uvx agentprint==<this version>` by absolute
+path. Absolute paths survive Gemini CLI's sanitized hook environment and GUI apps that don't
+see the shell PATH. Cost if wrong: one extra file on disk, and POSIX only (no Windows hooks).
+
+Launcher exit codes, from each agent's docs (rechecked 2026-11-05):
+- Claude Code: 0 = go on (stdout JSON read), 2 = block, others = non-blocking error.
+  https://code.claude.com/docs/en/hooks
+- Codex: 0 = success, 2 = block (stderr is the reason). https://learn.chatgpt.com/docs/hooks
+- Gemini CLI: 0 + JSON, 2 = block, others = warning. https://geminicli.com/docs/hooks/reference
+- Cursor: 0 = read JSON (invalid or empty JSON blocks), 2 = block, others fail open.
+  https://cursor.com/docs/hooks
+- Windsurf Cascade: 2 = block, others proceed (docs.windsurf.com hooks page, archived).
+- Devin: 0 = continue, 2 = block, others logged. https://docs.devin.ai/cli/extensibility/hooks/overview
+- GitHub Copilot (not wired yet): preToolUse treats any non-zero exit as deny.
+  https://docs.github.com/en/copilot/reference/hooks-reference
+So: allow = exit 0 with the agent's own allow output; block = the agent's JSON block on exit 0,
+or exit 2 for Windsurf (guard exits 3, the launcher turns it into 2). Anything else (uv's own
+errors exit 2, a crash, a missing install) = exit 0 plus the agent's allow output and a warning
+on stderr: a broken agentprint never blocks, and never answers with Cursor-breaking empty JSON.
 """
 
 from __future__ import annotations
@@ -79,20 +93,40 @@ def resolve_agentprint() -> list[str]:
     return [shutil.which("uvx") or "uvx", f"agentprint=={__version__}"]
 
 
+def _native_allows() -> str:
+    """`case` arms printing each agent's own "allow" answer (only agents that need output)."""
+    arms = []
+    for name, integration in ALL_INTEGRATIONS.items():
+        allow = integration.reply(None).stdout.strip()
+        if allow:
+            arms.append(f"  {name}) printf '%s\\n' {shlex.quote(allow)} ;;")
+    return "\n".join(arms)
+
+
 def launcher_script(agentprint: list[str]) -> str:
     command = " ".join(shlex.quote(part) for part in agentprint)
     return f"""#!/bin/sh
 # {HOOK_MARK}: Written by `agentprint install`; `agentprint uninstall` deletes it.
 # Every agent hook agentprint installs runs this script. It starts agentprint's check before a
 # package publish or git push, and makes sure a missing or broken agentprint can never block
-# your agent: any failure lets the command through.
-{command} guard "$@"
+# your agent: any failure lets the command through (exit 0, the agent's own "allow").
+agent=""
+previous=""
+for arg in "$@"; do
+  [ "$previous" = "--agent" ] && agent="$arg"
+  previous="$arg"
+done
+out=$({command} guard "$@")
 status=$?
 case "$status" in
-  0) exit 0 ;;
-  {BLOCK_EXIT}) exit 2 ;;
-  *) echo "agentprint: hook check failed (exit $status); the command was allowed" >&2; exit 1 ;;
+  0) [ -n "$out" ] && printf '%s\\n' "$out"; exit 0 ;;
+  {BLOCK_EXIT}) [ -n "$out" ] && printf '%s\\n' "$out"; exit 2 ;;
 esac
+echo "agentprint: hook check failed (exit $status); the command was allowed" >&2
+case "$agent" in
+{_native_allows()}
+esac
+exit 0
 """
 
 

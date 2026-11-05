@@ -22,10 +22,8 @@ def run_hook(
 ) -> HookReply:
     integration = ALL_INTEGRATIONS.get(agent)
     if integration is None:
-        # Exit 1 is "hook error, carry on" for every supported agent.
-        return HookReply(
-            stderr=f"agentprint: unknown agent {agent!r}; command allowed", exit_code=1
-        )
+        # Exit 0 = allow everywhere; non-zero means "deny" to some agents (GitHub Copilot).
+        return HookReply(stderr=f"agentprint: unknown agent {agent!r}; command allowed")
     try:
         payload = json.loads(raw)
         if not isinstance(payload, dict):
@@ -46,4 +44,4 @@ def run_hook(
         try:
             return integration.reply(Verdict(False, warning=warning))
         except Exception:  # noqa: BLE001
-            return HookReply(stderr=warning, exit_code=1)
+            return HookReply(stderr=warning)

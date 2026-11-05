@@ -199,7 +199,7 @@ def test_garbage_input_fails_open_with_warning():
 
 def test_unknown_agent_fails_open():
     reply = hook.run_hook("nope", "{}", {})
-    assert reply.exit_code == 1 and "unknown agent" in reply.stderr
+    assert reply.exit_code == 0 and "unknown agent" in reply.stderr
 
 
 def test_internal_error_fails_open_with_visible_warning(monkeypatch, project):

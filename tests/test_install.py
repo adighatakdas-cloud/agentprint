@@ -3,7 +3,6 @@
 import json
 import os
 import stat
-import subprocess
 import tomllib
 from pathlib import Path
 
@@ -12,7 +11,6 @@ from typer.testing import CliRunner
 
 from agentprint import install
 from agentprint.cli import app
-from agentprint.integrations.base import BLOCK_EXIT
 from tests import fakes
 
 runner = CliRunner()
@@ -219,23 +217,4 @@ def test_symlinked_rules_file_is_edited_in_place(tmp_path):
     assert dotfiles.read_text() == "# shared\n"
 
 
-@pytest.mark.parametrize(
-    ("agentprint_exit", "expected"),
-    [(0, 0), (BLOCK_EXIT, 2), (2, 1), (1, 1), (127, 1)],
-)
-def test_launcher_never_blocks_on_failure(tmp_path, agentprint_exit, expected):
-    # A stand-in for agentprint that reads the hook input and exits with a given code.
-    fake = ["sh", "-c", f"cat >/dev/null; exit {agentprint_exit}", "fake"]
-    script = tmp_path / "agentprint-hook"
-    script.write_text(install.launcher_script(fake))
-    result = subprocess.run(
-        ["sh", str(script), "--agent", "x"], input="{}", capture_output=True, text=True
-    )
-    assert result.returncode == expected
-
-
-def test_launcher_with_missing_agentprint_lets_commands_through(tmp_path):
-    script = tmp_path / "agentprint-hook"
-    script.write_text(install.launcher_script([str(tmp_path / "gone" / "agentprint")]))
-    result = subprocess.run(["sh", str(script)], input="{}", capture_output=True, text=True)
-    assert result.returncode == 1 and "allowed" in result.stderr
+# Launcher exit codes and output per agent: tests/test_launcher.py.
