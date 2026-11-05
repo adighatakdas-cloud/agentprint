@@ -1,4 +1,7 @@
-"""GitHub Copilot: Copilot CLI and VS Code's "Copilot" agent share ~/.copilot. Checked 2026-11-05.
+"""GitHub Copilot. Checked against the Copilot CLI docs on 2026-11-05.
+
+Verified for the Copilot CLI. VS Code says its "Copilot" agent runs the same runtime and reads
+~/.copilot too, but its shell tool name and payload there are not documented: unverified.
 
 - Hook: a file of agentprint's own, ~/.copilot/hooks/agentprint.json
   (`{"version": 1, "hooks": {"preToolUse": [{"type": "command", "bash": ..., "timeoutSec": ...,
@@ -116,7 +119,7 @@ def reply(verdict: Verdict | None) -> HookReply:
 
 INTEGRATION = Integration(
     name=NAME,
-    label="GitHub Copilot (CLI and VS Code)",
+    label="GitHub Copilot",
     docs=(
         "https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-hooks-reference",
         "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers",

@@ -25,7 +25,7 @@ Run it once. After that your agent checks the package publishes and `git push` c
 | Windsurf (Cascade) | `~/.codeium/windsurf/hooks.json` | `~/.codeium/windsurf/mcp_config.json` | `memories/global_rules.md` |
 | Devin Desktop / CLI | `~/.config/devin/config.json` | `~/.config/devin/mcp_config.json` | `~/.devin/rules/agentprint.md` |
 | OpenCode | plugin `~/.config/opencode/plugins/agentprint.js` | `opencode.json` | `AGENTS.md` (only if it won't hide your `~/.claude/CLAUDE.md`) |
-| GitHub Copilot (CLI and VS Code) | `~/.copilot/hooks/agentprint.json` | `~/.copilot/mcp-config.json` | `~/.copilot/copilot-instructions.md` |
+| GitHub Copilot | `~/.copilot/hooks/agentprint.json` (checked against the Copilot CLI docs; VS Code uses it only where it runs the same hooks as the CLI, and its shell tool name there is unverified) | `~/.copilot/mcp-config.json` | `~/.copilot/copilot-instructions.md` |
 | Hermes Agent | `~/.hermes/config.yaml` (**off until you approve it** in `hermes chat`) | `~/.hermes/config.yaml` | none: its only global file is the agent's persona, `SOUL.md` |
 | Antigravity | `~/.gemini/config/hooks.json` | `~/.gemini/config/mcp_config.json` | `~/.gemini/config/rules/agentprint.md` |
 
