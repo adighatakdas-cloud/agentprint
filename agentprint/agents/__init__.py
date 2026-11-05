@@ -5,8 +5,9 @@ from .claude_code import ClaudeCode
 from .codex import Codex
 from .cursor import Cursor
 from .gemini import Gemini
+from .windsurf import Windsurf
 
-ALL_AGENTS: tuple[Agent, ...] = (ClaudeCode(), Codex(), Cursor(), Gemini())
+ALL_AGENTS: tuple[Agent, ...] = (ClaudeCode(), Codex(), Cursor(), Gemini(), Windsurf())
 
 
 def by_name(name: str) -> Agent | None:
