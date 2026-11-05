@@ -8,14 +8,17 @@ python -m tools.ecoscan summary --out DIR                          rebuild the t
 from __future__ import annotations
 
 import argparse
+import json
+import sys
 from functools import partial
 from pathlib import Path
 
 from . import npm, pypi
+from .merge import MergeError, merge
 from .net import Http, RateLimiter, Tally
 from .run import REGISTRIES, run
 from .shard import parse_shard, parse_window
-from .summary import FULL_RUN, finish
+from .summary import FULL_RUN, finish, render
 
 # Fixed on purpose: volunteers cannot make the scan faster or ruder. Requests per second, per
 # host. jsDelivr asks heavy users to stay under 100 requests a minute or ask first.
@@ -117,7 +120,28 @@ def main(argv: list[str] | None = None) -> int:
     report = sub.add_parser("summary", help="rebuild public/summary.json and private findings")
     report.add_argument("--out", type=Path, required=True)
     report.add_argument("--full", type=int, default=FULL_RUN, help="packages to project for")
+
+    add = sub.add_parser("merge", help="add up volunteers' public summaries for one round")
+    add.add_argument("summaries", type=Path, nargs="+", help="public/summary.json files")
+    add.add_argument("--out", type=Path, help="write the total here (JSON)")
     args = parser.parse_args(argv)
+
+    if args.command == "merge":
+        try:
+            merged = merge(args.summaries)
+        except MergeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        if args.out:
+            args.out.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+        print(render(merged["ecosystems"]))
+        for eco, part in merged["ecosystems"].items():
+            r = part["round"]
+            print(
+                f"{eco}: shards {len(r['merged'])}/{r['shards']} merged; "
+                f"missing {r['missing'] or 'none'}; unfinished {r['incomplete'] or 'none'}"
+            )
+        return 0
 
     if args.command == "window":
         hi = REGISTRIES[args.eco].head(_http(), Tally()) - SKIP_NEWEST[args.eco]
