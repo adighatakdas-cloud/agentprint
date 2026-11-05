@@ -47,8 +47,13 @@ def _eco(out: Path, eco: str, full: int) -> dict | None:
     wall = sum(s.get("end", s["start"]) - s["start"] for s in sessions)
     done_in_sessions = sum(s.get("processed", 0) for s in sessions) or len(rows)
     per_pkg_seconds = wall / done_in_sessions
-    per_pkg_bytes = package_bytes / len(rows)
     validated = [r for r in rows if r.get("validated") is not None]
+    # A tarball fetched only to check jsDelivr's list is research overhead, not scan cost. The
+    # sample is random, so the other packages stand for the whole run.
+    check_only = [r for r in validated if not r["candidate_count"]]
+    basis = [r for r in rows if not (r.get("validated") is not None and not r["candidate_count"])]
+    per_pkg_bytes = sum(r.get("bytes", 0) for r in basis) / max(1, len(basis))
+    tarball_mean = sum(r.get("bytes", 0) for r in validated) / max(1, len(validated))
     return {
         "targets": targets,
         "processed": len(rows),
@@ -82,6 +87,7 @@ def _eco(out: Path, eco: str, full: int) -> dict | None:
             "enumeration": enum_bytes,
             "packages": package_bytes,
             "total": enum_bytes + package_bytes,
+            "validation_only": sum(r.get("bytes", 0) for r in check_only),
             "per_package_mean": round(per_pkg_bytes),
         },
         "wall_seconds": round(wall, 1),
@@ -89,6 +95,7 @@ def _eco(out: Path, eco: str, full: int) -> dict | None:
         "projection": {
             "packages": full,
             "bytes": round(full * per_pkg_bytes + enum_bytes * full / targets),
+            "bytes_if_every_tarball_downloaded": round(full * tarball_mean) if validated else None,
             "hours": round(
                 (per_pkg_seconds * full + meta.get("enumeration_seconds", 0) * full / targets)
                 / 3600,
@@ -141,11 +148,15 @@ def render(summary: dict) -> str:
             f"validation sample    {s['validation']['identical']}/{s['validation']['sampled']} "
             f"jsDelivr lists identical to the tarball",
             f"downloaded           {_mb(s['bytes']['total'])} in {s['requests']} requests "
-            f"(mean {_mb(s['bytes']['per_package_mean'])} per package)",
+            f"({_mb(s['bytes']['validation_only'])} only for the validation sample; "
+            f"scan cost {_mb(s['bytes']['per_package_mean'])} per package)",
             f"wall time            {s['wall_seconds'] / 60:,.1f} min "
             f"({s['seconds_per_package']:.2f} s per package)",
             f"projected {s['projection']['packages']:,} packages: "
             f"{_mb(s['projection']['bytes'])}, {s['projection']['hours']} h",
-            "",
         ]
+        if s["projection"]["bytes_if_every_tarball_downloaded"] is not None:
+            every = s["projection"]["bytes_if_every_tarball_downloaded"]
+            lines.append(f"  (downloading every tarball instead: {_mb(every)})")
+        lines.append("")
     return "\n".join(lines)

@@ -171,6 +171,23 @@ def test_summary_counts_packages_by_agent_kind_and_rule(tmp_path):
     assert "secret-pkg" not in json.dumps(s)  # counts only, never package names
 
 
+def test_validation_downloads_are_left_out_of_the_projection(tmp_path):
+    agents_md = ("AGENTS.md", "agents-md", "instructions", False)
+    rows = [_rec(f"p{i}") for i in range(3)]
+    rows.append(_rec("v", method="jsdelivr+tarball", validated=True, validate_diff=0))
+    rows[-1]["bytes"] = 100_000  # tarball fetched only to check jsDelivr's list
+    rows.append(_rec("c", candidates=[agents_md], method="jsdelivr+tarball", validated=True))
+    rows[-1]["bytes"] = 5_000  # tarball needed anyway: it has a candidate path
+    (tmp_path / "results-npm.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (tmp_path / "meta-npm.json").write_text(json.dumps({"enumeration_bytes": 500}))
+    s = summarize(tmp_path, full=50_000)["npm"]
+    assert s["bytes"]["total"] == 500 + 3_000 + 100_000 + 5_000
+    assert s["bytes"]["validation_only"] == 100_000
+    assert s["bytes"]["per_package_mean"] == 2_000  # (3 * 1000 + 5000) / 4
+    assert s["projection"]["bytes"] == 50_000 * 2_000 + 500 * 50_000 // 5
+    assert s["projection"]["bytes_if_every_tarball_downloaded"] == 50_000 * 52_500
+
+
 def test_run_command_skips_about_an_hour_of_newest_changes(tmp_path, monkeypatch):
     seen = {}
 
