@@ -28,7 +28,15 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, Grant, HookCommand, Kind, PackageRule, Severity
 from ..structured import load
-from .base import artifacts, dig, from_home, hook_commands, is_blanket_command, mcp_servers
+from .base import (
+    artifacts,
+    dig,
+    from_home,
+    gemini_folder,
+    hook_commands,
+    is_blanket_command,
+    mcp_servers,
+)
 
 NAME = "antigravity"
 
@@ -71,10 +79,11 @@ def _grants(data: dict[str, Any]) -> tuple[Grant, ...]:
 
 
 def _hooks(data: dict[str, Any]) -> tuple[HookCommand, ...]:
-    """hooks.json is keyed by hook set, then by event; accept bare events too."""
+    """hooks.json is keyed by hook set, then by event; accept bare events too. A set with
+    "enabled": false never runs, so its commands are skipped."""
     found = list(hook_commands(data))
     for value in data.values():
-        if isinstance(value, dict):
+        if isinstance(value, dict) and value.get("enabled") is not False:
             found += hook_commands(value)
     return tuple(found)
 
@@ -105,7 +114,7 @@ class Antigravity:
 
     @from_home
     def discover_home(self, home: Path) -> Iterator[Artifact]:
-        gemini = home / ".gemini"
+        gemini = gemini_folder(home)  # honours GEMINI_CLI_HOME
         apps = [gemini / name for name in _APP_DIRS]
         yield from artifacts(
             NAME,

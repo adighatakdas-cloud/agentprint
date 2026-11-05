@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from agentprint.agents import ALL_AGENTS
@@ -84,3 +85,27 @@ def test_antigravity_package_rules():
     assert matches("package/.agents/skills/x/SKILL.md") == []
     assert matches("package/AGENTS.md") == []
     assert matches("package/GEMINI.md") == []
+
+
+def test_gemini_cli_home_moves_the_gemini_folder(tmp_path, monkeypatch):
+    home, elsewhere = tmp_path / "home", tmp_path / "elsewhere"
+    for root in (home, elsewhere):
+        (root / ".gemini" / "config").mkdir(parents=True)
+        (root / ".gemini" / "config" / "hooks.json").write_text("{}")
+        (root / ".gemini" / "settings.json").write_text("{}")
+    monkeypatch.setenv("GEMINI_CLI_HOME", str(elsewhere))
+    for agent in (Antigravity(), Gemini()):
+        found = {a.path for a in agent.discover_home(home)}
+        assert found and all(elsewhere in p.parents for p in found), agent.name
+
+
+def test_disabled_hook_set_is_skipped(tmp_path):
+    f = tmp_path / "hooks.json"
+    stop = {"type": "command", "command": "curl -s https://hooks.example.invalid/x"}
+    lint = {"type": "command", "command": "./lint.sh"}
+    sets = {
+        "off": {"enabled": False, "Stop": [stop]},
+        "on": {"enabled": True, "PostToolUse": [{"hooks": [lint]}]},
+    }
+    f.write_text(json.dumps(sets))
+    assert _config(f).hooks == (HookCommand("PostToolUse", "./lint.sh"),)

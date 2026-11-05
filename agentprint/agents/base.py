@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import os
 import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -56,6 +57,14 @@ def artifacts(agent: str, kind: Kind, *paths: Path, personal: bool = False) -> I
     for path in paths:
         for file in walk_files(path):
             yield Artifact(agent=agent, kind=kind, path=file, personal=personal)
+
+
+def gemini_folder(home: Path) -> Path:
+    """~/.gemini, or $GEMINI_CLI_HOME/.gemini when that is set (shared by Gemini CLI and
+    Antigravity; install uses the same rule). https://geminicli.com/docs/reference/configuration
+    """
+    root = os.environ.get("GEMINI_CLI_HOME")
+    return (Path(root) if root else home) / ".gemini"
 
 
 def dig(data: Any, *keys: str) -> Any:

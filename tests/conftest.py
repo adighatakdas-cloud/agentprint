@@ -17,6 +17,12 @@ if not (Path(__file__).resolve().parent.parent / "tools").is_dir():
     collect_ignore_glob = ["test_ecoscan_*.py"]
 
 
+@pytest.fixture(autouse=True)
+def _no_gemini_cli_home(monkeypatch):
+    """GEMINI_CLI_HOME moves ~/.gemini; a developer's own setting must not leak into tests."""
+    monkeypatch.delenv("GEMINI_CLI_HOME", raising=False)
+
+
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
