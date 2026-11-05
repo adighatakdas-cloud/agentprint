@@ -1,0 +1,141 @@
+"""Resumable scan loop. Everything it writes is names, paths, counts and redacted values.
+
+Files in the output folder, per ecosystem (`npm`, `pypi`):
+- targets-<eco>.jsonl   the package list, fetched once; a resumed run reuses it
+- meta-<eco>.json       what fetching that list cost
+- results-<eco>.jsonl   one line per finished package (the resume state)
+- sessions-<eco>.jsonl  one line per run: start, end, packages done, interrupted or not
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+import zlib
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+
+from . import npm, pypi
+from .detect import new_record
+from .net import Http, Tally, TooLarge
+
+REGISTRIES = {"npm": npm, "pypi": pypi}
+
+
+def key(target: dict) -> str:
+    return f"{target['name']}@{target.get('version') or ''}"
+
+
+def read_jsonl(path: Path) -> list[dict]:
+    """Every complete line; a half-written last line (killed mid-write) is skipped."""
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            continue
+    return rows
+
+
+def _targets(eco, out: Path, n: int, http, recent, log) -> list[dict]:
+    path = out / f"targets-{eco}.jsonl"
+    if path.exists():
+        return read_jsonl(path)
+    log(f"{eco}: listing the {n} most recent packages")
+    tally, start = Tally(), time.monotonic()
+    targets = recent(http, n, tally)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text("".join(json.dumps(t) + "\n" for t in targets), encoding="utf-8")
+    os.replace(tmp, path)  # all or nothing
+    meta = {
+        "eco": eco,
+        "requested": n,
+        "targets": len(targets),
+        "created": time.time(),
+        "enumeration_bytes": tally.bytes,
+        "enumeration_requests": tally.requests,
+        "enumeration_seconds": round(time.monotonic() - start, 3),
+    }
+    (out / f"meta-{eco}.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return targets
+
+
+def _one(eco, http, target, scan, validate: bool) -> dict:
+    tally, start = Tally(), time.monotonic()
+    try:
+        rec = scan(http, target, tally, validate=validate)
+    except TooLarge as exc:
+        rec = new_record(eco, target["name"], target.get("version"))
+        rec.update(status="skipped", reason=f"too large: {str(exc)[:200]}")
+    except Exception as exc:  # one bad package must not stop the run
+        rec = new_record(eco, target["name"], target.get("version"))
+        rec.update(status="error", reason=f"{type(exc).__name__}: {str(exc)[:200]}")
+    rec.update(
+        key=key(target),
+        bytes=tally.bytes,
+        requests=tally.requests,
+        seconds=round(time.monotonic() - start, 3),
+    )
+    return rec
+
+
+def run(
+    eco: str,
+    out: Path,
+    n: int,
+    http: Http | None,
+    *,
+    workers: int = 6,
+    validate_pct: int = 0,
+    recent: Callable | None = None,
+    scan: Callable | None = None,
+    log: Callable[[str], None] = print,
+) -> dict:
+    """Scan up to `n` recent packages. Safe to stop with Ctrl-C and run again to continue."""
+    out.mkdir(parents=True, exist_ok=True)
+    recent = recent or REGISTRIES[eco].recent
+    scan = scan or REGISTRIES[eco].scan
+    targets = _targets(eco, out, n, http, recent, log)
+    results_path = out / f"results-{eco}.jsonl"
+    done = {row.get("key") for row in read_jsonl(results_path)}
+    todo = [t for t in targets if key(t) not in done]
+    log(f"{eco}: {len(targets)} targets, {len(done & {key(t) for t in targets})} already done")
+
+    session = {"eco": eco, "start": time.time(), "processed": 0, "interrupted": False}
+    counts = {"candidates": 0, "secrets": 0, "errors": 0}
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        with results_path.open("a", encoding="utf-8") as results:
+            futures = [
+                pool.submit(
+                    _one, eco, http, t, scan, zlib.crc32(key(t).encode()) % 100 < validate_pct
+                )
+                for t in todo
+            ]
+            for future in as_completed(futures):
+                rec = future.result()
+                results.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                results.flush()
+                session["processed"] += 1
+                counts["candidates"] += rec["candidate_count"] > 0
+                counts["secrets"] += bool(rec["secrets"])
+                counts["errors"] += rec["status"] == "error"
+                if session["processed"] % 100 == 0 or session["processed"] == len(todo):
+                    log(
+                        f"{eco}: {session['processed']}/{len(todo)} done; "
+                        f"{counts['candidates']} with agent files, "
+                        f"{counts['secrets']} with key-shaped strings, {counts['errors']} errors"
+                    )
+    except KeyboardInterrupt:
+        session["interrupted"] = True
+        log(f"{eco}: interrupted; run the same command again to continue")
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+        session["end"] = time.time()
+        with (out / f"sessions-{eco}.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(session) + "\n")
+    return session
