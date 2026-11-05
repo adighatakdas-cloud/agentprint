@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import shlex
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
 from .agents import ALL_AGENTS
+from .checks.ap005_mcp_inline_secret import _MARKER as MCP_MARKER
 from .models import Finding
 from .sanitize import clean, quote
 from .secrets import RULES
@@ -162,6 +163,13 @@ def _settings_secret(finding: Finding, moment: Moment) -> Advice:
     return Advice(steps, _rotate(finding))
 
 
+@adviser("AP005")
+def _mcp_inline_secret(finding: Finding, moment: Moment) -> Advice:
+    # The check's own fix already names this agent's way to read the key from the environment.
+    key_part = finding.detail.partition(MCP_MARKER)[0]
+    return Advice([finding.fix], _rotate(replace(finding, detail=key_part)))
+
+
 @adviser("AP006")
 def _agent_file_shipped(finding: Finding, moment: Moment) -> Advice:
     package, member = split_location(finding.location)
@@ -225,8 +233,9 @@ EXPLAIN: dict[str, str] = {
         "Python), add it to .gitignore, and check again. Rotate any key it held."
     ),
     "AP007": (
-        "AP007 Agent file not ignored by git (medium). A personal agent file is neither committed "
-        "nor in .gitignore, so the next `git add .` would commit it. Fix: add it to .gitignore."
+        "AP007 Personal agent file not gitignored (low). A personal agent file is neither "
+        "committed nor in .gitignore, so the next `git add .` would commit it. Fix: add it to "
+        ".gitignore."
     ),
 }
 

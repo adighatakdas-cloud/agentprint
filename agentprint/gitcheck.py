@@ -13,17 +13,13 @@ from pathlib import Path
 from .agents import ALL_AGENTS
 from .checks.ap002_settings_secret import CHECK as AP002
 from .checks.ap006_package_leak import check_listing, is_agent_file
-from .models import Finding, Kind, Severity
+from .checks.ap007_local_not_ignored import LocalFileNotIgnored as AP007
+from .models import Finding, Kind
 from .pack import MAX_CONTENT_BYTES, PackageListing
 
 GIT_TIMEOUT = 20
 PUSHED_TITLE = "Agent file would be pushed to the git remote"
 PUSHED_FIX = "Untrack it with `git rm --cached`, add it to .gitignore, commit, then push."
-# Same meaning as the AP007 check ("local agent settings not gitignored"); used here so a push
-# can warn about it. Medium: it is not in this push, but the next `git add .` would add it.
-AP007 = "AP007"
-NOT_IGNORED_TITLE = "Agent file not ignored by git"
-NOT_IGNORED_FIX = "Add it to .gitignore so a later `git add .` can't commit it."
 
 
 def _git(root: Path, *args: str) -> str | None:
@@ -107,15 +103,16 @@ def _tracked_settings_secrets(
 def _not_ignored(root: Path) -> list[Finding]:
     out = _git(root, "ls-files", "-z", "--others", "--exclude-standard")
     return [
+        # Same problem the AP007 check reports in a scan, so it carries that check's metadata.
         Finding(
-            AP007,
-            Severity.MEDIUM,
-            NOT_IGNORED_TITLE,
+            AP007.id,
+            AP007.severity,
+            AP007.title,
             "agent",
             str(root / name),
             None,
-            "Agent file that is neither committed nor ignored.",
-            NOT_IGNORED_FIX,
+            "Agent file that is neither committed nor ignored; `git add .` would commit it.",
+            AP007.fix,
         )
         for name in (out or "").split("\0")
         if name and is_agent_file(name)

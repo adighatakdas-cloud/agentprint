@@ -4,6 +4,7 @@ import subprocess
 
 import pytest
 
+from agentprint.checks.ap007_local_not_ignored import LocalFileNotIgnored
 from agentprint.gitcheck import check_push
 from tests import fakes
 
@@ -70,10 +71,15 @@ def test_untracked_shared_settings_are_not_reported_as_pushed(repo):
     assert check_push(repo) == []
 
 
-def test_agent_file_not_ignored_is_a_medium_note(repo):
+def test_agent_file_not_ignored_matches_the_ap007_check(repo):
     _write(repo / ".claude" / "settings.local.json", "{}")
     [finding] = check_push(repo)
-    assert (finding.check_id, finding.severity.name) == ("AP007", "MEDIUM")
+    check = LocalFileNotIgnored
+    assert (finding.check_id, finding.severity, finding.title) == (
+        check.id,
+        check.severity,
+        check.title,
+    )
 
 
 def test_ignored_agent_file_is_fine(repo):

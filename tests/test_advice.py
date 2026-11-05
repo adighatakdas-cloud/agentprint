@@ -2,6 +2,7 @@ import pytest
 
 from agentprint import advice
 from agentprint.advice import ROTATE_AT, Moment, advise
+from agentprint.checks.ap005_mcp_inline_secret import _MARKER
 from agentprint.models import Finding, Severity
 from agentprint.secrets import RULES, find_secrets, redact
 from tests import fakes
@@ -97,3 +98,23 @@ def test_not_ignored_agent_file_says_which_gitignore_line():
     )
     [step] = advise(finding, Moment.push).fix_steps
     assert '".claude/settings.local.json"' in step and ".gitignore" in step
+
+
+def test_mcp_inline_secret_keeps_the_check_fix_and_asks_human_to_rotate():
+    [match] = find_secrets(fakes.GITHUB)
+    finding = Finding(
+        "AP005",
+        Severity.HIGH,
+        "Secret inline in MCP server config",
+        "cursor",
+        "/home/u/.cursor/mcp.json",
+        3,
+        f"{match.name}: {redact(match.value)}{_MARKER}demo",
+        "Move the key into an environment variable the server reads.",
+    )
+    result = advise(finding, Moment.scan)
+    assert result.fix_steps == [finding.fix]
+    [ask] = result.ask_human
+    assert ROTATE_AT["github"] in ask
+    assert _MARKER.strip() not in ask
+    assert fakes.GITHUB not in repr(result)
