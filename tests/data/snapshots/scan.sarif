@@ -1,0 +1,283 @@
+{
+  "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "agentprint",
+          "version": "<VERSION>",
+          "informationUri": "https://github.com/adighatakdas-cloud/agentprint",
+          "rules": [
+            {
+              "id": "AP001",
+              "shortDescription": {
+                "text": "Secret in agent history"
+              },
+              "fullDescription": {
+                "text": "Secret in agent history"
+              },
+              "help": {
+                "text": "Rotate this key with its provider, then delete or redact the history file.",
+                "markdown": "**How to fix:** Rotate this key with its provider, then delete or redact the history file."
+              },
+              "helpUri": "https://github.com/adighatakdas-cloud/agentprint#checks",
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "properties": {
+                "security-severity": "8.0",
+                "tags": [
+                  "security",
+                  "secrets",
+                  "ai-agents"
+                ]
+              }
+            },
+            {
+              "id": "AP002",
+              "shortDescription": {
+                "text": "Secret in agent settings"
+              },
+              "fullDescription": {
+                "text": "Secret in agent settings"
+              },
+              "help": {
+                "text": "Rotate this key, remove it from the settings file, and load it from an environment variable instead.",
+                "markdown": "**How to fix:** Rotate this key, remove it from the settings file, and load it from an environment variable instead."
+              },
+              "helpUri": "https://github.com/adighatakdas-cloud/agentprint#checks",
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "properties": {
+                "security-severity": "9.5",
+                "tags": [
+                  "security",
+                  "secrets",
+                  "ai-agents"
+                ]
+              }
+            },
+            {
+              "id": "AP005",
+              "shortDescription": {
+                "text": "Secret inline in MCP server config"
+              },
+              "fullDescription": {
+                "text": "Secret inline in MCP server config"
+              },
+              "help": {
+                "text": "Ask the human to rotate this key at its provider (an AI agent can't). Then delete the value from config.toml and read it from the environment: for a stdio server list env_vars = [\"API_TOKEN\"]; for an HTTP server use bearer_token_env_var = \"API_TOKEN\" or env_http_headers = { \"<header>\" = \"API_TOKEN\" }. Then export API_TOKEN in the shell that starts Codex.",
+                "markdown": "**How to fix:** Ask the human to rotate this key at its provider (an AI agent can't). Then delete the value from config.toml and read it from the environment: for a stdio server list env_vars = [\"API_TOKEN\"]; for an HTTP server use bearer_token_env_var = \"API_TOKEN\" or env_http_headers = { \"<header>\" = \"API_TOKEN\" }. Then export API_TOKEN in the shell that starts Codex."
+              },
+              "helpUri": "https://github.com/adighatakdas-cloud/agentprint#checks",
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "properties": {
+                "security-severity": "9.5",
+                "tags": [
+                  "security",
+                  "secrets",
+                  "ai-agents"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "originalUriBaseIds": {
+        "%SRCROOT%": {
+          "uri": "file:///Users/Aditya/git-projects/agentprint-ui-polish/"
+        }
+      },
+      "results": [
+        {
+          "ruleId": "AP002",
+          "ruleIndex": 1,
+          "level": "error",
+          "message": {
+            "text": "Secret in agent settings (claude-code): OpenAI API key: sk-p\u2026(len 56)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "file://<TMP>/home/.claude/settings.json"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "agentprint/v1": "<FINGERPRINT>"
+          }
+        },
+        {
+          "ruleId": "AP002",
+          "ruleIndex": 1,
+          "level": "error",
+          "message": {
+            "text": "Secret in agent settings (claude-code): Anthropic API key: sk-a\u2026(len 105)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "file://<TMP>/proj/.claude/settings.local.json"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "agentprint/v1": "<FINGERPRINT>"
+          }
+        },
+        {
+          "ruleId": "AP005",
+          "ruleIndex": 2,
+          "level": "error",
+          "message": {
+            "text": "Secret inline in MCP server config (codex): Stripe live key: sk_l\u2026(len 36) in MCP server 'demo' (env.API_TOKEN)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "file://<TMP>/home/.codex/config.toml"
+                },
+                "region": {
+                  "startLine": 2
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "agentprint/v1": "<FINGERPRINT>"
+          }
+        },
+        {
+          "ruleId": "AP001",
+          "ruleIndex": 0,
+          "level": "error",
+          "message": {
+            "text": "Secret in agent history (claude-code): Anthropic API key: sk-a\u2026(len 105)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "file://<TMP>/home/.claude/history.jsonl"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "agentprint/v1": "<FINGERPRINT>"
+          }
+        },
+        {
+          "ruleId": "AP001",
+          "ruleIndex": 0,
+          "level": "error",
+          "message": {
+            "text": "Secret in agent history (claude-code): AWS access key ID: AKIA\u2026(len 20)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "file://<TMP>/home/.claude/paste-cache/abc.txt"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "agentprint/v1": "<FINGERPRINT>"
+          }
+        },
+        {
+          "ruleId": "AP001",
+          "ruleIndex": 0,
+          "level": "error",
+          "message": {
+            "text": "Secret in agent history (claude-code): GitHub token: ghp_\u2026(len 40) (seen 2 times)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "file://<TMP>/home/.claude/projects/-tmp-demo/s1.jsonl"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "agentprint/v1": "<FINGERPRINT>"
+          }
+        },
+        {
+          "ruleId": "AP001",
+          "ruleIndex": 0,
+          "level": "error",
+          "message": {
+            "text": "Secret in agent history (codex): Google API key: AIza\u2026(len 39)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "file://<TMP>/home/.codex/history.jsonl"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "agentprint/v1": "<FINGERPRINT>"
+          }
+        },
+        {
+          "ruleId": "AP001",
+          "ruleIndex": 0,
+          "level": "error",
+          "message": {
+            "text": "Secret in agent history (codex): Slack token: xoxb\u2026(len 29)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "file://<TMP>/home/.codex/sessions/2026/10/01/rollout-x.jsonl"
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "agentprint/v1": "<FINGERPRINT>"
+          }
+        }
+      ]
+    }
+  ]
+}
