@@ -6,7 +6,7 @@ import urllib.request
 
 import pytest
 
-from tests.live.harness import make_shims, package
+from tests.live.harness import agent_env, make_shims, package
 from tests.live.mock_model import MockModel, Script
 
 BASH = {"name": "Bash", "input_schema": {"type": "object",
@@ -100,3 +100,18 @@ def test_shims_mark_publish_and_push_and_list_the_package(tmp_path):
     subprocess.run([str(bin_dir / "git"), "push"], cwd=pkg, check=True, capture_output=True)
     assert (markers / "PUBLISHED").read_text().strip() == str(pkg)
     assert (markers / "PUSHED").exists()
+
+
+@pytest.mark.parametrize("shell", ["bash", "zsh"])
+def test_login_shells_still_find_the_fake_npm(tmp_path, shell):
+    import shutil
+
+    if shutil.which(shell) is None:
+        pytest.skip(f"{shell} not installed")
+    home, bin_dir = tmp_path / "home", tmp_path / "bin"
+    make_shims(bin_dir, tmp_path / "markers")
+    env = agent_env(home, bin_dir, [])
+    found = subprocess.run([shell, "-lc", "command -v npm"], env=env, capture_output=True,
+                           text=True, check=True).stdout.strip()  # fmt: skip
+    assert found == str(bin_dir / "npm")
+    assert env["npm_config_dry_run"] == "true"  # and a real npm could only dry-run anyway

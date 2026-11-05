@@ -119,7 +119,21 @@ def agent_env(home: Path, bin_dir: Path, tool_dirs: list[Path], **extra: str) ->
         "TERM": "dumb",
         "NO_COLOR": "1",
         "CI": "1",
+        "ZDOTDIR": str(home),
+        # Belt and braces: even if an agent's login shell finds the real npm, it can only do a
+        # dry run against a registry that isn't there. Nothing is ever published.
+        "npm_config_dry_run": "true",
+        "npm_config_registry": "http://127.0.0.1:9/",
     }
     (home / "tmp").mkdir(parents=True, exist_ok=True)
+    _login_shell_files(home, bin_dir)
     env.update(extra)
     return env
+
+
+def _login_shell_files(home: Path, bin_dir: Path) -> None:
+    """Some agents run commands in a login shell (`zsh -lc`, `bash -lc`), which rebuilds PATH
+    from the system profile. These files in the fake HOME put the fake npm/git first again."""
+    line = f'export PATH="{bin_dir}:$PATH"\n'
+    for name in (".zprofile", ".zshrc", ".zshenv", ".bash_profile", ".bashrc", ".profile"):
+        (home / name).write_text(line)
