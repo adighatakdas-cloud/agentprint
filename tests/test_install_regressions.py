@@ -8,6 +8,7 @@ import pytest
 
 from agentprint import install
 from agentprint.integrations import claude_code
+from agentprint.integrations.base import BlockEdit
 
 QUIET = lambda line: None  # noqa: E731
 
@@ -212,3 +213,84 @@ def test_diff_never_shows_other_values_from_the_users_config(tmp_path, monkeypat
         assert not any(secret in text for secret in PRIVATE), text
         assert '"agentprint"' in text  # agentprint's own entry is still shown
     assert (home / ".cursor" / "mcp.json").read_text() == compact
+
+
+# ---- 5 / 13. marked blocks: no joined lines, foreign TOML inside the block survives ----------
+
+
+def _codex_home(tmp_path, config: str) -> Path:
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex" / "config.toml").write_text(config)
+    return home
+
+
+def test_toml_without_final_newline_stays_valid_when_codex_appends(tmp_path, monkeypatch):
+    home = _codex_home(tmp_path, '[profiles.x]\nmodel = "o3"')
+    config = home / ".codex" / "config.toml"
+    _launch(monkeypatch, "/opt/agentprint")
+    _install(home, ["codex"])
+    text = config.read_text()
+    text += "" if text.endswith("\n") else "\n"  # what a TOML writer does before a new table
+    config.write_text(text + '[projects."/x"]\ntrust_level = "trusted"\n')
+    tomllib.loads(config.read_text())
+    _uninstall(home, ["codex"])
+    data = tomllib.loads(config.read_text())
+    assert data == {
+        "profiles": {"x": {"model": "o3"}},
+        "projects": {"/x": {"trust_level": "trusted"}},
+    }
+
+
+@pytest.mark.parametrize("style", ["md", "toml"])
+def test_block_at_end_of_unterminated_file_keeps_appended_line_apart(tmp_path, style):
+    # The reviewer's case: original has no final newline, something is appended after the block.
+    edit = BlockEdit(tmp_path / "f", "x", "body line\n", style)
+    installed = edit.apply('model = "o3"')
+    reverted = edit.revert(installed + '[projects."/x"]\n')
+    assert reverted == 'model = "o3"\n[projects."/x"]\n'
+    assert edit.revert(installed) == 'model = "o3"'  # nothing appended: exact original
+    assert edit.revert(edit.apply("a\n")) == "a\n"
+    assert edit.revert(edit.apply("a\n") + "b\n") == "a\nb\n"
+
+
+def test_markdown_without_final_newline_keeps_lines_apart(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    rules = home / ".claude" / "CLAUDE.md"
+    rules.write_text("# mine")
+    _launch(monkeypatch, "/opt/agentprint")
+    _install(home, ["claude-code"])
+    rules.write_text(rules.read_text() + "- added later\n")
+    _uninstall(home)
+    assert rules.read_text() == "# mine\n- added later\n"
+
+
+def test_codex_server_block_sits_above_root_keys_and_tables(tmp_path, monkeypatch):
+    home = _codex_home(tmp_path, 'model = "o3"\n\n[mcp_servers.other]\ncommand = "x"\n')
+    _launch(monkeypatch, "/opt/agentprint")
+    _install(home, ["codex"])
+    text = (home / ".codex" / "config.toml").read_text()
+    assert text.startswith("# agentprint:start")
+    data = tomllib.loads(text)
+    assert data["model"] == "o3"
+    assert data["mcp_servers"] == {
+        "agentprint": {"command": "/opt/agentprint", "args": ["mcp"]},
+        "other": {"command": "x"},
+    }
+
+
+def test_tables_codex_writes_inside_our_block_are_kept(tmp_path, monkeypatch):
+    home = _codex_home(tmp_path, 'model = "o3"\n')
+    config = home / ".codex" / "config.toml"
+    _launch(monkeypatch, "/opt/agentprint")
+    _install(home, ["codex"])
+    # Suppose Codex's TOML writer puts new entries just before our end marker.
+    text = config.read_text().replace(
+        "# agentprint:end", 'mcp_servers.github.command = "gh-mcp"\n# agentprint:end'
+    )
+    config.write_text(text)
+    _uninstall(home, ["codex"])
+    data = tomllib.loads(config.read_text())
+    assert data == {"model": "o3", "mcp_servers": {"github": {"command": "gh-mcp"}}}
+    assert "agentprint" not in config.read_text()

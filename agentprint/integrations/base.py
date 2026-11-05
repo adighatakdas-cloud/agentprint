@@ -139,13 +139,20 @@ class JsonEdit:
 
 @dataclass(frozen=True)
 class BlockEdit:
-    """A marked block appended to a text file (Markdown rules, TOML config)."""
+    """A marked block in a text file (Markdown rules, TOML config).
+
+    `top=True` puts the block first in the file instead of last. With `owns`, only the lines
+    it accepts are agentprint's: any other line found between the markers (say a table the
+    agent's own config writer inserted there) is kept on uninstall and on re-install.
+    """
 
     path: Path
     what: str
     body: str
     style: str = "md"  # "md" uses <!-- --> markers, "toml" uses # markers
     validate: Callable[[str], None] | None = None
+    top: bool = False
+    owns: Callable[[str], bool] | None = None
 
     @property
     def start(self) -> str:
@@ -172,13 +179,26 @@ class BlockEdit:
         end += len(self.end)
         return start, end + 1 if text[end : end + 1] == "\n" else end
 
+    def _foreign(self, inside: str) -> str:
+        """Lines between the markers that are not agentprint's (only with `owns`)."""
+        if self.owns is None:
+            return ""
+        lines = inside.splitlines(keepends=True)[1:-1]  # drop the two marker lines
+        return "".join(line for line in lines if line.strip() and not self.owns(line))
+
     def apply(self, old: str | None) -> str:
         old = old or ""
         span = self._span(old)
         if span:
-            new = old[: span[0]] + self.block() + old[span[1] :]
+            start, end = span
+            foreign = self._foreign(old[start:end])
+            new = old[:start] + self.block() + foreign + old[end:]
+        elif not old:
+            new = self.block()
+        elif self.top:
+            new = self.block() + "\n" + old
         else:
-            new = old + "\n" + self.block() if old else self.block()
+            new = old + "\n" + self.block()
         if self.validate:
             self.validate(new)
         return new
@@ -186,11 +206,24 @@ class BlockEdit:
     def revert(self, current: str) -> str:
         span = self._span(current)
         if span is None:
-            return current
+            if self.owns is None:
+                return current
+            lines = current.splitlines(keepends=True)  # markers lost: drop owned lines only
+            return "".join(line for line in lines if not self.owns(line))
         start, end = span
-        if start > 0 and current[start - 1] == "\n":
-            start -= 1  # the separator newline apply() added
-        return current[:start] + current[end:]
+        foreign = self._foreign(current[start:end])
+        before, after = current[:start], current[end:]
+        if foreign:
+            return before + foreign + after
+        if self.top:
+            if not before and after.startswith("\n"):
+                after = after[1:]  # the blank line apply() put after the block
+        elif before.endswith("\n") and (not after or before.endswith("\n\n")):
+            # apply() added one "\n" before the block. Drop it when the block was last (the
+            # file ends as it did) or when it made a blank line; otherwise it now ends the
+            # line above, and removing it would glue that line to whatever follows.
+            before = before[:-1]
+        return before + after
 
 
 @dataclass(frozen=True)

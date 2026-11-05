@@ -45,9 +45,22 @@ def config_dir(home: Path, env: Env) -> Path:
     return Path(env["CODEX_HOME"]) if env.get("CODEX_HOME") else home / ".codex"
 
 
+# Ruling: the server is written as dotted keys at the very top of config.toml, not as an
+# [mcp_servers.agentprint] table at the end. Top-level keys must come before any table, so
+# nothing the user or Codex appends can land inside agentprint's block, and a `[mcp_servers.x]`
+# table further down stays valid TOML. Lines between the markers that aren't agentprint's
+# (in case Codex's writer puts entries there) are kept on uninstall. Cost if wrong: a file
+# with a bare `[mcp_servers]` table can't take the dotted keys; it is skipped with a snippet.
+OWN_PREFIX = "mcp_servers.agentprint."
+
+
 def _toml_body(launch: Launch) -> str:
     args = ", ".join(json.dumps(arg) for arg in launch.mcp[1:])
-    return f"[mcp_servers.agentprint]\ncommand = {json.dumps(launch.mcp[0])}\nargs = [{args}]\n"
+    return f"{OWN_PREFIX}command = {json.dumps(launch.mcp[0])}\n{OWN_PREFIX}args = [{args}]\n"
+
+
+def _owned(line: str) -> bool:
+    return line.lstrip().startswith(OWN_PREFIX)
 
 
 def _valid_toml(text: str) -> None:
@@ -55,7 +68,8 @@ def _valid_toml(text: str) -> None:
         tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise Unsupported(
-            "adding [mcp_servers.agentprint] would not be valid TOML (is it already defined?)"
+            "adding mcp_servers.agentprint would not be valid TOML (is it already defined, or "
+            "is there a bare [mcp_servers] table?)"
         ) from exc
 
 
@@ -83,7 +97,13 @@ def edits(home: Path, env: Env, launch: Launch) -> list[Edit]:
             remove=lambda c: drop_hook(c, "PreToolUse"),
         ),
         BlockEdit(
-            base / "config.toml", "MCP server", _toml_body(launch), "toml", validate=_valid_toml
+            base / "config.toml",
+            "MCP server",
+            _toml_body(launch),
+            "toml",
+            validate=_valid_toml,
+            top=True,
+            owns=_owned,
         ),
         BlockEdit(_instructions_file(base), "instructions", INSTRUCTIONS),
     ]
