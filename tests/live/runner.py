@@ -55,6 +55,16 @@ def find_cli(cli: str) -> Path:
     return path
 
 
+def shared_cache(name: str) -> str | None:
+    """A cache folder kept next to the installed CLIs (not in the real home), shared by tests."""
+    root = os.environ.get("AGENTPRINT_LIVE_TOOLS")
+    if not root:
+        return None
+    folder = Path(root) / "cache" / name
+    folder.mkdir(parents=True, exist_ok=True)
+    return str(folder)
+
+
 def run(agent: AgentCLI, tmp_path: Path, action: str, leaky: bool) -> Outcome:
     exe = find_cli(agent.cli)
     home = tmp_path / "home"

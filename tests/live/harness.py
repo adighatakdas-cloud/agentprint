@@ -120,10 +120,10 @@ def agent_env(home: Path, bin_dir: Path, tool_dirs: list[Path], **extra: str) ->
         "NO_COLOR": "1",
         "CI": "1",
         "ZDOTDIR": str(home),
-        # Belt and braces: even if an agent's login shell finds the real npm, it can only do a
-        # dry run against a registry that isn't there. Nothing is ever published.
+        # Belt and braces: even if an agent's login shell finds the real npm, `npm publish`
+        # is only a dry run. Nothing is ever published. (Not also an unreachable registry:
+        # OpenCode's own package installs would then hang for a minute per run.)
         "npm_config_dry_run": "true",
-        "npm_config_registry": "http://127.0.0.1:9/",
     }
     (home / "tmp").mkdir(parents=True, exist_ok=True)
     _login_shell_files(home, bin_dir)
