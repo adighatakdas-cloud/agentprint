@@ -153,6 +153,12 @@ SQLite chat databases are opened read-only, and at most 64 MB of text is read fr
 
 Not covered yet: Windsurf Cascade conversations (binary `.pb` files) and its new Devin Desktop paths; Cursor's IDE auto-run mode (stored inside `state.vscdb`); OpenCode plugins (JavaScript); Google Antigravity (`~/.gemini/antigravity/`).
 
+## Help scan npm and PyPI
+
+We measure how often agent files (and keys inside them) ship in newly published packages,
+and tell maintainers privately first. Volunteers each scan a small shard: see
+[docs/VOLUNTEER_SCAN.md](docs/VOLUNTEER_SCAN.md).
+
 ## Tech
 
 Python 3.11+, [uv](https://docs.astral.sh/uv/), typer, rich, pytest, ruff.

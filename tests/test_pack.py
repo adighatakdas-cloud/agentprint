@@ -2,12 +2,13 @@ import io
 import json
 import shutil
 import tarfile
+import warnings
 import zipfile
 
 import pytest
 
 from agentprint.checks.ap006_package_leak import check_listing, is_agent_file
-from agentprint.pack import PackError, collect
+from agentprint.pack import PackError, collect, read_archive, read_archive_bytes
 from tests import fakes
 
 LEAKY = json.dumps({"permissions": {"allow": [f"Bash(export K={fakes.ANTHROPIC})"]}}).encode()
@@ -111,3 +112,131 @@ def test_packaging_tool_timeout_raises_pack_error(fake_project, monkeypatch):
     monkeypatch.setattr("agentprint.pack.TIMEOUT_SECONDS", 0.001)
     with pytest.raises(PackError, match="timed out"):
         collect(fake_project, is_agent_file)
+
+
+# --- Hardening for untrusted archives (downloaded packages) ---------------------------------
+
+
+def _tar_with(path, entries):
+    """entries: (TarInfo, data-or-None) pairs, written in order."""
+    with tarfile.open(path, "w:gz") as tf:
+        for info, data in entries:
+            if data is None:
+                tf.addfile(info)
+            else:
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+    return path
+
+
+def _everything(name: str) -> bool:
+    return True
+
+
+def test_too_many_tar_members_raises_pack_error(tmp_path, monkeypatch):
+    monkeypatch.setattr("agentprint.pack.MAX_MEMBERS", 3)
+    tgz = _tgz(tmp_path / "many.tgz", {f"package/{i}.js": b"1" for i in range(5)})
+    with pytest.raises(PackError, match="more than 3 entries"):
+        read_archive(tgz, _everything)
+
+
+def test_too_many_zip_members_raises_pack_error(tmp_path, monkeypatch):
+    monkeypatch.setattr("agentprint.pack.MAX_MEMBERS", 3)
+    whl = tmp_path / "many-1.0-py3-none-any.whl"
+    with zipfile.ZipFile(whl, "w") as zf:
+        for i in range(5):
+            zf.writestr(f"demo/{i}.py", "")
+    with pytest.raises(PackError, match="more than 3 entries"):
+        read_archive(whl, _everything)
+
+
+def test_tar_bomb_raises_pack_error(tmp_path, monkeypatch):
+    # Listing a .tar.gz means unpacking every byte, so the unpacked total is capped too.
+    monkeypatch.setattr("agentprint.pack.MAX_UNPACKED_BYTES", 1000)
+    tgz = _tgz(tmp_path / "bomb.tgz", {"package/zeros.bin": bytes(5000)})
+    with pytest.raises(PackError, match="unpacks to more than 1000 bytes"):
+        read_archive(tgz, _everything)
+
+
+def test_content_budget_stops_reading_but_keeps_listing(tmp_path, monkeypatch):
+    monkeypatch.setattr("agentprint.pack.MAX_TOTAL_CONTENT_BYTES", 100)
+    tgz = _tgz(tmp_path / "big.tgz", {f"package/{i}.txt": b"x" * 60 for i in range(3)})
+    listing = read_archive(tgz, _everything)
+    assert listing.files == ["package/0.txt", "package/1.txt", "package/2.txt"]
+    assert list(listing.contents) == ["package/0.txt"]
+    assert listing.skipped == ["package/1.txt", "package/2.txt"]
+
+
+def test_oversized_member_is_listed_as_skipped(tmp_path, monkeypatch):
+    monkeypatch.setattr("agentprint.pack.MAX_CONTENT_BYTES", 10)
+    whl = tmp_path / "demo-1.0-py3-none-any.whl"
+    with zipfile.ZipFile(whl, "w") as zf:
+        zf.writestr("demo/.claude/settings.local.json", LEAKY)
+    listing = read_archive(whl, is_agent_file)
+    assert listing.contents == {}
+    assert listing.skipped == ["demo/.claude/settings.local.json"]
+    [finding] = check_listing(listing)
+    assert finding.check_id == "AP006"
+    assert "not scanned" in finding.detail
+
+
+def test_tar_links_named_like_agent_files_are_reported(tmp_path):
+    sym = tarfile.TarInfo("package/.claude/settings.local.json")
+    sym.type, sym.linkname = tarfile.SYMTYPE, "/home/someone/.claude/settings.local.json"
+    hard = tarfile.TarInfo("package/.codex/config.toml")
+    hard.type, hard.linkname = tarfile.LNKTYPE, "package/index.js"
+    tgz = _tar_with(
+        tmp_path / "links.tgz",
+        [(tarfile.TarInfo("package/index.js"), b"module.exports = 1"), (sym, None), (hard, None)],
+    )
+    listing = read_archive(tgz, is_agent_file)
+    assert listing.files == [
+        "package/index.js",
+        "package/.claude/settings.local.json",
+        "package/.codex/config.toml",
+    ]
+    assert listing.contents == {}  # links are never followed
+    assert [f.check_id for f in check_listing(listing)] == ["AP006", "AP006"]
+
+
+def test_zip_backslash_member_names_are_normalized(tmp_path):
+    whl = tmp_path / "demo-1.0-py3-none-any.whl"
+    with zipfile.ZipFile(whl, "w") as zf:
+        zf.writestr("demo\\.claude\\settings.local.json", LEAKY)
+    listing = read_archive(whl, is_agent_file)
+    assert listing.files == ["demo/.claude/settings.local.json"]
+    assert [f.check_id for f in check_listing(listing)] == ["AP006", "AP002"]
+
+
+def test_duplicate_tar_names_use_only_the_last_copy(tmp_path):
+    name = "package/.claude/settings.local.json"
+    tgz = _tar_with(
+        tmp_path / "dup.tgz",
+        [(tarfile.TarInfo(name), LEAKY), (tarfile.TarInfo(name), b"{}")],
+    )
+    listing = read_archive(tgz, is_agent_file)
+    assert listing.files == [name]
+    assert listing.contents == {name: b"{}"}  # what extraction leaves on disk; never mixed
+    assert [f.check_id for f in check_listing(listing)] == ["AP006"]
+
+
+def test_duplicate_zip_names_use_only_the_last_copy(tmp_path):
+    whl = tmp_path / "demo-1.0-py3-none-any.whl"
+    name = "demo/.claude/settings.local.json"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # zipfile warns about the duplicate name
+        with zipfile.ZipFile(whl, "w") as zf:
+            zf.writestr(name, b"{}")
+            zf.writestr(name, LEAKY)
+    listing = read_archive(whl, is_agent_file)
+    assert listing.files == [name]
+    assert listing.contents == {name: LEAKY}
+
+
+def test_archive_bytes_are_read_in_memory():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("demo/.claude/settings.local.json", LEAKY)
+    listing = read_archive_bytes(buf.getvalue(), "demo-1.0-py3-none-any.whl", is_agent_file)
+    assert listing.label == "demo-1.0-py3-none-any.whl"
+    assert listing.contents == {"demo/.claude/settings.local.json": LEAKY}

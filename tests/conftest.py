@@ -12,6 +12,10 @@ import pytest
 
 from tests import fakes
 
+# tools/ (research scripts) is not shipped in the source package; skip its tests there.
+if not (Path(__file__).resolve().parent.parent / "tools").is_dir():
+    collect_ignore_glob = ["test_ecoscan_*.py"]
+
 
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,161 @@
+"""npm: find recently changed packages, then list each one's files as cheaply as possible.
+
+Listing order of preference (see README.md, "Methodology"):
+1. jsDelivr's file list for the exact version: a few hundred bytes, no archive download.
+2. The registry tarball, downloaded only when (1) shows an agent-file path, when (1) fails,
+   or for the validation sample that checks (1) against the tarball.
+"""
+
+from __future__ import annotations
+
+from urllib.parse import quote
+
+from agentprint.pack import PackageListing, read_archive_bytes
+
+from .detect import examine, is_candidate, new_record
+from .net import Http, HttpError, Tally, TooLarge, json_of
+
+REPLICATE = "https://replicate.npmjs.com/registry"
+REGISTRY = "https://registry.npmjs.org"
+JSDELIVR = "https://data.jsdelivr.com/v1/packages/npm"
+PAGE = 10_000  # the most the replication feed returns per request
+MAX_JSON_BYTES = 32 * 1024 * 1024
+# Default size cap. Packages that unpack to more than this are skipped without downloading
+# (jsDelivr does not list them either); in the pilot they were ~2% of packages but most of the
+# bandwidth. Volunteers can raise it with --npm-max-mb.
+DEFAULT_MAX_MB = 150
+MAX_TARBALL_BYTES = DEFAULT_MAX_MB * 1_000_000
+
+
+def _url_name(name: str) -> str:
+    return quote(name, safe="@/")  # scoped names keep their readable "@scope/name" form
+
+
+def recent(
+    http: Http, n: int, tally: Tally, *, window: int | None = None, skip_newest: int = 0
+) -> list[dict]:
+    """The `n` most recently changed packages, newest first, from the replication feed.
+
+    The feed lists each package once, at its latest change. It cannot page backwards, so this
+    reads forward from `update_seq - window`, widening the window until `n` live packages show.
+    `skip_newest` leaves out the newest changes (about 15,000 an hour in Nov 2026): minutes-old
+    versions are often not on jsDelivr yet, and spam is often removed within the hour.
+    """
+    hi = head(http, tally) - skip_newest
+    window = window or max(4 * n, 1000)
+    found: dict[str, int] = {}
+    while len(found) < n and hi > 0:
+        lo = max(0, hi - window)
+        for name, seq in _live(http, lo, hi, tally).items():
+            found.setdefault(name, seq)
+        hi, window = lo, window * 2
+    return _newest_first(found)[:n]
+
+
+def head(http: Http, tally: Tally) -> int:
+    """The newest change number in the replication feed."""
+    root = json_of(http.get(f"{REPLICATE}/", tally=tally, max_bytes=MAX_JSON_BYTES), "npm root")
+    return int(root["update_seq"])
+
+
+def in_range(http: Http, lo: int, hi: int, tally: Tally) -> list[dict]:
+    """Every live package whose latest change number is in (lo, hi], newest first.
+
+    This is a scan round's window. A package changed again after `hi` has moved past the
+    window and is left out; the next round picks it up.
+    """
+    return _newest_first(_live(http, lo, hi, tally))
+
+
+def _newest_first(found: dict[str, int]) -> list[dict]:
+    return [{"name": name, "seq": seq} for name, seq in sorted(found.items(), key=lambda i: -i[1])]
+
+
+def _live(http: Http, lo: int, hi: int, tally: Tally) -> dict[str, int]:
+    found: dict[str, int] = {}
+    since = lo
+    while since < hi:
+        url = f"{REPLICATE}/_changes?since={since}&limit={PAGE}"
+        page = json_of(http.get(url, tally=tally, max_bytes=MAX_JSON_BYTES), "npm changes")
+        rows = page.get("results") or []
+        for row in rows:
+            seq = int(row["seq"])
+            if seq > hi:
+                break
+            if not row.get("deleted") and not str(row["id"]).startswith("_design/"):
+                found.setdefault(str(row["id"]), seq)
+        last = int(page.get("last_seq") or since)
+        if not rows or last <= since:
+            break
+        since = last
+    return found
+
+
+def scan(
+    http: Http,
+    target: dict,
+    tally: Tally,
+    *,
+    validate: bool = False,
+    max_mb: float | None = None,
+) -> dict:
+    cap = MAX_TARBALL_BYTES if max_mb is None else int(max_mb * 1_000_000)
+    name = target["name"]
+    rec = new_record("npm", name)
+    resp = http.get(f"{REGISTRY}/{_url_name(name)}/latest", tally=tally, max_bytes=MAX_JSON_BYTES)
+    if resp.status == 404:
+        rec.update(status="gone", reason="no latest version (unpublished or no latest tag)")
+        return rec
+    manifest = json_of(resp, "npm manifest")
+    version = str(manifest["version"])
+    tarball = manifest["dist"]["tarball"]
+    rec["version"] = version
+    unpacked = manifest["dist"].get("unpackedSize")
+    rec["unpacked_size"] = unpacked
+    if isinstance(unpacked, int) and unpacked > cap:
+        rec.update(status="skipped", reason=f"over the {cap / 1e6:g} MB size cap")
+        rec["too_large"].append("package")
+        return rec
+
+    listed = None
+    js_url = f"{JSDELIVR}/{_url_name(name)}@{quote(version, safe='')}?structure=flat"
+    js = http.get(js_url, tally=tally, max_bytes=MAX_JSON_BYTES)
+    if js.status == 200:
+        listed = [str(f["name"]).lstrip("/") for f in json_of(js, "jsDelivr list")["files"]]
+        rec["method"] = "jsdelivr"
+    else:
+        rec.update(method="tarball", jsdelivr_status=js.status)
+
+    if listed is not None and not validate and not any(is_candidate(p) for p in listed):
+        rec["files"] = len(listed)
+        return rec
+
+    if listed is not None:
+        rec["method"] = "jsdelivr+tarball"
+    try:
+        resp = http.get(
+            tarball,
+            headers={"Accept-Encoding": "identity"},
+            max_bytes=cap,
+            tally=tally,
+        )
+    except TooLarge:
+        if listed is None:
+            raise
+        # Keep what jsDelivr's list shows; the candidates' contents stay unscanned.
+        rec["too_large"].append("tarball")
+        unread = [p for p in listed if is_candidate(p)]
+        examine(rec, PackageListing("package.tgz", listed, {}, unread), "tarball", strip_root=False)
+        return rec
+    if resp.status == 404:  # npm removes spam and malware tarballs; the manifest lags behind
+        rec.update(status="gone", reason="tarball removed")
+        return rec
+    if resp.status != 200:
+        raise HttpError(f"HTTP {resp.status} for npm tarball")
+    listing = read_archive_bytes(resp.body, "package.tgz", is_candidate)
+    if validate and listed is not None:
+        in_tarball = {f.split("/", 1)[1] if "/" in f else f for f in listing.files}
+        rec["validated"] = in_tarball == set(listed)
+        rec["validate_diff"] = len(in_tarball ^ set(listed))
+    examine(rec, listing, "tarball", strip_root=True)
+    return rec
