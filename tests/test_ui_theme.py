@@ -1,6 +1,8 @@
+import io
 from pathlib import Path
 
 import pytest
+from rich.text import Text
 
 import agentprint
 from agentprint.models import Severity
@@ -43,3 +45,16 @@ def test_console_has_no_highlighting():
     c = console({}, record=True, force_terminal=True, width=80)
     c.print("0.41s ~/path 42")
     assert c.export_text(clear=False, styles=True) == c.export_text(clear=False)
+
+
+def test_console_honours_no_color_env(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert console({}).no_color
+
+
+def test_plain_console_writes_no_escape_codes(monkeypatch):
+    monkeypatch.setenv("FORCE_COLOR", "1")  # rich would otherwise style this output
+    out = io.StringIO()
+    c = console({}, file=out, plain=True)
+    c.print(Text.assemble(("strong", "ap.strong"), (" BLOCK ", "ap.block")))
+    assert out.getvalue() == "strong BLOCK \n"

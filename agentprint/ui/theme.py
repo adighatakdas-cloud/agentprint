@@ -57,7 +57,10 @@ def console(
     plain: bool = False,
     **kwargs: Any,
 ) -> Console:
-    kwargs.setdefault("no_color", plain)
+    if plain:  # --plain: no color, and no bold or reverse codes either
+        kwargs.setdefault("no_color", True)
+        kwargs.setdefault("force_terminal", False)
+    # Otherwise no_color stays unset, so rich honours a NO_COLOR environment variable.
     return Console(
         file=file,
         theme=theme(env),
