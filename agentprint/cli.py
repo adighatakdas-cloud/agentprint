@@ -230,3 +230,64 @@ def uninstall(
 
     home_dir, env, names = _setup_args(agent, home)
     run_uninstall(home_dir, env, names, dry_run, typer.echo)
+
+
+class StatusFormat(StrEnum):
+    table = "table"
+    json = "json"
+    agent = "agent"
+
+
+@app.command()
+def status(
+    home: Annotated[
+        Path | None, typer.Option(help="Home directory to check. Default: yours.")
+    ] = None,
+    fmt: Annotated[
+        StatusFormat | None,
+        typer.Option("--format", "-f", help="Output format. Default: agent inside an AI agent."),
+    ] = None,
+    plain: Annotated[bool, typer.Option("--plain", help="No colors.")] = False,
+) -> None:
+    """Print the roster: which AI agents are here, and which have agentprint armed."""
+    import json as json_lib
+
+    from rich.text import Text
+
+    from .roster import roster, summary_line
+    from .sanitize import clean
+    from .ui.detect import is_agent
+    from .ui.theme import console
+
+    if home is None:
+        home_dir, env = Path.home(), dict(os.environ)
+    elif home.is_dir():
+        home_dir, env = home.absolute(), {}
+    else:
+        typer.secho(f"error: {home} is not a directory", err=True, fg=typer.colors.RED)
+        raise typer.Exit(2)
+    fmt = fmt or (StatusFormat.agent if is_agent(os.environ) else StatusFormat.table)
+    states = roster(home_dir, env)
+    if fmt is StatusFormat.json:
+        agents = [
+            {"name": s.name, "label": s.label, "found": s.found, "armed": s.armed} for s in states
+        ]
+        typer.echo(json_lib.dumps({"tool": "agentprint", "version": __version__, "agents": agents}))
+    elif fmt is StatusFormat.agent:
+        for s in states:
+            word = ("armed" if s.armed else "unarmed") if s.found else "not found"
+            typer.echo(f"{clean(s.name)} {word}")
+        if any(s.found and not s.armed for s in states):
+            typer.echo("Arm unarmed agents with: agentprint install")
+    else:
+        out = console(env or dict(os.environ), plain=plain)
+        out.print(Text(f"agentprint {__version__} · roster", style="ap.dim"))
+        out.print(Text(summary_line(states)))
+        for s in states:
+            if s.found:
+                line = Text(clean(s.label).ljust(14) + " ")
+                line.append(*(("armed", "ap.amber") if s.armed else ("unarmed", "ap.dim")))
+                out.print(line)
+        missing = [clean(s.label) for s in states if not s.found]
+        if missing:
+            out.print(Text("not found: " + ", ".join(missing), style="ap.dim"))
