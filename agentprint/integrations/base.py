@@ -147,21 +147,55 @@ class JsonEdit:
         return current if new == data else dump_json(new, current)
 
 
-def _yaml_indents(text: str) -> tuple[int, int]:
-    """(mapping indent, dash offset) as the file uses them: 2/0 for "key:\\n- item", 2/2 for
-    "key:\\n  - item"."""
+def _yaml_indents(text: str) -> tuple[int, int, int]:
+    """(mapping indent, sequence indent, dash offset) as the file itself uses them, measured
+    from its lines: e.g. 2/2/0 for "key:\\n- item", 2/4/2 for "key:\\n  - item", 4/8/4 for
+    "key:\\n    -   item". (Ruling: measured here because ruamel's load_yaml_guess_indent
+    reports the sequence indent as the mapping indent for files like Hermes's default.)"""
     lines = [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
-    mapping = offset = None
+    mapping = offset = sequence = None
     for parent_line, line in zip(lines, lines[1:], strict=False):
         if not parent_line.rstrip().endswith(":"):
             continue
         parent = len(parent_line) - len(parent_line.lstrip())
         child = len(line) - len(line.lstrip())
-        if line.lstrip().startswith("-"):
-            offset = child - parent if offset is None and child >= parent else offset
-        elif mapping is None and child > parent:
+        body = line.lstrip()
+        if body.startswith("- ") and offset is None and child >= parent:
+            offset = child - parent
+            sequence = offset + 1 + (len(body[1:]) - len(body[1:].lstrip(" ")))
+        elif not body.startswith("-") and mapping is None and child > parent:
             mapping = child - parent
-    return mapping or 2, max(offset or 0, 0)
+    offset = offset or 0
+    return mapping or 2, sequence or offset + 2, offset
+
+
+# Cap on how many values a YAML or JSON file may expand to once anchors are followed, so an
+# "alias bomb" (a few lines that expand to billions of values) can't hang install.
+MAX_EXPANDED = 200_000
+
+
+def expanded_size(data: object, limit: int = MAX_EXPANDED) -> int:
+    """How many values `data` holds when every shared (aliased) part is counted each time it is
+    used, computed without walking the expansion. Raises ValueError past `limit`."""
+    memo: dict[int, int] = {}
+
+    def size(node: object) -> int:
+        key = id(node)
+        if key in memo:
+            return memo[key]
+        memo[key] = 0  # a self-reference counts as nothing more
+        if isinstance(node, dict):
+            total = 1 + sum(size(k) + size(v) for k, v in node.items())
+        elif isinstance(node, list):
+            total = 1 + sum(size(v) for v in node)
+        else:
+            total = 1
+        memo[key] = total
+        if total > limit:
+            raise ValueError("it expands to too many values (anchors used many times over)")
+        return total
+
+    return size(data)
 
 
 def _yaml_loader(text: str):
@@ -171,21 +205,22 @@ def _yaml_loader(text: str):
     parser = YAML()  # round-trip mode: comments, key order and quoting survive
     parser.preserve_quotes = True
     parser.width = 4096  # never re-wrap long lines
-    mapping, offset = _yaml_indents(text)
-    parser.indent(mapping=mapping, sequence=offset + 2, offset=offset)
+    mapping, sequence, offset = _yaml_indents(text)
+    parser.indent(mapping=mapping, sequence=sequence, offset=offset)
     return parser
 
 
-def _load_yaml(text: str | None):
+def _load_yaml(text: str):
     from ruamel.yaml.comments import CommentedMap
     from ruamel.yaml.error import YAMLError
 
-    text = text or ""
     try:
         parser = _yaml_loader(text)
         data = parser.load(text) if text.strip() else None
+        expanded_size(data)
     except (YAMLError, ValueError, TypeError) as exc:
-        raise Unsupported("it is not YAML agentprint can read safely") from exc
+        reason = str(exc) if isinstance(exc, ValueError) and "expands" in str(exc) else ""
+        raise Unsupported(reason or "it is not YAML agentprint can read safely") from exc
     data = CommentedMap() if data is None else data
     if not isinstance(data, dict):
         raise Unsupported("its top level is not a YAML mapping")
@@ -208,14 +243,19 @@ class YamlEdit:
     missing: str = ""  # if set, never create the file: this is why (shown to the user)
 
     def _change(self, text: str | None, fn: Callable[[dict], None]) -> str | None:
-        data, parser = _load_yaml(text)
+        text = text or ""
+        bom = "﻿" if text.startswith("﻿") else ""
+        crlf = "\r\n" in text
+        body = text[len(bom) :].replace("\r\n", "\n")
+        data, parser = _load_yaml(body)
         before = _plain(data)
         fn(data)
         if _plain(data) == before:
             return None
         buffer = io.StringIO()
         parser.dump(data, buffer)
-        return buffer.getvalue()
+        out = buffer.getvalue()
+        return bom + (out.replace("\n", "\r\n") if crlf else out)  # the file's own line ends
 
     def apply(self, old: str | None) -> str:
         if old is None and self.missing:
@@ -342,7 +382,7 @@ def _owned(text: str) -> bool:
 # ---- JSON helpers used by agent modules -------------------------------------------------------
 
 
-def _ours(item: object) -> bool:
+def is_ours(item: object) -> bool:
     return HOOK_MARK in json.dumps(item, default=str)  # YAML can hold dates and the like
 
 
@@ -350,11 +390,11 @@ def put_hook(config: dict, event: str, entry: dict, container: str = "hooks") ->
     """Add `entry` to config[container][event], replacing an older agentprint entry in place."""
     hooks = config.setdefault(container, {})
     if not isinstance(hooks, dict):
-        raise Unsupported(f'its "{container}" value is not a JSON object')
+        raise Unsupported(f'its "{container}" value is not a set of named settings')
     entries = hooks.setdefault(event, [])
     if not isinstance(entries, list):
-        raise Unsupported(f'its "{container}.{event}" value is not a JSON list')
-    ours = [i for i, item in enumerate(entries) if _ours(item)]
+        raise Unsupported(f'its "{container}.{event}" value is not a list')
+    ours = [i for i, item in enumerate(entries) if is_ours(item)]
     if not ours:
         entries.append(entry)
         return
@@ -367,8 +407,11 @@ def drop_hook(config: dict, event: str, container: str = "hooks") -> None:
     hooks = config.get(container)
     if not isinstance(hooks, dict) or not isinstance(hooks.get(event), list):
         return
-    hooks[event] = [item for item in hooks[event] if not _ours(item)]
-    if not hooks[event]:
+    entries = hooks[event]
+    for i in reversed(range(len(entries))):  # in place: a YAML list keeps its comments
+        if is_ours(entries[i]):
+            del entries[i]
+    if not entries:
         del hooks[event]
     if not hooks:
         del config[container]
@@ -379,7 +422,7 @@ def put_key(config: dict, keys: tuple[str, ...], value: object) -> None:
     for key in keys[:-1]:
         node = node.setdefault(key, {})
         if not isinstance(node, dict):
-            raise Unsupported(f"{'.'.join(keys[:-1])} is not a JSON object")
+            raise Unsupported(f"{'.'.join(keys[:-1])} is not a set of named settings")
     node[keys[-1]] = value
 
 

@@ -71,3 +71,103 @@ def test_one_failing_file_does_not_stop_uninstall_or_lose_state(tmp_path, monkey
     assert not (home / ".codex" / "hooks.json").exists()  # the others were still undone
     state = json.loads((home / ".agentprint" / "state.json").read_text())
     assert str(home / ".claude" / "CLAUDE.md") in state["files"]  # kept for the next try
+
+
+# ---- 5. Hermes config.yaml: anchors, layout, line endings, comments ----------------------------
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        "base: &b\n  post_tool_call:\n    - command: x\nhooks: *b\n",  # hooks is an alias
+        "base: &b\n  post_tool_call: []\nhooks:\n  <<: *b\n",  # hooks merges another mapping
+        "srv: &s\n  github:\n    command: gh\nmcp_servers: *s\n",
+        "hooks:\n  pre_tool_call: &l\n    - command: x\nother: *l\n",  # the list is anchored
+    ],
+    ids=["alias", "merge", "servers-alias", "anchored-list"],
+)
+def test_anchors_and_merges_are_never_written_through(tmp_path, config):
+    home = _hermes(tmp_path, config)
+    out = _install(home, ["hermes"])
+    assert (home / ".hermes" / "config.yaml").read_text() == config
+    assert "anchor" in out and "by hand" in out
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        "model:\n    default: x\nhooks:\n    post_tool_call:\n        -   command: y\n",
+        "hooks:\n  post_tool_call:\n  - command: y\n    timeout: 5\nmodel: x\n",
+        "hooks:\n  post_tool_call:\n    - command: y\nmodel: x   # trailing\n",
+    ],
+    ids=["four-space", "flush-list", "indented-list"],
+)
+def test_users_own_lines_are_kept_byte_for_byte(tmp_path, config):
+    home = _hermes(tmp_path, config)
+    _install(home, ["hermes"])
+    after = (home / ".hermes" / "config.yaml").read_text().splitlines()
+    remaining = iter(after)
+    assert all(line in remaining for line in config.splitlines())  # in order, unchanged
+    yaml.safe_load("\n".join(after))
+    _uninstall(home)
+    assert (home / ".hermes" / "config.yaml").read_text() == config
+
+
+def test_crlf_and_bom_are_kept(tmp_path):
+    raw = "﻿model: x\r\nhooks:\r\n  post_tool_call:\r\n    - command: y\r\n".encode()
+    home = _hermes(tmp_path, raw)
+    _install(home, ["hermes"])
+    after = (home / ".hermes" / "config.yaml").read_bytes()
+    assert after.startswith("﻿".encode()) and b"agentprint-hook" in after
+    assert after.count(b"\n") == after.count(b"\r\n")  # every line still ends in CRLF
+    _uninstall(home)
+    assert (home / ".hermes" / "config.yaml").read_bytes() == raw
+
+
+def test_trailing_comment_stays_after_the_users_hooks(tmp_path):
+    config = (
+        "hooks:\n  post_tool_call:\n    - command: y\n  # end of my hooks\n"
+        "model: x\n"
+    )  # fmt: skip
+    home = _hermes(tmp_path, config)
+    _install(home, ["hermes"])
+    text = (home / ".hermes" / "config.yaml").read_text()
+    assert text.index("agentprint-hook") < text.index("command: y") < text.index("# end of my")
+
+
+def test_hooks_key_with_only_comments_counts_as_empty(tmp_path):
+    config = "hooks:\n  # add hooks here\nmodel: x\n"
+    home = _hermes(tmp_path, config)
+    out = _install(home, ["hermes"])
+    assert "skipped" not in out
+    data = yaml.safe_load((home / ".hermes" / "config.yaml").read_text())
+    assert data["model"] == "x" and data["hooks"]["pre_tool_call"]
+
+
+def test_messages_for_yaml_do_not_say_json(tmp_path):
+    home = _hermes(tmp_path, "hooks: [not, a, mapping]\n")
+    out = _install(home, ["hermes"])
+    assert "skipped" in out and "JSON" not in out
+
+
+# ---- 9. an alias bomb can't hang install -------------------------------------------------------
+
+BOMB = (
+    'a: &a ["x","x","x","x","x","x","x","x","x"]\n'
+    + "".join(
+        f"{n}: &{n} [*{p},*{p},*{p},*{p},*{p},*{p},*{p},*{p},*{p}]\n"
+        for p, n in zip("abcdefgh", "bcdefghi", strict=True)
+    )
+    + "hooks:\n  post_tool_call: [*i]\n"
+)
+
+
+def test_alias_bomb_is_refused_quickly(tmp_path):
+    import time
+
+    home = _hermes(tmp_path, BOMB)
+    start = time.perf_counter()
+    out = _install(home, ["hermes"])
+    assert time.perf_counter() - start < 5
+    assert "skipped" in out
+    assert (home / ".hermes" / "config.yaml").read_text() == BOMB

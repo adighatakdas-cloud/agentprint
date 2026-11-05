@@ -58,6 +58,7 @@ from .integrations.base import (
     Launch,
     Unsupported,
     YamlEdit,
+    expanded_size,
 )
 from .sanitize import clean
 from .secrets import find_secrets, redact
@@ -258,15 +259,19 @@ def _json_delta(before: object, after: object) -> tuple[object, object]:
 
 
 def _data(text: str, edits: list[Edit]) -> object:
-    """A JSON or YAML file's data (empty file = {}); ValueError when it can't be read."""
+    """A JSON or YAML file's data (empty file = {}); ValueError when it can't be read, or when
+    its anchors would expand it past MAX_EXPANDED values (checked before anything walks it)."""
     if any(isinstance(e, YamlEdit) for e in edits):
         try:
-            return yaml.safe_load(text or "") or {}
+            data = yaml.safe_load((text or "").lstrip("﻿")) or {}
         except yaml.YAMLError as exc:
             raise ValueError(str(exc)) from exc
-    if any(isinstance(e, JsonEdit) for e in edits):
-        return json.loads(text or "{}")
-    raise ValueError("not a data file")
+    elif any(isinstance(e, JsonEdit) for e in edits):
+        data = json.loads(text or "{}")
+    else:
+        raise ValueError("not a data file")
+    expanded_size(data)
+    return data
 
 
 def _render(value: object, edits: list[Edit]) -> str:
@@ -311,7 +316,7 @@ def _snippet(edits: list[Edit]) -> str:
         sample: dict = {}
         for edit in edits:
             edit.add(sample)
-        return _render(sample, edits)
+        return _render(json.loads(json.dumps(sample, default=str)), edits)  # plain types
     parts = []
     for edit in edits:
         parts.append(edit.content if isinstance(edit, FileEdit) else edit.apply(None))
