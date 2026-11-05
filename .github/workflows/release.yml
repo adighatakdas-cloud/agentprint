@@ -1,0 +1,149 @@
+name: Release
+
+# Runs only when a version tag such as v1.2.3 is pushed: build and test, then PyPI, then npm.
+# No PyPI token exists anywhere (trusted publishing). One-time owner setup: docs/RELEASING.md.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      npm-name: ${{ steps.versions.outputs.npm-name }}
+      npm-version: ${{ steps.versions.outputs.npm-version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: latest-known
+          enable-cache: "false" # a release build never restores a cache
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Tag matches the package version
+        id: versions
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' agentprint/__init__.py)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match agentprint/__init__.py ($version)"
+            exit 1
+          fi
+          echo "npm-name=$(node -p 'require("./npm/package.json").name')" >> "$GITHUB_OUTPUT"
+          echo "npm-version=$(node -p 'require("./npm/package.json").version')" >> "$GITHUB_OUTPUT"
+
+      - name: npm name is free or already this project's
+        env:
+          NPM_NAME: ${{ steps.versions.outputs.npm-name }}
+          REPO_URL: git+https://github.com/${{ github.repository }}.git
+        run: |
+          if npm view "$NPM_NAME" name > /dev/null 2>&1; then
+            existing=$(npm view "$NPM_NAME" repository.url 2> /dev/null || true)
+            if [ "$existing" != "$REPO_URL" ]; then
+              echo "::error::npm package '$NPM_NAME' belongs to another project (${existing:-no repository}). Change the name in npm/package.json. Nothing was published."
+              exit 1
+            fi
+          fi
+
+      - name: Lint and test (Python, including integration tests)
+        run: |
+          uv sync --locked
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run pytest -m "integration or not integration"
+      - name: Test the npm wrapper
+        working-directory: npm
+        run: npm test
+
+      - name: Build sdist and wheel
+        run: uv build --out-dir dist
+      - name: agentprint checks its own release files
+        run: |
+          for file in dist/*.tar.gz dist/*.whl; do uv run agentprint pack "$file"; done
+          uv run agentprint pack npm
+      - name: The built wheel installs and runs on its own
+        run: |
+          wheel=$(ls dist/*.whl)
+          uvx --isolated --from "$wheel" agentprint --version
+          uvx --isolated --from "$wheel" agentprint scan --no-home tests/data
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  pypi:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/agentprint/
+    permissions:
+      id-token: write # trusted publishing: PyPI trusts this workflow, so no token is stored
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+
+  npm:
+    name: Publish to npm
+    needs: [build, pypi] # the wrapper runs `uvx agentprint==<version>`, so PyPI goes first
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/${{ needs.build.outputs.npm-name }}
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing and provenance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: npm is new enough for trusted publishing (11.5.1 or later)
+        run: |
+          current=$(npm --version)
+          node -e '
+            const [a, b, c] = process.argv[1].split(".").map(Number);
+            process.exit(a > 11 || (a === 11 && (b > 5 || (b === 5 && c >= 1))) ? 0 : 1);
+          ' "$current" || { echo "::error::npm $current is older than 11.5.1"; exit 1; }
+
+      - name: Add README and LICENSE to the npm package
+        run: cp README.md LICENSE npm/
+
+      - name: Publish
+        working-directory: npm
+        env:
+          NPM_VERSION: ${{ needs.build.outputs.npm-version }}
+          # Only for the very first publish, before npm trusted publishing can be set up
+          # (docs/RELEASING.md). Once it is, delete the secret: npm then signs in with OIDC.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          case "$NPM_VERSION" in
+            *-*) dist_tag=next ;; # pre-releases never become `latest`
+            *) dist_tag=latest ;;
+          esac
+          npm publish --provenance --access public --tag "$dist_tag"
