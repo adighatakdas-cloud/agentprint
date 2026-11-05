@@ -2,12 +2,18 @@
 
 - Hook: `beforeShellExecution` in ~/.cursor/hooks.json (`{"version": 1, "hooks": {...}}`); the
   entry's `matcher` is a regex on the full command string, so agentprint only runs for commands
-  that mention publish/upload/push. Input has `command` and `cwd`. Answer is JSON with
-  `permission` ("allow" | "deny" | "ask") plus snake_case `user_message` / `agent_message`; exit
-  0 with invalid or empty JSON blocks, other non-zero codes (not 2) fail open.
-  https://cursor.com/docs/hooks
-  Ruling: when nothing is wrong we answer "ask", never "allow": the docs don't say whether
-  "allow" skips Cursor's own approval prompt, and a security tool must not remove one.
+  that start a publish or push. Input has `command` and `cwd`. Answer is JSON with
+  `permission` ("allow" | "deny" | "ask") plus snake_case `user_message` / `agent_message`;
+  results merge as "deny wins over ask, ask wins over allow"; exit 0 with invalid or empty JSON
+  blocks, exit 2 blocks, other non-zero codes fail open. https://cursor.com/docs/hooks
+  Ruling (rechecked 2026-11-05): a clean result answers "allow". The docs don't say whether
+  "allow" skips Cursor's own approval; Cursor staff replies on its forum say hook permissions
+  and the allowlist/approval flow are independent, so "allow" never removes a prompt the user
+  set up (forum.cursor.com threads 144244 "beforeShellExecution hook permissions (allow/ask)
+  ignored - allow-list takes precedence" and 155434 "Hooks return ALLOW but MCP tool still
+  requires manual approval").
+  Answering "ask" instead put a prompt on every matched command. Cost if wrong: a Cursor
+  version where hook "allow" auto-approves would skip the prompt for checked, clean publishes.
   Cursor also runs Claude Code hooks from ~/.claude/settings.json by default
   (https://cursor.com/docs/reference/third-party-hooks), so with both installed the check can
   run twice for a publish; that is slower, never weaker.
@@ -44,9 +50,20 @@ from .base import (
 )
 
 NAME = "cursor"
-MATCHER = (
-    r"\b(npm|pnpm|yarn|bun|uv|uvx|poetry|hatch|flit)\b.*\bpublish\b"
-    r"|\btwine\b.*\bupload\b|\bgit\b.*\bpush\b"
+# Cursor matches this regex against the whole command line (it's JavaScript; this pattern uses
+# only syntax shared with Python's `re`, which the tests use). The tool must sit where a
+# command starts, so `git stash push`, `echo npm publish` and quoted text don't fire the hook.
+_COMMAND_START = (
+    r"(?:^|[;&|({!`\n]|\$\(|\b(?:do|then|else|xargs|sudo|env|exec|eval|nohup|time|npx|pnpx|"
+    r"bunx|uvx|corepack)\s|\btimeout\s+\S+\s|\bpython[0-9.]*\s+-m\s)\s*(?:\w+=\S*\s+)*(?:\S*/)?"
+)
+MATCHER = _COMMAND_START + (
+    r"(?:(?:npm|pnpm|yarn|bun)\b[^;&|\n]*?\b(?:publish|release|deploy|ship)\b"
+    r"|(?:uv|poetry|hatch|flit)\b[^;&|\n]*?\bpublish\b"
+    r"|twine\b[^;&|\n]*?\bupload\b"
+    r"|(?:changeset|lerna)\b[^;&|\n]*?\bpublish\b"
+    r"|(?:np|semantic-release|release-it)(?:\s|$)"
+    r"|git(?:\s+-\S+(?:\s+[^-\s]\S*)?)*\s+push\b)"
 )
 RULE = f"""\
 ---
@@ -112,12 +129,9 @@ def reply(verdict: Verdict | None) -> HookReply:
                 "agent_message": verdict.reason,
             }
         )
-    message = verdict.warning if verdict and verdict.warning else None
-    if message is None and verdict is not None:
-        message = "agentprint checked this command: OK"
-    out: dict = {"permission": "ask"}
-    if message:
-        out["user_message"] = message
+    out: dict = {"permission": "allow"}  # Cursor's own approval still applies (see above)
+    if verdict and verdict.warning:
+        out["user_message"] = verdict.warning
     return json_reply(out)
 
 

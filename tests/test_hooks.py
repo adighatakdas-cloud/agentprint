@@ -2,6 +2,7 @@
 
 import io
 import json
+import re
 import tarfile
 
 import pytest
@@ -133,10 +134,56 @@ def test_gemini_always_prints_json(project):
     assert json.loads(run("gemini", payload("gemini", "ls", project)).stdout) == {}
 
 
-def test_cursor_never_answers_allow(project):
-    for command in ("ls", "git push"):
+def test_cursor_allows_clean_commands_without_prompting(project):
+    # Hook "allow" does not override Cursor's own allowlist/approval (see cursor.py), so a
+    # clean result answers allow instead of adding an extra prompt.
+    for command in ("ls", "git stash push", "npm publish ok.tgz"):
         out = json.loads(run("cursor", payload("cursor", command, project)).stdout)
-        assert out["permission"] in {"ask", "deny"}
+        assert out["permission"] == "allow", command
+        assert "user_message" not in out or "could not check" in out["user_message"]
+
+
+CURSOR_MATCHES = [
+    "npm publish",
+    "cd pkg && npm publish --access public",
+    "pnpm -r publish",
+    "yarn npm publish",
+    "NODE_ENV=prod npm publish",
+    "npx changeset publish",
+    "npx lerna publish",
+    "npx np",
+    "npm run release",
+    "uv publish",
+    "twine upload dist/*",
+    "python -m twine upload dist/*",
+    "git push",
+    "git -C sub push origin main",
+    "git add . && git commit -m x && git push",
+    "if npm test; then git push; fi",
+]
+CURSOR_SKIPS = [
+    "git stash push",
+    'git commit -m "push notifications"',
+    "echo npm publish",
+    "rg 'npm publish' .",
+    "ls -la",
+    "npm test",
+    "git status",
+]
+
+
+@pytest.mark.parametrize("command", CURSOR_MATCHES)
+def test_cursor_matcher_fires_for_risky_commands(command):
+    from agentprint.integrations.cursor import MATCHER
+
+    assert re.search(MATCHER, command), command
+
+
+@pytest.mark.parametrize("command", CURSOR_SKIPS)
+def test_cursor_matcher_skips_ordinary_commands(command):
+    from agentprint.integrations.cursor import MATCHER
+
+    assert not re.search(MATCHER, command), command
 
 
 def test_other_tools_are_ignored():
