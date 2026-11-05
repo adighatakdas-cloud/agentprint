@@ -20,7 +20,7 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
-from .base import artifacts, is_blanket_command, mcp_servers
+from .base import artifacts, from_home, is_blanket_command, mcp_servers
 
 NAME = "opencode"
 
@@ -75,6 +75,7 @@ class OpenCode:
         ),
     )
 
+    @from_home
     def discover_home(self, home: Path) -> Iterator[Artifact]:
         config = home / ".config" / "opencode"
         data = home / ".local" / "share" / "opencode"

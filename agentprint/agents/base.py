@@ -2,13 +2,39 @@
 
 from __future__ import annotations
 
+import functools
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
 from ..files import walk_files
 from ..models import AgentConfig, Artifact, HookCommand, Kind, McpServer, PackageRule
+
+
+@dataclass(frozen=True)
+class HomeArtifact(Artifact):
+    """A file found by discover_home: the user's own agent data, outside any project.
+
+    `home` is the home folder it was found under. Project files stay plain Artifacts, so a
+    check can tell a private history file from shared config committed with a repo (AP008).
+    """
+
+    home: Path | None = None
+
+
+def from_home(
+    discover: Callable[[Any, Path], Iterator[Artifact]],
+) -> Callable[[Any, Path], Iterator[Artifact]]:
+    """Decorator for discover_home: tags every artifact it yields as a HomeArtifact."""
+
+    @functools.wraps(discover)
+    def wrapper(self: Any, home: Path) -> Iterator[Artifact]:
+        for a in discover(self, home):
+            yield HomeArtifact(a.agent, a.kind, a.path, a.personal, home=home)
+
+    return wrapper
 
 
 class Agent(Protocol):
