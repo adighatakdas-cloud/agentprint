@@ -12,11 +12,13 @@ from pathlib import Path
 
 from .agents import ALL_AGENTS
 from .checks.ap002_settings_secret import CHECK as AP002
+from .checks.ap005_mcp_inline_secret import CHECK as AP005
 from .checks.ap006_package_leak import check_listing, is_agent_file
 from .checks.ap007_local_not_ignored import LocalFileNotIgnored as AP007
 from .models import CannotCheck, Finding, Kind
 from .pack import MAX_CONTENT_BYTES, PackageListing
 from .sanitize import clean
+from .scanner import drop_claimed
 
 GIT_TIMEOUT = 20
 PUSHED_TITLE = "Agent file would be pushed to the git remote"
@@ -94,7 +96,8 @@ def _tracked_agent_files(root: Path, tracked: list[str]) -> list[Finding]:
 def _tracked_settings_secrets(
     root: Path, tracked: set[str], already: list[Finding]
 ) -> list[Finding]:
-    """Keys in tracked shared agent settings (.mcp.json, .claude/settings.json, ...)."""
+    """Keys in tracked shared agent settings (.mcp.json, .claude/settings.json, ...), reported
+    exactly as a scan reports them (an MCP-config key is AP005, other keys AP002)."""
     seen = {f.location for f in already}
     artifacts = [
         artifact
@@ -104,7 +107,7 @@ def _tracked_settings_secrets(
         and str(artifact.path) not in seen
         and artifact.path.relative_to(root).as_posix() in tracked
     ]
-    return AP002.run(artifacts)
+    return drop_claimed([*AP002.run(artifacts), *AP005.run(artifacts)])
 
 
 def _not_ignored(root: Path) -> list[Finding]:

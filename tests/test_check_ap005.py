@@ -11,7 +11,7 @@ from tests import fakes
 
 def test_ap005_is_registered():
     assert AP005 in SCAN_CHECKS
-    assert (AP005.id, AP005.severity) == ("AP005", Severity.HIGH)
+    assert (AP005.id, AP005.severity) == ("AP005", Severity.CRITICAL)
 
 
 def test_cursor_env_key_is_reported_with_line_and_concrete_fix(agents_home):

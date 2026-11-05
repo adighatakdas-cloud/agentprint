@@ -61,7 +61,7 @@ def test_key_in_tracked_shared_settings_blocks(repo):
     _write(repo / ".mcp.json", json.dumps({"mcpServers": {"x": {"env": {"T": fakes.GITHUB}}}}))
     _git(repo, "add", "-A")
     [finding] = check_push(repo)
-    assert finding.check_id == "AP002" and finding.location == str(repo / ".mcp.json")
+    assert finding.check_id == "AP005" and finding.location == str(repo / ".mcp.json")
 
 
 def test_untracked_shared_settings_are_not_reported_as_pushed(repo):

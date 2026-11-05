@@ -33,7 +33,7 @@ def _variable(field: str, server: McpServer) -> str:
 
 class McpInlineSecret:
     id = "AP005"
-    severity = Severity.HIGH
+    severity = Severity.CRITICAL  # a key written into config: same risk as AP002
     title = "Secret inline in MCP server config"
     fix = (
         "Rotate the key, then make the MCP server read it from an environment variable "
