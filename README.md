@@ -6,6 +6,28 @@
 
 **Status:** building — v0.1 in progress.
 
+## Use it with your AI agent
+
+**The security check your AI coding agent runs for you.**
+
+```bash
+uvx agentprint install   # coming soon: works once agentprint is published to PyPI
+```
+
+Run it once. After that you never type an agentprint command again: your agent (Claude Code, Codex, Cursor, Gemini CLI, Windsurf / Devin Desktop, OpenCode) checks every package publish and every `git push` by itself. If it would leak an API key or a private agent file, the agent is stopped, told exactly what to fix, and told what to ask you to do (like replacing a leaked key).
+
+What `install` changes, for each agent it finds on your computer:
+
+- **A hook** (where the agent supports them): before the agent runs `npm publish`, `uv publish`, `twine upload`, `git push` and friends, agentprint checks it. Everything else runs untouched. If agentprint itself breaks, the command goes ahead.
+- **An MCP server entry**, so the agent can ask agentprint to check a package or repo on its own.
+- **A short note** in the agent's global instructions file, telling it to run the check and never print your keys.
+
+It shows every change as a diff before writing it, and saves a backup of each file in `~/.agentprint/backups`. Running it twice changes nothing. Preview first with `uvx agentprint install --dry-run`.
+
+**To undo:** `uvx agentprint uninstall` puts every file back exactly as it was. Codex users: Codex runs a new hook only after you trust it — type `/hooks` in Codex once after installing.
+
+From source today: `uv run agentprint install --dry-run`.
+
 ## What it will do
 
 - Find API keys pasted into Claude Code, Codex, Cursor, Gemini CLI, Windsurf and OpenCode history files
@@ -28,6 +50,7 @@ uv run agentprint scan --no-home .     # just this repo
 uv run agentprint pack .               # what would ship in your npm/PyPI package
 uv run agentprint pack my-pkg-1.0.tgz  # an already-built package (.tgz, .tar.gz, .whl, .zip)
 uv run agentprint scan --format json   # machine-readable output
+uv run agentprint pack . --format agent  # short report for an AI agent: verdict, fix steps, ask_human
 ```
 
 Exit codes: `0` nothing at or above `--fail-on` (default `high`), `1` findings, `2` usage/packaging error.
