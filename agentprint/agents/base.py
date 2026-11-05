@@ -86,6 +86,9 @@ def hook_commands(hooks: Any) -> tuple[HookCommand, ...]:
 
     nested (Claude Code, Codex, Gemini CLI): {event: [{matcher, hooks: [{command}]}]}
     flat (Cursor, Windsurf):                 {event: [{command}]}
+
+    A Claude Code "http" handler ({type: "http", url}) POSTs to its URL; it is reported as the
+    command "POST <url>".
     """
     found: list[HookCommand] = []
     if not isinstance(hooks, dict):
@@ -105,6 +108,8 @@ def hook_commands(hooks: Any) -> tuple[HookCommand, ...]:
                     text = _command_text(handler.get(key))
                     if text:
                         found.append(HookCommand(str(event), text))
+                if handler.get("type") == "http" and isinstance(handler.get("url"), str):
+                    found.append(HookCommand(str(event), f"POST {handler['url']}"))
     return tuple(found)
 
 

@@ -39,7 +39,7 @@ def network_indicator(command: str) -> str | None:
 
 def _line(path: Path, hook: HookCommand) -> int | None:
     words = hook.command.split()
-    for needle in (hook.command[:60], json.dumps(hook.command)[1:61], *words[:1], hook.event):
+    for needle in (hook.command[:60], json.dumps(hook.command)[1:61], *words[:3], hook.event):
         line = find_line(path, needle)
         if line:
             return line
