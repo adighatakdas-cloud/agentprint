@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import contextlib
 import difflib
-import hashlib
 import json
 import os
 import shlex
@@ -104,10 +103,6 @@ class State:
         data = {"version": 1, "files": self.files, "dirs": self.dirs}
         self.dirs.extend(d for d in _mkdirs(self.path.parent) if d not in self.dirs)
         _atomic_write(self.path, json.dumps(data, indent=2) + "\n", 0o600)
-
-
-def _sha(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
 
 
 def _real(path: Path) -> Path:
@@ -297,7 +292,6 @@ def _install_file(
     state.dirs.extend(d for d in _mkdirs(_real(path).parent) if d not in state.dirs)
     mode = next((e.mode for e in edits if isinstance(e, FileEdit)), None)
     _atomic_write(path, new, mode)
-    state.files[key]["sha256"] = _sha(new.encode("utf-8"))
     return 1
 
 
@@ -327,7 +321,7 @@ def uninstall(
     for path, group in grouped.items():
         result = _uninstall_file(home, path, group, state, dry_run, echo)
         changed += result != "same"
-        exact = exact and result in {"same", "restored"}
+        exact = exact and result in {"same", "restored", "removed"}
     if dry_run:
         echo(f"\n{changed} file(s) would change. Run without --dry-run to apply.")
         return
@@ -348,6 +342,37 @@ def _rmdir_if_empty(directory: Path) -> None:
         directory.rmdir()
 
 
+def _backup_text(entry: dict | None) -> str | None:
+    if not entry or not entry.get("backup"):
+        return None
+    try:
+        return Path(entry["backup"]).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _pruned(value: object) -> object:
+    """JSON data without empty objects/lists, which removing an entry can leave or prune."""
+    if isinstance(value, dict):
+        items = {k: _pruned(v) for k, v in value.items()}
+        return {k: v for k, v in items.items() if v not in ({}, [])}
+    if isinstance(value, list):
+        return [_pruned(v) for v in value]
+    return value
+
+
+def _same(text: str, backup: str, edits: list[Edit]) -> bool:
+    """Same content: identical text, or (for JSON files) the same data."""
+    if text == backup:
+        return True
+    if not any(isinstance(e, JsonEdit) for e in edits):
+        return False
+    try:
+        return _pruned(json.loads(text or "{}")) == _pruned(json.loads(backup or "{}"))
+    except ValueError:
+        return False
+
+
 def _uninstall_file(
     home: Path, path: Path, edits: list[Edit], state: State, dry_run: bool, echo: Echo
 ) -> str:
@@ -358,26 +383,24 @@ def _uninstall_file(
         if not dry_run:
             state.files.pop(key, None)
         return "same"
-    if entry and entry.get("sha256") == _sha(current.encode("utf-8")):
-        backup = entry.get("backup")
-        restored = None if entry.get("created") else Path(backup).read_text(encoding="utf-8")
-        how = "restored"
-    else:
-        restored = current
-        try:
-            for edit in reversed(edits):
-                restored = edit.revert(restored)
-        except Unsupported as exc:
-            echo(f"  ! {_shown(home, path)}: left alone because {exc}. Remove agentprint by hand.")
-            return "kept"
-        if restored == current:
-            return "same"
-        created = bool(entry and entry.get("created"))
-        if restored.strip() in ("", "{}") and (
-            created or any(isinstance(e, FileEdit) for e in edits)
-        ):
-            restored = None
-        how = "edited"
+    # Only ever take agentprint's own edits out. The backup is used solely to get the original
+    # bytes back (formatting included) when what remains is the same as the backup.
+    restored: str | None = current
+    try:
+        for edit in reversed(edits):
+            restored = edit.revert(restored)
+    except Unsupported as exc:
+        echo(f"  ! {_shown(home, path)}: left alone because {exc}. Remove agentprint by hand.")
+        return "kept"
+    if restored == current:
+        return "same"
+    created = bool(entry and entry.get("created"))
+    backup = _backup_text(entry)
+    how = "edited"
+    if restored.strip() in ("", "{}") and (created or any(isinstance(e, FileEdit) for e in edits)):
+        restored, how = None, "removed"
+    elif backup is not None and _same(restored, backup, edits):
+        restored, how = backup, "restored"
     echo(f"  {_shown(home, path)}: {'removed' if restored is None else how}")
     for line in diff(current, restored, _shown(home, path)):
         echo(line)
@@ -386,7 +409,7 @@ def _uninstall_file(
     if restored is None:
         _real(path).unlink()
     elif how == "restored":
-        _real(path).write_bytes(Path(entry["backup"]).read_bytes())
+        _real(path).write_bytes(Path(entry["backup"]).read_bytes())  # exact original bytes
     else:
         _atomic_write(path, restored)
     state.files.pop(key, None)
