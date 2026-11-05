@@ -1,8 +1,9 @@
 """Resumable scan loop. Everything it writes is names, paths, counts and redacted values.
 
-Files in the output folder, per ecosystem (`npm`, `pypi`):
+Working files live in <out>/private/ (they name packages, so they are never posted), per
+ecosystem (`npm`, `pypi`):
 - targets-<eco>.jsonl   the package list, fetched once; a resumed run reuses it
-- meta-<eco>.json       what fetching that list cost
+- meta-<eco>.json       the round (window, shard) and what fetching the list cost
 - results-<eco>.jsonl   one line per finished package (the resume state)
 - sessions-<eco>.jsonl  one line per run: start, end, packages done, interrupted or not
 """
@@ -22,6 +23,22 @@ from .detect import new_record
 from .net import Http, Tally, TooLarge
 
 REGISTRIES = {"npm": npm, "pypi": pypi}
+PRIVATE_NOTE = """\
+Do not post anything in this folder.
+
+These files name packages and versions, and findings.jsonl holds redacted key-shaped strings.
+Only ../public/summary.json is safe to share (it holds counts only).
+
+If findings.jsonl is not empty, send it privately so maintainers can be told first:
+  - GitHub private vulnerability reporting:
+    https://github.com/adighatakdas-cloud/agentprint/security/advisories/new
+  - or email: adi65das@gmail.com
+Never use or test a key you find.
+"""
+
+
+def private_dir(out: Path) -> Path:
+    return out / "private"
 
 
 def key(target: dict) -> str:
@@ -42,7 +59,7 @@ def read_jsonl(path: Path) -> list[dict]:
 
 
 def _targets(eco, out: Path, n: int, http, recent, log) -> list[dict]:
-    path = out / f"targets-{eco}.jsonl"
+    path = private_dir(out) / f"targets-{eco}.jsonl"
     if path.exists():
         return read_jsonl(path)
     log(f"{eco}: listing the {n} most recent packages")
@@ -60,7 +77,7 @@ def _targets(eco, out: Path, n: int, http, recent, log) -> list[dict]:
         "enumeration_requests": tally.requests,
         "enumeration_seconds": round(time.monotonic() - start, 3),
     }
-    (out / f"meta-{eco}.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    (private_dir(out) / f"meta-{eco}.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return targets
 
 
@@ -101,11 +118,12 @@ def run(
     `redo`: scan again the packages whose newest result has one of these statuses (for
     example after a fix). The new line is appended; readers keep the newest line per package.
     """
-    out.mkdir(parents=True, exist_ok=True)
+    private_dir(out).mkdir(parents=True, exist_ok=True)
+    (private_dir(out) / "README.txt").write_text(PRIVATE_NOTE, encoding="utf-8")
     recent = recent or REGISTRIES[eco].recent
     scan = scan or REGISTRIES[eco].scan
     targets = _targets(eco, out, n, http, recent, log)
-    results_path = out / f"results-{eco}.jsonl"
+    results_path = private_dir(out) / f"results-{eco}.jsonl"
     newest = {row.get("key"): row.get("status") for row in read_jsonl(results_path)}
     done = {k for k, status in newest.items() if status not in redo}
     todo = [t for t in targets if key(t) not in done]
@@ -142,6 +160,6 @@ def run(
     finally:
         pool.shutdown(wait=True, cancel_futures=True)
         session["end"] = time.time()
-        with (out / f"sessions-{eco}.jsonl").open("a", encoding="utf-8") as fh:
+        with (private_dir(out) / f"sessions-{eco}.jsonl").open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(session) + "\n")
     return session

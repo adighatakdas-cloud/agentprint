@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import json
 from functools import partial
 from pathlib import Path
 
 from .net import Http, RateLimiter
 from .run import REGISTRIES, run
-from .summary import FULL_RUN, export_findings, render, summarize
+from .summary import FULL_RUN, finish
 
 # Fixed on purpose: volunteers cannot make the scan faster or ruder. Requests per second, per
 # host. jsDelivr asks heavy users to stay under 100 requests a minute or ask first.
@@ -68,12 +67,12 @@ def main(argv: list[str] | None = None) -> int:
             redo=set(args.redo),
             recent=partial(REGISTRIES[args.eco].recent, skip_newest=skip),
         )
-        return 130 if session["interrupted"] else 0
+        if session["interrupted"]:
+            return 130
+        print(finish(args.out))
+        return 0
 
-    summary = summarize(args.out, full=args.full)
-    (args.out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    export_findings(args.out)
-    print(render(summary))
+    print(finish(args.out, full=args.full))
     return 0
 
 
