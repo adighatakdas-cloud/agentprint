@@ -69,6 +69,34 @@ def payload(agent: str, command: str, cwd) -> dict:
             "tool_input": {"command": command, "cwd": cwd},
         },
         "opencode": {"command": command, "cwd": cwd},
+        # https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-hooks-reference
+        "copilot": {
+            "sessionId": "s",
+            "timestamp": 1762300000000,
+            "cwd": cwd,
+            "toolName": "bash",
+            "toolArgs": json.dumps({"command": command, "description": "x"}),
+        },
+        # https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks
+        "hermes": {
+            "hook_event_name": "pre_tool_call",
+            "tool_name": "terminal",
+            "tool_input": {"command": command},
+            "session_id": "s",
+            "cwd": cwd,
+            "profile": "default",
+            "extra": {},
+        },
+        # https://antigravity.google/docs/hooks/
+        "antigravity": {
+            "conversationId": "c",
+            "stepIdx": 19,
+            "workspacePaths": [cwd],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": command, "Cwd": cwd, "WaitMsBeforeAsync": 0},
+            },
+        },
     }[agent]
 
 
@@ -88,8 +116,13 @@ def blocked(agent: str, reply) -> str | None:
         return out.get("agent_message") if out.get("permission") == "deny" else None
     if agent == "windsurf":
         return reply.stderr if reply.exit_code == BLOCK_EXIT else None
-    if agent in {"devin", "opencode"}:
+    if agent in {"devin", "opencode", "hermes"}:
         return out.get("reason") if out.get("decision") == "block" else None
+    if agent == "copilot":
+        deny = out.get("permissionDecision") == "deny"
+        return out.get("permissionDecisionReason") if deny else None
+    if agent == "antigravity":
+        return out.get("reason") if out.get("decision") == "deny" else None
     raise AssertionError(agent)
 
 
@@ -102,7 +135,34 @@ def test_every_integration_has_a_payload_test():
         "windsurf",
         "devin",
         "opencode",
+        "copilot",
+        "hermes",
+        "antigravity",
     }
+
+
+def test_copilot_tool_args_as_an_object_is_read_too(project):
+    data = payload("copilot", PUBLISH, project)
+    data["toolArgs"] = {"command": PUBLISH}
+    assert blocked("copilot", run("copilot", data))
+
+
+def test_copilot_allow_is_exit_0_with_no_output(project):
+    # Copilot's preToolUse treats any non-zero exit other than 2 as deny, and "allow" in JSON
+    # would skip the user's own approval; so allow is silence.
+    reply = run("copilot", payload("copilot", "ls", project))
+    assert (reply.stdout, reply.exit_code) == ("", 0)
+
+
+def test_antigravity_allow_defers_to_its_own_policy(project):
+    out = json.loads(run("antigravity", payload("antigravity", "ls", project)).stdout)
+    assert out == {"decision": "allow"}
+
+
+def test_hermes_ignores_other_tools(project):
+    data = payload("hermes", PUBLISH, project)
+    data["tool_name"] = "read_file"
+    assert run("hermes", data).stdout == ""
 
 
 @pytest.mark.parametrize("agent", sorted(ALL_INTEGRATIONS))

@@ -1,14 +1,29 @@
 """How agentprint plugs into each AI coding agent: hooks, MCP server entries, instructions."""
 
+from .antigravity import INTEGRATION as ANTIGRAVITY
 from .base import Integration
 from .claude_code import INTEGRATION as CLAUDE_CODE
 from .codex import INTEGRATION as CODEX
+from .copilot import INTEGRATION as COPILOT
 from .cursor import INTEGRATION as CURSOR
 from .gemini import INTEGRATION as GEMINI
+from .hermes import INTEGRATION as HERMES
 from .opencode import INTEGRATION as OPENCODE
 from .windsurf import DEVIN_INTEGRATION as DEVIN
 from .windsurf import WINDSURF_INTEGRATION as WINDSURF
 
 ALL_INTEGRATIONS: dict[str, Integration] = {
-    i.name: i for i in (CLAUDE_CODE, CODEX, CURSOR, GEMINI, WINDSURF, DEVIN, OPENCODE)
+    i.name: i
+    for i in (
+        CLAUDE_CODE,
+        CODEX,
+        CURSOR,
+        GEMINI,
+        WINDSURF,
+        DEVIN,
+        OPENCODE,
+        COPILOT,
+        HERMES,
+        ANTIGRAVITY,
+    )
 }

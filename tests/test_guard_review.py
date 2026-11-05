@@ -14,6 +14,7 @@ from agentprint.hook import run_hook
 from agentprint.integrations import ALL_INTEGRATIONS
 from agentprint.pack import PackageListing
 from tests import fakes
+from tests.test_hooks import payload
 
 LEAKY = json.dumps({"permissions": {"allow": [f"Bash(export K={fakes.ANTHROPIC})"]}})
 
@@ -148,28 +149,9 @@ def test_push_reasons_carry_no_control_or_bidi_characters_for_any_agent(tmp_path
     subprocess.run([*git, "init", "-q"], cwd=repo, check=True)
     subprocess.run([*git, "add", "-A"], cwd=repo, check=True)
     for agent in ALL_INTEGRATIONS:
-        reply = run_hook(agent, json.dumps(_payload(agent, "git push", repo)), {})
+        reply = run_hook(agent, json.dumps(payload(agent, "git push", repo)), {})
         text = reply.stdout + reply.stderr
         assert "agentprint: BLOCK" in text, agent
         assert fakes.ANTHROPIC not in text
         bad = [ch for ch in text if unicodedata.category(ch) in ("Cc", "Cf") and ch != "\n"]
         assert not bad, (agent, [hex(ord(ch)) for ch in bad])
-
-
-def _payload(agent: str, command: str, cwd: Path) -> dict:
-    return {
-        "claude-code": {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)},
-        "codex": {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)},
-        "gemini": {
-            "tool_name": "run_shell_command",
-            "tool_input": {"command": command},
-            "cwd": str(cwd),
-        },
-        "cursor": {"command": command, "cwd": str(cwd)},
-        "windsurf": {
-            "agent_action_name": "pre_run_command",
-            "tool_info": {"command_line": command, "cwd": str(cwd)},
-        },
-        "devin": {"tool_name": "exec", "tool_input": {"command": command, "cwd": str(cwd)}},
-        "opencode": {"command": command, "cwd": str(cwd)},
-    }[agent]

@@ -13,6 +13,7 @@ hook launcher's name in the command) so uninstall finds exactly that and nothing
 from __future__ import annotations
 
 import copy
+import io
 import json
 import os
 import shlex
@@ -135,6 +136,87 @@ class JsonEdit:
         new = copy.deepcopy(data)
         self.remove(new)
         return current if new == data else dump_json(new, current)
+
+
+def _yaml_indents(text: str) -> tuple[int, int]:
+    """(mapping indent, dash offset) as the file uses them: 2/0 for "key:\\n- item", 2/2 for
+    "key:\\n  - item"."""
+    lines = [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    mapping = offset = None
+    for parent_line, line in zip(lines, lines[1:], strict=False):
+        if not parent_line.rstrip().endswith(":"):
+            continue
+        parent = len(parent_line) - len(parent_line.lstrip())
+        child = len(line) - len(line.lstrip())
+        if line.lstrip().startswith("-"):
+            offset = child - parent if offset is None and child >= parent else offset
+        elif mapping is None and child > parent:
+            mapping = child - parent
+    return mapping or 2, max(offset or 0, 0)
+
+
+def _yaml_loader(text: str):
+    """A round-trip YAML parser set to the file's own indentation (comments are kept)."""
+    from ruamel.yaml import YAML
+
+    parser = YAML()  # round-trip mode: comments, key order and quoting survive
+    parser.preserve_quotes = True
+    parser.width = 4096  # never re-wrap long lines
+    mapping, offset = _yaml_indents(text)
+    parser.indent(mapping=mapping, sequence=offset + 2, offset=offset)
+    return parser
+
+
+def _load_yaml(text: str | None):
+    from ruamel.yaml.comments import CommentedMap
+    from ruamel.yaml.error import YAMLError
+
+    text = text or ""
+    try:
+        parser = _yaml_loader(text)
+        data = parser.load(text) if text.strip() else None
+    except (YAMLError, ValueError, TypeError) as exc:
+        raise Unsupported("it is not YAML agentprint can read safely") from exc
+    data = CommentedMap() if data is None else data
+    if not isinstance(data, dict):
+        raise Unsupported("its top level is not a YAML mapping")
+    return data, parser
+
+
+def _plain(data: object) -> str:
+    return json.dumps(data, sort_keys=True, default=str)
+
+
+@dataclass(frozen=True)
+class YamlEdit:
+    """Keys added to a YAML file with a round-trip parser, so the user's comments, key order
+    and formatting stay as they were (Hermes Agent's config.yaml)."""
+
+    path: Path
+    what: str
+    add: Callable[[dict], None]
+    remove: Callable[[dict], None]
+    missing: str = ""  # if set, never create the file: this is why (shown to the user)
+
+    def _change(self, text: str | None, fn: Callable[[dict], None]) -> str | None:
+        data, parser = _load_yaml(text)
+        before = _plain(data)
+        fn(data)
+        if _plain(data) == before:
+            return None
+        buffer = io.StringIO()
+        parser.dump(data, buffer)
+        return buffer.getvalue()
+
+    def apply(self, old: str | None) -> str:
+        if old is None and self.missing:
+            raise Unsupported(self.missing)
+        new = self._change(old, self.add)
+        return old if new is None and old is not None else (new or "")
+
+    def revert(self, current: str) -> str:
+        new = self._change(current, self.remove)
+        return current if new is None else new
 
 
 @dataclass(frozen=True)
