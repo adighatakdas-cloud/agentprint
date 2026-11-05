@@ -1,5 +1,5 @@
 {
-  "name": "agentprint",
+  "name": "agentprint-cli",
   "version": "0.1.0-dev.0",
   "description": "Find the keys and agent files AI coding agents leave behind, before they ship in your package. Runs the agentprint Python CLI through uvx or pipx.",
   "keywords": [

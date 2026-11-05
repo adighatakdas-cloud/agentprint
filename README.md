@@ -41,14 +41,14 @@ Every secret is shown redacted (first 4 characters + length). `scan` is fully of
 
 ```bash
 uvx agentprint scan     # with uv (Python)
-npx agentprint pack     # with npm; runs the same tool through uvx or pipx
+npx agentprint-cli pack # with npm; runs the same tool through uvx or pipx
 ```
 
 **Stop a leaky `npm publish`.** Add to your `package.json`:
 
 ```json
 "scripts": {
-  "prepublishOnly": "npx agentprint pack"
+  "prepublishOnly": "npx agentprint-cli pack"
 }
 ```
 

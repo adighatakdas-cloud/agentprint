@@ -7,7 +7,7 @@ A release is one command: push a version tag such as `v0.1.0`. GitHub Actions
    or already ours;
 2. runs every test, builds the Python package, and runs agentprint on its own release files;
 3. publishes to **PyPI** (so `uvx agentprint` works);
-4. publishes the npm wrapper to **npm** (so `npx agentprint` works). npm goes second because the
+4. publishes the npm wrapper to **npm** (so `npx agentprint-cli` works). npm goes second because the
    wrapper downloads the PyPI version.
 
 No PyPI password or token is stored anywhere. PyPI and npm both use **trusted publishing**: the
@@ -16,15 +16,12 @@ who is uploading each time.
 
 ## One-time setup (owner)
 
-Do these once, before the first tag. Steps 1 and 2 are decisions, the rest are clicks.
+Do these once, before the first tag. Step 2 is a decision, the rest are clicks.
 
-1. **Choose the npm name.** `agentprint` on npm already belongs to another project (registered
-   26 Oct 2026, unrelated to this repo). While `npm/package.json` says `"name": "agentprint"`,
-   the release stops before publishing anything. Either rename the whole project, or keep the
-   name and publish the wrapper under your npm user, e.g. `@your-npm-user/agentprint` (the
-   command people type stays `agentprint`; they run it as `npx @your-npm-user/agentprint pack`).
-   Then update the name in `npm/package.json` and the README. The PyPI name `agentprint` was
-   still free on 5 Nov 2026.
+1. **npm name: `agentprint-cli`.** `agentprint` on npm belongs to an unrelated project
+   (registered 26 Oct 2026), so the npm wrapper is published as `agentprint-cli`. The command
+   people type after installing is still `agentprint`; one-off use is `npx agentprint-cli pack`.
+   The PyPI name stays `agentprint` (free on 5 Nov 2026 — claim it with the first release).
 2. **Make the repository public first.** npm provenance (the "built by this GitHub repo" badge)
    only works for public repositories, so the first release happens after the repo goes public.
 3. **PyPI.** Sign in at pypi.org (turn on two-factor authentication). Go to *Your account →
@@ -71,7 +68,7 @@ Do these once, before the first tag. Steps 1 and 2 are decisions, the rest are c
 
    Pre-releases are spelled differently: Python `0.2.0rc1` is npm `0.2.0-rc.1` (`a1` →
    `-alpha.1`, `b1` → `-beta.1`, `.dev0` → `-dev.0`). A test fails if the two don't match.
-   npm pre-releases are published under the `next` tag, so `npx agentprint` never picks them.
+   npm pre-releases are published under the `next` tag, so `npx agentprint-cli` never picks them.
 2. Merge that change into `main` through a pull request, and wait for CI to pass.
 3. Tag the merged commit and push the tag:
 
@@ -82,7 +79,7 @@ Do these once, before the first tag. Steps 1 and 2 are decisions, the rest are c
    ```
 
 4. Watch *Actions → Release*. Approve the `pypi` and `npm` steps if you set reviewers.
-5. Check it worked: `uvx agentprint==0.1.0 --version` and `npx agentprint@0.1.0 --version`
+5. Check it worked: `uvx agentprint==0.1.0 --version` and `npx agentprint-cli@0.1.0 --version`
    (use the npm name you chose).
 6. Optional: on GitHub, *Releases → Draft a new release* from the tag. Tick *Publish this Action
    to the GitHub Marketplace* to list the Action there.

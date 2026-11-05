@@ -22,7 +22,7 @@ and its length.
 In scope:
 
 - the agentprint Python package and command line (`scan`, `pack` and the other commands);
-- the npm wrapper (`npx agentprint`), the GitHub Action (`action.yml`) and the pre-commit hooks
+- the npm wrapper (`npx agentprint-cli`), the GitHub Action (`action.yml`) and the pre-commit hooks
   in this repository;
 - the release workflow in this repository.
 
@@ -43,7 +43,7 @@ Nothing. agentprint never sends data anywhere: no telemetry, no accounts, and no
 during a scan. It never uses a key it finds, not even to check whether the key still works, and
 it always shows keys redacted.
 
-The only downloads are ones you start: `uvx agentprint` / `npx agentprint` fetch agentprint
+The only downloads are ones you start: `uvx agentprint` / `npx agentprint-cli` fetch agentprint
 itself, and `agentprint pack` on a project runs your own packaging tool (`npm pack --dry-run` or
 `uv build`), which may fetch build tools.
 
