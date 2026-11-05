@@ -376,3 +376,35 @@ def status(
         missing = [clean(s.label) for s in states if not s.found]
         if missing:
             out.print(Text("not found: " + ", ".join(missing), style="ap.dim"))
+
+
+@app.command()
+def welcome(
+    home: Annotated[
+        Path | None, typer.Option(help="Home directory to check. Default: yours.")
+    ] = None,
+    plain: PlainOpt = False,
+) -> None:
+    """Show the welcome screen again."""
+    from .roster import roster
+    from .ui.sweep import play
+    from .ui.theme import is_light
+    from .ui.welcome import mark_welcome, welcome_lines
+
+    if home is None:
+        home_dir, env = Path.home(), dict(os.environ)
+    elif home.is_dir():
+        home_dir, env = home.absolute(), {}
+    else:
+        typer.secho(f"error: {home} is not a directory", err=True, fg=typer.colors.RED)
+        raise typer.Exit(2)
+    theme_env = env or dict(os.environ)
+    lines = welcome_lines(
+        roster(home_dir, env), __version__, _short(os.getcwd()), light=is_light(theme_env)
+    )
+    out = themed_console(theme_env, plain=plain)
+    try:
+        play(out, lines, should_animate(theme_env, sys.stdout, plain))
+    except KeyboardInterrupt:
+        raise typer.Exit(130) from None
+    mark_welcome(home_dir)
