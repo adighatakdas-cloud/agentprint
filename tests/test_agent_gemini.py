@@ -27,7 +27,7 @@ def test_gemini_home_files_list_login_and_env_files_only_as_credential_stores(ag
 def test_gemini_project_files(agents_project):
     assert _rel(Gemini().discover_project(agents_project), agents_project) == {
         (Kind.SETTINGS, ".gemini/settings.json", False),
-        (Kind.PERSONAL, ".gemini/.env", True),
+        (Kind.CREDENTIALS, ".gemini/.env", True),  # a key store: personal, never scanned
     }
 
 

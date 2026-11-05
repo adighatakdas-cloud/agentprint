@@ -98,7 +98,7 @@ class Gemini:
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         base = root / ".gemini"
         yield from artifacts(NAME, Kind.SETTINGS, base / "settings.json")
-        yield from artifacts(NAME, Kind.PERSONAL, base / ".env", personal=True)
+        yield from artifacts(NAME, Kind.CREDENTIALS, base / ".env", personal=True)
 
     def read_config(self, artifact: Artifact) -> AgentConfig:
         if artifact.path.name != "settings.json":
