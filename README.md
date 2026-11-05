@@ -38,9 +38,9 @@ From source today: `uv run agentprint install --dry-run`.
 
 ## What it will do
 
-- Find API keys pasted into Claude Code, Codex, Cursor, Gemini CLI, Windsurf and OpenCode history files
-- Flag over-broad agent permissions (`Bash(*)`, auto-approve modes) and hooks that call the network
-- Catch `.claude/` and other agent folders before they ship inside your npm or PyPI package
+- Find API keys pasted into Claude Code, Codex, Cursor, Gemini CLI, Windsurf, OpenCode, GitHub Copilot, Hermes Agent and Google Antigravity history files
+- Flag over-broad agent permissions (`Bash(*)`, auto-approve modes), hooks that call the network, and agent files other users on the machine can read
+- Catch `.claude/` and other agent folders (24 agents) before they ship inside your npm or PyPI package
 - Output for humans, JSON and SARIF; run as a GitHub Action, a pre-publish script or a pre-commit hook
 
 ## Run it (from source)
@@ -129,11 +129,12 @@ repos:
 |---|---|---|
 | AP001 | API key in an agent's history, transcript, paste cache, edit backups or chat database | high |
 | AP002 | API key in an agent settings / allowlist file | critical |
-| AP003 | Over-broad permission: `Bash(*)`, `bypassPermissions`, Codex `never` + `danger-full-access`, Cursor `Shell(*)` / `approvalMode: unrestricted`, Gemini bare `run_shell_command` / trusted MCP server, Windsurf allow-listed shell, OpenCode `"allow"` | medium |
+| AP003 | Over-broad permission: `Bash(*)`, `bypassPermissions`, Codex `never` + `danger-full-access`, Cursor `Shell(*)` / `approvalMode: unrestricted`, Gemini bare `run_shell_command` / trusted MCP server, Windsurf allow-listed shell, OpenCode `"allow"`, Copilot `allow-all` / VS Code `chat.tools.global.autoApprove`, Hermes `approvals.mode: off` / `hooks_auto_accept`, Antigravity `always-proceed` / `command(*)` | medium |
 | AP004 | Agent hook (or Codex `notify`) runs a network command: curl, wget, nc, `\| sh`, Invoke-WebRequest, a URL | medium |
 | AP005 | API key written inline in an MCP server entry (env, headers, args, URL); replaces AP002 for that key | critical |
-| AP006 | Agent file (e.g. `.claude/settings.local.json`) would ship in your npm/PyPI package | high/medium/low |
-| AP007 | Personal agent file (`.claude/settings.local.json`, `CLAUDE.local.md`, `.gemini/.env`) in a git repo but not gitignored, or already committed | low |
+| AP006 | Agent file (e.g. `.claude/settings.local.json`, `.aider.chat.history.md`, `.hermes/`) would ship in your npm/PyPI package | high/medium/low |
+| AP007 | Personal agent file (`.claude/settings.local.json`, `CLAUDE.local.md`, `.gemini/.env`, `.github/copilot/settings.local.json`, Aider transcripts) in a git repo but not gitignored, or already committed | low |
+| AP008 | Agent history, settings or credential store readable by other users on this machine (file mode and every folder above it); fix is an exact `chmod 600`. POSIX only | medium; high for key stores or files holding a key |
 
 Every finding carries a fix written for the AI agent that reads it: which file, which setting to change, which line to add to `.gitignore`, and what to ask the human (rotating a key).
 
@@ -147,11 +148,16 @@ Every finding carries a fix written for the AI agent that reads it: which file, 
 | Gemini CLI | `~/.gemini/settings.json` (+ project), chats and logs in `~/.gemini/tmp/` | 2026-11-05, macOS (folders only; file names from docs) |
 | Windsurf | `~/.codeium/windsurf/` `mcp_config.json`, `hooks.json`, memories; command allow list in the editor's `settings.json` | 2026-11-05, macOS (folders only; file names from docs) |
 | OpenCode | `opencode.json(c)` (global + project); session database `opencode.db` (SQLite) and storage | 2026-11-05, macOS |
+| GitHub Copilot (CLI + VS Code) | `~/.copilot/` session history, logs, `settings.json`, `mcp-config.json`, `hooks/`; VS Code chat sessions and `settings.json`; project `.github/copilot/`, `.github/hooks/`, `.vscode/mcp.json` | 2026-11-05, macOS |
+| Hermes Agent | `~/.hermes/` `config.yaml` (approvals, hooks, MCP), `state.db` history (SQLite), sessions, memories, skills, `SOUL.md`; profiles | 2026-11-05, macOS (folder only; file names from docs) |
+| Google Antigravity | `~/.gemini/antigravity*/brain/` transcripts and artifacts; `~/.gemini/config/hooks.json` and `mcp_config.json`; CLI `settings.json`; project `.agents/` | 2026-11-05, macOS |
 
-Login stores where a key is expected (`~/.codex/auth.json`, `~/.gemini/oauth_creds.json` and `.env`, OpenCode `auth.json`) are never read.
-SQLite chat databases are opened read-only, and at most 64 MB of text is read from each.
+**Scan-only** (package rules for `agentprint pack`, plus the files they write inside a project): Aider, Cline, Kilo Code, Qwen Code, Crush, Goose, Kiro, Factory Droid, Continue, Zed, Pi, OpenClaw, Warp, Roo Code, Augment. Their instruction and rules files (`AGENTS.md`, `.clinerules/`, `.goosehints`, …) are never treated as leaks.
 
-Not covered yet: Windsurf Cascade conversations (binary `.pb` files) and its new Devin Desktop paths; Cursor's IDE auto-run mode (stored inside `state.vscdb`); OpenCode plugins (JavaScript); Google Antigravity (`~/.gemini/antigravity/`).
+Credential stores where a key is expected (`~/.codex/auth.json`, `~/.gemini/oauth_creds.json` and `.env`, OpenCode `auth.json`, `~/.hermes/.env` and `auth.json`, `~/.copilot/providers.json` and `config.json`, Antigravity `mcp_oauth_tokens.json`) are never read; AP008 only checks who can read them.
+SQLite chat databases are opened read-only, and at most 64 MB of text is read from each. Hermes `config.yaml` is read with a safe YAML loader.
+
+Not covered yet: Windsurf Cascade conversations and older Antigravity conversations (binary `.pb` files) and Windsurf's new Devin Desktop paths; Cursor's IDE auto-run mode (stored inside `state.vscdb`); OpenCode plugins (JavaScript); Hermes outbound webhooks.
 
 ## Tech
 
