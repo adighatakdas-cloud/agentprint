@@ -147,7 +147,7 @@ def test_npm_scoped_names_stay_readable_in_urls():
     assert web.urls() == ["https://registry.npmjs.org/@scope/demo/latest"]
 
 
-def test_npm_recent_lists_newest_unique_live_packages():
+def _feed_web():
     changes = [{"seq": s, "id": f"p{s}"} for s in range(1, 31)]
     for row in changes:
         if row["seq"] % 3 == 0:
@@ -165,8 +165,26 @@ def test_npm_recent_lists_newest_unique_live_packages():
         web.routes[f"https://replicate.npmjs.com/registry/_changes?since={since}&limit=10000"] = (
             feed
         )
-    got = npm.recent(_http(web), 5, Tally(), window=4)
+    return web
+
+
+def test_npm_recent_lists_newest_unique_live_packages():
+    got = npm.recent(_http(_feed_web()), 5, Tally(), window=4)
     assert [t["name"] for t in got] == ["p29", "p28", "p26", "p25", "p23"]
+
+
+def test_npm_recent_can_skip_the_newest_changes():
+    # The very newest versions are often not on jsDelivr yet, or get removed within minutes.
+    got = npm.recent(_http(_feed_web()), 3, Tally(), window=4, skip_newest=10)
+    assert [t["name"] for t in got] == ["p20", "p19", "p17"]
+
+
+def test_npm_removed_tarball_is_gone_not_an_error():
+    files = {"index.js": b"1", "AGENTS.md": b"x"}
+    web = _npm_web(files, files)
+    web.add(TARBALL, b"", status=404)
+    rec = npm.scan(_http(web), {"name": "demo"}, Tally())
+    assert (rec["status"], rec["reason"]) == ("gone", "tarball removed")
 
 
 # --- PyPI -----------------------------------------------------------------------------------
@@ -262,3 +280,5 @@ def test_pypi_recent_lists_newest_release_per_project():
     web.routes["https://pypi.org/pypi"] = rpc
     got = pypi.recent(_http(web), 10, Tally(), step=12)
     assert [(t["name"], t["version"]) for t in got] == [("d", "3.0"), ("A", "1.1"), ("b", "2.0")]
+    older = pypi.recent(_http(web), 10, Tally(), step=12, skip_newest=8)
+    assert [(t["name"], t["version"]) for t in older] == [("A", "1.1"), ("b", "2.0")]

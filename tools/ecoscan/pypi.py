@@ -43,12 +43,16 @@ def _rpc(http: Http, method: str, *params, tally: Tally):
     return result
 
 
-def recent(http: Http, n: int, tally: Tally, *, step: int = 20_000) -> list[dict]:
+def recent(
+    http: Http, n: int, tally: Tally, *, step: int = 20_000, skip_newest: int = 0
+) -> list[dict]:
     """The newest release of each of the `n` most recently released projects, newest first.
 
-    Releases that were deleted again inside the window are left out.
+    Releases that were deleted again inside the window are left out. `skip_newest` leaves out
+    the newest changelog serials (about 1,900 an hour in Nov 2026), so files have finished
+    uploading.
     """
-    hi = int(_rpc(http, "changelog_last_serial", tally=tally))
+    hi = int(_rpc(http, "changelog_last_serial", tally=tally)) - skip_newest
     found: dict[str, dict] = {}
     removed: set[tuple[str, str | None]] = set()
     while len(found) < n and hi > 0:

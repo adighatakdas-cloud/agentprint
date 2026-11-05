@@ -27,14 +27,18 @@ def _url_name(name: str) -> str:
     return quote(name, safe="@/")  # scoped names keep their readable "@scope/name" form
 
 
-def recent(http: Http, n: int, tally: Tally, *, window: int | None = None) -> list[dict]:
+def recent(
+    http: Http, n: int, tally: Tally, *, window: int | None = None, skip_newest: int = 0
+) -> list[dict]:
     """The `n` most recently changed packages, newest first, from the replication feed.
 
     The feed lists each package once, at its latest change. It cannot page backwards, so this
     reads forward from `update_seq - window`, widening the window until `n` live packages show.
+    `skip_newest` leaves out the newest changes (about 15,000 an hour in Nov 2026): minutes-old
+    versions are often not on jsDelivr yet, and spam is often removed within the hour.
     """
     root = json_of(http.get(f"{REPLICATE}/", tally=tally, max_bytes=MAX_JSON_BYTES), "npm root")
-    hi = int(root["update_seq"])
+    hi = int(root["update_seq"]) - skip_newest
     window = window or max(4 * n, 1000)
     found: dict[str, int] = {}
     while len(found) < n and hi > 0:
@@ -92,6 +96,9 @@ def scan(http: Http, target: dict, tally: Tally, *, validate: bool = False) -> d
         max_bytes=MAX_TARBALL_BYTES,
         tally=tally,
     )
+    if resp.status == 404:  # npm removes spam and malware tarballs; the manifest lags behind
+        rec.update(status="gone", reason="tarball removed")
+        return rec
     if resp.status != 200:
         raise HttpError(f"HTTP {resp.status} for npm tarball")
     listing = read_archive_bytes(resp.body, "package.tgz", is_candidate)

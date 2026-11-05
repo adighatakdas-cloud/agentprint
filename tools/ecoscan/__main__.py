@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
+from functools import partial
 from pathlib import Path
 
 from .net import MAX_RATE, Http, RateLimiter
-from .run import run
+from .run import REGISTRIES, run
 from .summary import FULL_RUN, export_findings, render, summarize
 
 # Per-host ceilings. jsDelivr asks heavy users to stay under 100 requests a minute or ask first.
 HOST_RATES = {"data.jsdelivr.com": 1.6, "replicate.npmjs.com": 1.0}
+# About one hour of changes (measured Nov 2026): lets uploads, CDNs and spam removal settle.
+SKIP_NEWEST = {"npm": 15_000, "pypi": 2_000}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -28,6 +31,12 @@ def main(argv: list[str] | None = None) -> int:
     go.add_argument("--workers", type=int, default=6)
     go.add_argument("--rate", type=float, default=4.0, help=f"requests/s per host, ≤ {MAX_RATE}")
     go.add_argument(
+        "--skip-newest",
+        type=int,
+        default=None,
+        help="leave out this many newest feed entries (default: about one hour's worth)",
+    )
+    go.add_argument(
         "--validate-pct",
         type=int,
         default=0,
@@ -40,6 +49,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "run":
         limiter = RateLimiter(default=args.rate, rates=HOST_RATES)
+        skip = SKIP_NEWEST[args.eco] if args.skip_newest is None else args.skip_newest
         session = run(
             args.eco,
             args.out,
@@ -47,6 +57,7 @@ def main(argv: list[str] | None = None) -> int:
             Http(limiter),
             workers=args.workers,
             validate_pct=args.validate_pct,
+            recent=partial(REGISTRIES[args.eco].recent, skip_newest=skip),
         )
         return 130 if session["interrupted"] else 0
 

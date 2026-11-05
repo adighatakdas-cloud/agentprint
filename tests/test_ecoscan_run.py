@@ -171,6 +171,21 @@ def test_summary_counts_packages_by_agent_kind_and_rule(tmp_path):
     assert "secret-pkg" not in json.dumps(s)  # counts only, never package names
 
 
+def test_run_command_skips_about_an_hour_of_newest_changes(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_run(eco, out, n, http, **kw):
+        seen.update(eco=eco, n=n, recent=kw["recent"], rates=http.limiter.rates)
+        return {"interrupted": False}
+
+    monkeypatch.setattr("tools.ecoscan.__main__.run", fake_run)
+    assert main(["run", "npm", "--limit", "5", "--out", str(tmp_path)]) == 0
+    assert seen["recent"].keywords == {"skip_newest": 15_000}
+    assert seen["rates"]["data.jsdelivr.com"] <= 100 / 60  # jsDelivr's fair-use line
+    main(["run", "pypi", "--limit", "5", "--out", str(tmp_path), "--skip-newest", "0"])
+    assert seen["recent"].keywords == {"skip_newest": 0}
+
+
 def test_summary_command_prints_counts_only(tmp_path, capsys):
     run(
         "npm",
