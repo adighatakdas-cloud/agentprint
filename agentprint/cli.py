@@ -203,7 +203,8 @@ def _setup_args(
     if not home.is_dir():
         typer.secho(f"error: {home} is not a directory", err=True, fg=typer.colors.RED)
         raise typer.Exit(2)
-    return home, {}, agents
+    # Agents run hooks from any folder, so every path written into their config is absolute.
+    return home.absolute(), {}, agents
 
 
 @app.command()
