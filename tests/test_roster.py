@@ -33,3 +33,19 @@ def test_summary_line_variants():
     )
     assert summary_line([_s("a", found=False)]) == "no AI agents found on this machine"
     assert summary_line([]) == "no AI agents found on this machine"
+
+
+def test_every_integration_has_a_short_name():
+    from agentprint.integrations import ALL_INTEGRATIONS
+    from agentprint.roster import SHORT_NAMES
+
+    assert set(ALL_INTEGRATIONS) <= set(SHORT_NAMES)
+
+
+def test_wrong_shaped_state_means_nothing_armed(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    d = tmp_path / ".agentprint"
+    d.mkdir()
+    for text in ("[]", '{"files": null}', '{"files": []}', '{"files": {"a": 3}}'):
+        (d / "state.json").write_text(text)
+        assert not any(s.armed for s in roster(tmp_path, {}))

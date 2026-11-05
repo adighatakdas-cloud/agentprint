@@ -18,11 +18,30 @@ class AgentState:
     armed: bool
 
 
+SHORT_NAMES = {
+    "claude-code": "Claude Code",
+    "codex": "Codex",
+    "cursor": "Cursor",
+    "gemini": "Gemini CLI",
+    "windsurf": "Windsurf",
+    "devin": "Devin",
+    "opencode": "OpenCode",
+    "copilot": "Copilot",
+    "hermes": "Hermes",
+    "antigravity": "Antigravity",
+}
+
+
 def roster(home: Path, env: Mapping[str, str]) -> list[AgentState]:
-    state = State.load(home)
-    armed = {entry.get("agent") for entry in state.files.values() if isinstance(entry, dict)}
+    try:
+        files = State.load(home).files
+        armed = {entry.get("agent") for entry in files.values() if isinstance(entry, dict)}
+    except (AttributeError, TypeError, ValueError):  # state.json is JSON of the wrong shape
+        armed = set()
     return [
-        AgentState(name, integ.label, integ.installed(home, env), name in armed)
+        AgentState(
+            name, SHORT_NAMES.get(name, integ.label), integ.installed(home, env), name in armed
+        )
         for name, integ in ALL_INTEGRATIONS.items()
     ]
 

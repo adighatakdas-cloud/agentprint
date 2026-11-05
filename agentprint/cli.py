@@ -283,9 +283,10 @@ def status(
         out = console(env or dict(os.environ), plain=plain)
         out.print(Text(f"agentprint {__version__} · roster", style="ap.dim"))
         out.print(Text(summary_line(states)))
+        width = max([14, *(len(clean(s.label)) + 2 for s in states if s.found)])
         for s in states:
             if s.found:
-                line = Text(clean(s.label).ljust(14) + " ")
+                line = Text(clean(s.label).ljust(width))
                 line.append(*(("armed", "ap.amber") if s.armed else ("unarmed", "ap.dim")))
                 out.print(line)
         missing = [clean(s.label) for s in states if not s.found]

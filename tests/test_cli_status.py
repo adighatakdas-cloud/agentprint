@@ -62,3 +62,23 @@ def test_status_exit_zero_without_agents(tmp_path):
 
 def test_status_bad_home(tmp_path):
     assert runner.invoke(app, ["status", "--home", str(tmp_path / "nope")]).exit_code == 2
+
+
+def test_status_table_columns_align(tmp_path):
+    home = _home(tmp_path)
+    (home / ".gemini").mkdir()
+    (home / ".codex").mkdir()
+    r = runner.invoke(app, ["status", "--home", str(home), "--plain"])
+    rows = [ln for ln in r.output.splitlines() if ln.rstrip().endswith(("armed", "unarmed"))]
+    assert len(rows) >= 3
+    cols = {ln.rindex("unarmed" if ln.endswith("unarmed") else "armed") for ln in rows}
+    assert len(cols) == 1
+
+
+def test_status_table_aligns_with_longest_label(tmp_path):
+    home = _home(tmp_path)
+    (home / ".gemini" / "antigravity").mkdir(parents=True)
+    r = runner.invoke(app, ["status", "--home", str(home), "--plain"])
+    rows = [ln for ln in r.output.splitlines() if ln.endswith(("armed", "unarmed"))]
+    assert any(ln.startswith("Antigravity") for ln in rows)
+    assert len({ln.rindex(" ") for ln in rows}) == 1
