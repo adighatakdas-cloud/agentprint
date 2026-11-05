@@ -5,3 +5,7 @@ from .claude_code import ClaudeCode
 from .codex import Codex
 
 ALL_AGENTS: tuple[Agent, ...] = (ClaudeCode(), Codex())
+
+
+def by_name(name: str) -> Agent | None:
+    return next((agent for agent in ALL_AGENTS if agent.name == name), None)

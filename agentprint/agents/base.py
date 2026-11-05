@@ -1,13 +1,14 @@
-"""What every agent module provides."""
+"""What every agent module provides, plus parsing helpers shared by several agents."""
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from ..files import walk_files
-from ..models import Artifact, Kind, PackageRule
+from ..models import AgentConfig, Artifact, HookCommand, Kind, McpServer, PackageRule
 
 
 class Agent(Protocol):
@@ -18,9 +19,147 @@ class Agent(Protocol):
 
     def discover_project(self, root: Path) -> Iterator[Artifact]: ...
 
+    def read_config(self, artifact: Artifact) -> AgentConfig:
+        """Grants, hooks and MCP servers in one of this agent's config files. Never raises;
+        a file the agent doesn't understand (or a broken one) gives an empty AgentConfig."""
+        ...
 
-def artifacts(agent: str, kind: Kind, *paths: Path) -> Iterator[Artifact]:
+
+def artifacts(agent: str, kind: Kind, *paths: Path, personal: bool = False) -> Iterator[Artifact]:
     """Every existing file at or under each path, tagged with its agent and kind."""
     for path in paths:
         for file in walk_files(path):
-            yield Artifact(agent=agent, kind=kind, path=file)
+            yield Artifact(agent=agent, kind=kind, path=file, personal=personal)
+
+
+def dig(data: Any, *keys: str) -> Any:
+    """data[k1][k2]... or None when any level is missing or not a dict."""
+    for key in keys:
+        if not isinstance(data, dict):
+            return None
+        data = data.get(key)
+    return data
+
+
+# --- command allowlists ---------------------------------------------------------------------
+
+# Programs that run whatever command follows them: allowing one allows everything.
+_RUNS_ANYTHING = frozenset(
+    {"bash", "sh", "zsh", "dash", "ksh", "fish", "pwsh", "powershell", "cmd"}
+    | {"sudo", "doas", "eval", "exec", "env", "xargs", "nohup"}
+)
+_WILDCARD_TAIL = re.compile(r"(?::\*|\s*\*+)$")
+
+
+def is_blanket_command(pattern: str, *, prefix: bool) -> bool:
+    """True if a command allow-rule lets the agent run any command at all.
+
+    `prefix` says whether the agent matches rules as command prefixes (Cursor, Gemini CLI,
+    Windsurf) rather than exactly unless a trailing wildcard is given (Claude Code, OpenCode).
+    Blanket: only a wildcard ("*", ":*"), or a shell/runner such as "bash -c" that is open-ended.
+    """
+    text = pattern.strip()
+    wild = bool(_WILDCARD_TAIL.search(text))
+    core = _WILDCARD_TAIL.sub("", text).strip()
+    if not core:
+        return wild or prefix
+    if not (wild or prefix):
+        return False
+    first, *rest = core.split()
+    program = first.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower().removesuffix(".exe")
+    return program in _RUNS_ANYTHING and all(word.startswith(("-", "/")) for word in rest)
+
+
+# --- hooks ----------------------------------------------------------------------------------
+
+
+def _command_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return " ".join(str(part) for part in value if isinstance(part, str | int | float))
+    return ""
+
+
+def hook_commands(hooks: Any) -> tuple[HookCommand, ...]:
+    """Commands from a hooks object in either common shape:
+
+    nested (Claude Code, Codex, Gemini CLI): {event: [{matcher, hooks: [{command}]}]}
+    flat (Cursor, Windsurf):                 {event: [{command}]}
+    """
+    found: list[HookCommand] = []
+    if not isinstance(hooks, dict):
+        return ()
+    for event, entries in hooks.items():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            inner = entry.get("hooks")
+            handlers = inner if isinstance(inner, list) else [entry]
+            for handler in handlers:
+                if not isinstance(handler, dict):
+                    continue
+                for key in ("command", "commandWindows", "command_windows"):
+                    text = _command_text(handler.get(key))
+                    if text:
+                        found.append(HookCommand(str(event), text))
+    return tuple(found)
+
+
+# --- MCP servers ----------------------------------------------------------------------------
+
+_ENV_KEYS = ("env", "environment")  # environment: OpenCode
+_HEADER_KEYS = ("headers", "http_headers")  # http_headers: Codex
+_URL_KEYS = ("url", "httpUrl", "serverUrl")  # httpUrl: Gemini CLI, serverUrl: Windsurf
+_TOKEN_KEYS = ("bearer_token",)  # older Codex inline token
+
+
+def _argv_fields(field: str, argv: list[str]) -> list[tuple[str, str]]:
+    fields: list[tuple[str, str]] = []
+    for i, arg in enumerate(argv):
+        fields.append((field, arg))
+        # "--api-key VALUE" reads like "--api-key=VALUE" to the secret patterns.
+        if arg.startswith("-") and "=" not in arg and i + 1 < len(argv):
+            fields.append((field, f"{arg}={argv[i + 1]}"))
+    return fields
+
+
+def mcp_servers(servers: Any, secret_fix: str) -> tuple[McpServer, ...]:
+    """Flatten a {name: entry} map of MCP servers (every agent uses this outer shape)."""
+    if not isinstance(servers, dict):
+        return ()
+    found: list[McpServer] = []
+    for name, entry in servers.items():
+        if not isinstance(entry, dict):
+            continue
+        fields: list[tuple[str, str]] = []
+        command = entry.get("command")
+        if isinstance(command, str):
+            fields.append(("command", command))
+        elif isinstance(command, list):  # OpenCode: ["npx", "-y", "pkg", ...]
+            fields += _argv_fields("command", [str(c) for c in command if isinstance(c, str)])
+        args = entry.get("args")
+        if isinstance(args, list):
+            fields += _argv_fields("args", [str(a) for a in args if isinstance(a, str)])
+        for key in _ENV_KEYS:
+            values = entry.get(key)
+            if isinstance(values, dict):
+                fields += [
+                    (f"{key}.{k}", f"{k}={v}") for k, v in values.items() if isinstance(v, str)
+                ]
+        for key in _HEADER_KEYS:
+            values = entry.get(key)
+            if isinstance(values, dict):
+                fields += [
+                    (f"{key}.{k}", f"{k}: {v}") for k, v in values.items() if isinstance(v, str)
+                ]
+        for key in _URL_KEYS:
+            if isinstance(entry.get(key), str):
+                fields.append((key, entry[key]))
+        for key in _TOKEN_KEYS:
+            if isinstance(entry.get(key), str):
+                fields.append((key, f"{key} = {entry[key]}"))
+        found.append(McpServer(str(name), tuple(fields), secret_fix))
+    return tuple(found)
