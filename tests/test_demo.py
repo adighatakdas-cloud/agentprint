@@ -75,8 +75,9 @@ def test_build_script_refuses_a_folder_it_did_not_make(tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["notes.txt"]
 
 
-def test_tape_shows_scan_pack_and_install():
-    assert [c.split()[1] for c in COMMANDS] == ["scan", "pack", "install"]
+def test_tape_shows_scan_install_then_pack():
+    # ends on the BLOCK verdict an AI agent gets: the strongest last frame
+    assert [c.split()[1] for c in COMMANDS] == ["scan", "install", "pack"]
 
 
 def _snapshot(root: Path) -> dict[str, bytes]:
