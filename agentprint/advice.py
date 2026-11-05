@@ -17,7 +17,7 @@ from enum import StrEnum
 
 from .agents import ALL_AGENTS
 from .checks.ap005_mcp_inline_secret import _MARKER as MCP_MARKER
-from .models import Finding
+from .models import Finding, Severity
 from .sanitize import FIX_LEN, clean, quote
 from .secrets import RULES
 
@@ -212,6 +212,18 @@ def _agent_file_shipped(finding: Finding, moment: Moment) -> Advice:
 def _agent_file_not_ignored(finding: Finding, moment: Moment) -> Advice:
     path = agent_path(split_location(finding.location)[1])
     return Advice([f"Add the line {quote(path)} to .gitignore (it holds personal agent data)."])
+
+
+@adviser("AP008")
+def _readable_by_others(finding: Finding, moment: Moment) -> Advice:
+    # The check's fix is already the exact, shell-quoted chmod for these files.
+    ask = []
+    if finding.severity >= Severity.HIGH:
+        ask.append(
+            "If other people or programs use accounts on this computer, treat the keys in "
+            f"{_where(finding)} as exposed and rotate them with the services that issued them."
+        )
+    return Advice([finding.fix], ask)
 
 
 # ---- explanations (agentprint mcp: explain_finding) ------------------------------------------

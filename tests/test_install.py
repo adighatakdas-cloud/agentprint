@@ -218,3 +218,22 @@ def test_symlinked_rules_file_is_edited_in_place(tmp_path):
 
 
 # Launcher exit codes and output per agent: tests/test_launcher.py.
+
+
+def test_scan_name_gemini_cli_is_accepted_for_install(home):
+    # Findings name the agent "gemini-cli"; an AI copying that into --agent must not fail.
+    before = snapshot(home)
+    result = run("install", "--home", str(home), "--agent", "gemini-cli")
+    assert result.exit_code == 0, result.output
+    changed = {k for k, v in snapshot(home).items() if before.get(k, b"missing") != v}
+    assert changed and all(k.startswith((".gemini", ".agentprint")) for k in changed)
+
+
+def test_setup_help_lists_every_agent_and_does_not_overclaim():
+    from agentprint.integrations import ALL_INTEGRATIONS
+
+    install_help = " ".join(run("install", "--help").output.split())
+    for name in ALL_INTEGRATIONS:
+        assert name in install_help
+    uninstall_help = " ".join(run("uninstall", "--help").output.split())
+    assert "exactly" not in uninstall_help
