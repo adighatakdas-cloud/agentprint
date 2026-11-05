@@ -69,6 +69,10 @@ Do these once, before the first tag. Step 2 is a decision, the rest are clicks.
    Pre-releases are spelled differently: Python `0.2.0rc1` is npm `0.2.0-rc.1` (`a1` →
    `-alpha.1`, `b1` → `-beta.1`, `.dev0` → `-dev.0`). A test fails if the two don't match.
    npm pre-releases are published under the `next` tag, so `npx agentprint-cli` never picks them.
+
+   **First release only:** in the same change, take the "Works after the first release" notes and
+   the pre-release **Status** line out of `README.md` (it becomes the PyPI and npm page), and make
+   sure `docs/demo.gif` has been rendered and committed (Actions → Demo GIF).
 2. Merge that change into `main` through a pull request, and wait for CI to pass.
 3. Tag the merged commit and push the tag:
 

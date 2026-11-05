@@ -48,8 +48,8 @@ uvx agentprint scan       # 1. check this machine and the current folder
 uvx agentprint install    # 2. put agentprint inside every AI coding agent it finds
 ```
 
-3. That's it. Your agents now check before `npm publish`, `uv publish`, `git push` and similar,
-   fix what they find, and tell you which keys to replace.
+3. That's it. Your agents now check before `npm publish`, `uv publish`, `git push` and similar.
+   When something would leak, they get the fix steps and tell you which keys to replace.
 
 ### From source
 
