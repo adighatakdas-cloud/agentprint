@@ -18,6 +18,8 @@ from pathlib import Path
 import pytest
 
 from agentprint import install as installer
+from agentprint.integrations import ALL_INTEGRATIONS
+from agentprint.integrations.base import Launch
 from tests.live import harness
 from tests.live.install_clis import binary
 from tests.live.mock_model import MockModel, Script
@@ -109,17 +111,15 @@ def uninstall_leaves_nothing(agent: AgentCLI, home: Path) -> list[str]:
     agentprint. (~/.agentprint itself may stay: uninstall keeps its backups when the agent
     rewrote a file in the meantime, as Claude Code does with ~/.claude.json.)"""
     installer.uninstall(home, {}, [agent.name], False, lambda line: None)
-    left = []
-    for path in home.rglob("*"):
-        if ".agentprint" in path.relative_to(home).parts:
-            continue
-        if path.is_file() and path.suffix in {".json", ".toml", ".yaml", ".md", ".js", ".mdc"}:
-            try:
-                if "agentprint" in path.read_text(errors="replace"):
-                    left.append(str(path.relative_to(home)))
-            except OSError:
-                continue
-    return left
+    # Exactly the files agentprint edits for this agent (agents' own caches and logs may well
+    # mention the agentprint MCP tools they saw; those aren't agentprint's to clean).
+    launch = Launch(hook=str(home / ".agentprint" / "bin" / "agentprint-hook"), mcp=("x",))
+    paths = {edit.path for edit in ALL_INTEGRATIONS[agent.name].edits(home, {}, launch)}
+    return sorted(
+        str(path.relative_to(home))
+        for path in paths
+        if path.is_file() and "agentprint" in path.read_text(errors="replace")
+    )
 
 
 def assert_blocked(outcome: Outcome, action: str) -> None:
