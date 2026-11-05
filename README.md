@@ -14,19 +14,27 @@
 uvx agentprint install   # coming soon: works once agentprint is published to PyPI
 ```
 
-Run it once. After that you never type an agentprint command again: your agent (Claude Code, Codex, Cursor, Gemini CLI, Windsurf / Devin Desktop, OpenCode) checks every package publish and every `git push` by itself. If it would leak an API key or a private agent file, the agent is stopped, told exactly what to fix, and told what to ask you to do (like replacing a leaked key).
+Run it once. After that your agent (Claude Code, Codex, Cursor, Gemini CLI, Windsurf / Devin Desktop, OpenCode) checks the package publishes and `git push` commands it recognises before they run. If one would leak an API key or a private agent file, the agent is stopped, told exactly what to fix, and told what to ask you to do (like replacing a leaked key).
 
 What `install` changes, for each agent it finds on your computer:
 
-- **A hook** (where the agent supports them): before the agent runs `npm publish`, `uv publish`, `twine upload`, `git push` and friends, agentprint checks it. Everything else runs untouched. If agentprint itself breaks, the command goes ahead.
+- **A hook** (where the agent supports them): before the agent runs `npm publish`, `pnpm -r publish`, `npx changeset publish`, `uv publish`, `twine upload`, `git push` and similar, agentprint checks what would be uploaded. Everything else runs untouched. If agentprint itself breaks, the command goes ahead.
 - **An MCP server entry**, so the agent can ask agentprint to check a package or repo on its own.
 - **A short note** in the agent's global instructions file, telling it to run the check and never print your keys.
 
-It shows every change as a diff before writing it, and saves a backup of each file in `~/.agentprint/backups`. Running it twice changes nothing. Preview first with `uvx agentprint install --dry-run`.
+Before writing, it prints the lines it adds to each file (never your other settings), and it saves a backup of each file in `~/.agentprint/backups`. Running it twice changes nothing. Preview first with `uvx agentprint install --dry-run`.
 
-**To undo:** `uvx agentprint uninstall` puts every file back exactly as it was. Codex users: Codex runs a new hook only after you trust it — type `/hooks` in Codex once after installing.
+**To undo:** `uvx agentprint uninstall` takes out only what agentprint added and leaves your own changes alone. A file you haven't touched since comes back byte for byte. `uninstall --agent codex` undoes just one agent. Codex users: Codex runs a new hook only after you trust it — type `/hooks` in Codex once after installing.
 
 From source today: `uv run agentprint install --dry-run`.
+
+**What it can't promise:**
+
+- **The hooks need macOS or Linux.** On Windows, only the MCP server and the instructions note work for now.
+- **Spotting a publish is best effort.** agentprint reads the command line the agent is about to run; it isn't a shell. It follows `cd`, `&&`, `bash -c`, `npm run release` (by reading `package.json`), workspaces and release tools like changesets and lerna. A publish hidden in a Makefile, a shell script file or a heredoc can slip past the hook; the instructions note still tells the agent to check first.
+- **"Could not check" is not "OK".** When agentprint can't tell what would be uploaded (a folder held in a variable, a `pnpm --filter` selection, nothing built in `dist/` yet, git not installed), it lets the command run and says "agentprint could not check this…" so you and the agent know.
+- **Cursor's own approval still applies.** agentprint only adds a "deny" when it finds a problem; it never approves commands for you. If you use Claude Code too, Cursor also runs Claude Code's hooks, so the check can run twice.
+- **Codex's `config.toml`:** agentprint's MCP entry sits in a marked block at the top of the file. If Codex ever writes its own settings inside that block, uninstall keeps those lines and removes only agentprint's. Not yet tested against a live Codex.
 
 ## What it will do
 
@@ -123,7 +131,7 @@ repos:
 | AP002 | API key in an agent settings / allowlist file | critical |
 | AP003 | Over-broad permission: `Bash(*)`, `bypassPermissions`, Codex `never` + `danger-full-access`, Cursor `Shell(*)` / `approvalMode: unrestricted`, Gemini bare `run_shell_command` / trusted MCP server, Windsurf allow-listed shell, OpenCode `"allow"` | medium |
 | AP004 | Agent hook (or Codex `notify`) runs a network command: curl, wget, nc, `\| sh`, Invoke-WebRequest, a URL | medium |
-| AP005 | API key written inline in an MCP server entry (env, headers, args, URL); replaces AP002 for that key | high |
+| AP005 | API key written inline in an MCP server entry (env, headers, args, URL); replaces AP002 for that key | critical |
 | AP006 | Agent file (e.g. `.claude/settings.local.json`) would ship in your npm/PyPI package | high/medium/low |
 | AP007 | Personal agent file (`.claude/settings.local.json`, `CLAUDE.local.md`, `.gemini/.env`) in a git repo but not gitignored, or already committed | low |
 
