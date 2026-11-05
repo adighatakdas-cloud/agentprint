@@ -35,9 +35,6 @@ AGENT_MARKERS: tuple[str, ...] = (
     # Antigravity; third-party list only, weakest evidence
     # https://github.com/sdairs/is-ai-agent
     "ANTIGRAVITY_AGENT",
-    # Self-identification variable any harness may set (value names the agent)
-    # https://github.com/huggingface/huggingface_hub (utils/_detect_agent.py)
-    "AI_AGENT",
     # No documented env marker found: Windsurf (none found), Devin (detected via the file
     # /opt/.devin, not an env var). Task 9 covers both at runtime.
 )
