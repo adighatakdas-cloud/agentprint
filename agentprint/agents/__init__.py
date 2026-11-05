@@ -6,6 +6,7 @@ from .codex import Codex
 from .copilot import Copilot
 from .cursor import Cursor
 from .gemini import Gemini
+from .hermes import Hermes
 from .opencode import OpenCode
 from .windsurf import Windsurf
 
@@ -17,6 +18,7 @@ ALL_AGENTS: tuple[Agent, ...] = (
     Windsurf(),
     OpenCode(),
     Copilot(),
+    Hermes(),
 )
 
 

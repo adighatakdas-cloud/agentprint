@@ -89,7 +89,7 @@ def test_copilot_mcp_files(more_home, more_project, tmp_path):
 
 
 def test_credential_stores_are_never_secret_scanned(more_home):
-    findings = scan(more_home, None)
+    findings = [f for f in scan(more_home, None) if f.agent == "copilot"]
     names = {Path(f.location).name for f in findings}
     assert "config.json" not in names and "providers.json" not in names
     history = {Path(f.location).name for f in findings if f.check_id == "AP001"}
