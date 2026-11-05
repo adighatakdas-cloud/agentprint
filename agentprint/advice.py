@@ -18,7 +18,7 @@ from enum import StrEnum
 from .agents import ALL_AGENTS
 from .checks.ap005_mcp_inline_secret import _MARKER as MCP_MARKER
 from .models import Finding, Severity
-from .sanitize import FIX_LEN, clean, quote
+from .sanitize import clean, quote, safe_step
 from .secrets import RULES
 
 
@@ -72,13 +72,14 @@ def adviser(check_id: str) -> Callable[[Adviser], Adviser]:
 
 
 def advise(finding: Finding, moment: Moment) -> Advice:
-    """Fix steps and ask_human items, every one cleaned (checks' own fix hints can embed
-    scanned paths, so no step reaches an agent with escape codes or hidden characters)."""
+    """Fix steps and ask_human items, each shown whole and unchanged or replaced by SAFE_STEP.
+    A check's fix can embed shell-quoted scanned paths: shortening or cleaning it could break
+    the quoting and run part of a hostile file name, so it is never edited."""
     fn = ADVISERS.get(finding.check_id)
     raw = fn(finding, moment) if fn else Advice([finding.fix], [])
     return Advice(
-        [clean(step, FIX_LEN) for step in raw.fix_steps],
-        [clean(step, FIX_LEN) for step in raw.ask_human],
+        [safe_step(step) for step in raw.fix_steps],
+        [safe_step(step) for step in raw.ask_human],
     )
 
 
@@ -181,11 +182,13 @@ def _agent_file_shipped(finding: Finding, moment: Moment) -> Advice:
     package, member = split_location(finding.location)
     path = agent_path(member)
     if package is None or moment is Moment.push:
-        rel = clean(member)
+        if clean(member) == member:  # the real path, shown whole: safe to put in a command
+            untrack = f"git rm --cached -- {shlex.quote(member)}"
+        else:  # a cleaned or shortened path would name some other file
+            untrack = "run git rm --cached on that file (it keeps your local copy)"
         return Advice(
             [
-                f"Stop tracking {quote(member)} but keep the local file: "
-                f"git rm --cached -- {shlex.quote(rel)}",
+                f"Stop tracking {quote(member)} but keep the local file: {untrack}",
                 f"Add the line {quote(path)} to .gitignore, commit both changes, then push again.",
             ]
         )
