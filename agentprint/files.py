@@ -6,6 +6,8 @@ import os
 from collections.abc import Iterator
 from pathlib import Path
 
+from . import sqlite_text
+
 MAX_BYTES = 512 * 1024 * 1024
 
 
@@ -15,7 +17,15 @@ def _is_binary(path: Path) -> bool:
 
 
 def iter_lines(path: Path) -> Iterator[tuple[int, str]]:
-    """Yield (line_number, line). Yields nothing for binary, oversized or unreadable files."""
+    """Yield (line_number, line). Yields nothing for binary, oversized or unreadable files.
+
+    SQLite databases (Cursor, OpenCode chat stores) yield the text of their cells, read-only
+    and size-capped, with line number 0 because database rows have no line.
+    """
+    if sqlite_text.is_sqlite(path):
+        for line in sqlite_text.iter_text_lines(path):
+            yield 0, line
+        return
     try:
         if path.stat().st_size > MAX_BYTES or _is_binary(path):
             return

@@ -21,7 +21,20 @@ def discover(home: Path | None, project: Path | None) -> list[Artifact]:
     return list(found.values())
 
 
+def drop_claimed(findings: list[Finding]) -> list[Finding]:
+    """A check with a `claims(finding, mine)` method reports some problems more precisely than
+    another check (AP005 vs AP002 for MCP keys); keep only its version."""
+    for check in SCAN_CHECKS:
+        claims = getattr(check, "claims", None)
+        if claims is None:
+            continue
+        mine = [f for f in findings if f.check_id == check.id]
+        if mine:
+            findings = [f for f in findings if f.check_id == check.id or not claims(f, mine)]
+    return findings
+
+
 def scan(home: Path | None, project: Path | None) -> list[Finding]:
     artifacts = discover(home, project)
-    findings = [finding for check in SCAN_CHECKS for finding in check.run(artifacts)]
+    findings = drop_claimed([finding for check in SCAN_CHECKS for finding in check.run(artifacts)])
     return sorted(findings, key=lambda f: (-f.severity, f.check_id, f.location, f.line or 0))

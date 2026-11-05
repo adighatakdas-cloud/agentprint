@@ -1,0 +1,106 @@
+"""Gemini CLI (Google).
+
+Layout checked on macOS on 2026-11-05 (names only): ~/.gemini/ and ~/.gemini/tmp/ exist but
+hold no settings or chats yet on the verification Mac, so file names come from the docs:
+~/.gemini/settings.json and <project>/.gemini/settings.json (general, tools.allowed,
+mcpServers.<name>.{command,args,env,url,httpUrl,headers,trust}, hooks.<Event>[].hooks[].command);
+chats, logs, shell history and checkpoints under ~/.gemini/tmp/<project_hash>/; API keys in
+.gemini/.env or ~/.gemini/.env.
+Docs: https://geminicli.com/docs/reference/configuration/, https://geminicli.com/docs/hooks/reference/,
+https://geminicli.com/docs/tools/mcp-server/, https://geminicli.com/docs/cli/session-management/.
+
+~/.gemini/antigravity/ belongs to Google Antigravity, a different product: not covered here.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
+from ..structured import load
+from .base import artifacts, dig, hook_commands, is_blanket_command, mcp_servers
+
+NAME = "gemini-cli"
+
+_SHELL_RULE = re.compile(r"run_shell_command(?:\((.*)\))?", re.DOTALL)
+_SHELL_FIX = (
+    "Delete this entry from tools.allowed in settings.json and list specific commands instead, "
+    'e.g. "run_shell_command(git status)"; other shell commands will ask first.'
+)
+_TRUST_FIX = (
+    'Set "trust": false for this server under mcpServers (or delete the key) so its tool calls '
+    "ask for confirmation again."
+)
+_SECRET_FIX = (
+    'replace the value with "$<VAR>" (Gemini CLI expands $VAR and ${VAR} in an MCP server\'s '
+    '"env" block) and put <VAR> in ~/.gemini/.env or your shell profile. "headers" values are '
+    "not expanded: keep such a server in ~/.gemini/settings.json, never in a project file."
+)
+
+
+def _grants(data: dict[str, Any]) -> tuple[Grant, ...]:
+    grants: list[Grant] = []
+    allowed = dig(data, "tools", "allowed")
+    for rule in allowed if isinstance(allowed, list) else []:
+        if not isinstance(rule, str):
+            continue
+        rule_text = rule.strip()
+        shell = _SHELL_RULE.fullmatch(rule_text)
+        # Bare run_shell_command allows every command; run_shell_command(x) matches by prefix.
+        if shell and (shell.group(1) is None or is_blanket_command(shell.group(1), prefix=True)):
+            grants.append(Grant("tools.allowed", rule_text, _SHELL_FIX))
+    servers = data.get("mcpServers")
+    for name, server in servers.items() if isinstance(servers, dict) else []:
+        if dig(server, "trust") is True:
+            grants.append(Grant(f"mcpServers.{name}.trust", "true", _TRUST_FIX))
+    return tuple(grants)
+
+
+class Gemini:
+    name = NAME
+    package_rules = (
+        PackageRule(
+            NAME,
+            re.compile(r"(^|/)\.gemini/tmp/"),
+            Severity.HIGH,
+            "Gemini CLI chat sessions, logs and shell history.",
+        ),
+        PackageRule(
+            NAME,
+            re.compile(r"(^|/)\.gemini/(\.env|oauth_creds\.json|google_accounts\.json)$"),
+            Severity.HIGH,
+            "Gemini CLI API-key env file or login token.",
+        ),
+        PackageRule(
+            NAME,
+            re.compile(r"(^|/)\.gemini/history/"),
+            Severity.MEDIUM,
+            "Gemini CLI checkpoint snapshots of project files.",
+        ),
+    )
+
+    def discover_home(self, home: Path) -> Iterator[Artifact]:
+        base = home / ".gemini"
+        # Not read: .env and oauth_creds.json are where credentials are expected to live.
+        yield from artifacts(NAME, Kind.SETTINGS, base / "settings.json")
+        yield from artifacts(NAME, Kind.HISTORY, base / "tmp")
+
+    def discover_project(self, root: Path) -> Iterator[Artifact]:
+        base = root / ".gemini"
+        yield from artifacts(NAME, Kind.SETTINGS, base / "settings.json")
+        yield from artifacts(NAME, Kind.PERSONAL, base / ".env", personal=True)
+
+    def read_config(self, artifact: Artifact) -> AgentConfig:
+        if artifact.path.name != "settings.json":
+            return AgentConfig()
+        data = load(artifact.path)
+        if not isinstance(data, dict):
+            return AgentConfig()
+        return AgentConfig(
+            grants=_grants(data),
+            hooks=hook_commands(data.get("hooks")),
+            mcp_servers=mcp_servers(data.get("mcpServers"), _SECRET_FIX),
+        )
