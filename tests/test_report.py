@@ -38,7 +38,7 @@ def test_table_prints_rows_fix_and_summary_without_markup_errors():
 def test_table_says_clean_when_empty():
     console = Console(record=True, width=200)
     print_table([], console)
-    assert "No findings" in console.export_text()
+    assert "CLEAR" in console.export_text()
 
 
 def test_exit_code_respects_threshold():

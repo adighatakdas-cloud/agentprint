@@ -116,7 +116,7 @@ def test_tape_command_runs_and_redacts(command, demo, monkeypatch):
         assert result.exit_code == 1
         for check in ("AP001", "AP002", "AP003", "AP005"):
             assert check in result.output
-        assert "Secrets are shown redacted" in result.output
+        assert "keys masked" in result.output
     elif verb == "pack":
         assert result.exit_code == 1
         assert result.output.startswith("agentprint: BLOCK")

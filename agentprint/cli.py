@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import Collection
+import time
+from collections.abc import Collection, Iterator
+from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, TypeVar
 
 import typer
 from rich.console import Console
@@ -18,9 +20,11 @@ from .checks.ap006_package_leak import check_listing, is_agent_file
 from .integrations import ALL_INTEGRATIONS
 from .models import Finding
 from .pack import PackError, collect
-from .report import FailOn, exit_code, print_table, to_agent, to_json
+from .report import FailOn, _short, exit_code, print_table, to_agent, to_json
 from .sarif import to_sarif
 from .scanner import scan as run_scan
+from .ui.detect import is_agent, should_animate
+from .ui.theme import console as themed_console
 
 AGENT_NAMES = ", ".join(ALL_INTEGRATIONS)  # help text stays in step with the integrations
 
@@ -39,7 +43,11 @@ class Format(StrEnum):
     agent = "agent"  # compact text for an AI coding agent: verdict first, fix steps, ask_human
 
 
-FormatOpt = Annotated[Format, typer.Option("--format", "-f", help="Output format.")]
+FormatOpt = Annotated[
+    Format | None,
+    typer.Option("--format", "-f", help="Output format. Default: agent inside an AI agent."),
+]
+PlainOpt = Annotated[bool, typer.Option("--plain", help="No color or animation.")]
 FailOnOpt = Annotated[
     FailOn, typer.Option(help="Exit 1 if any finding is at or above this severity.")
 ]
@@ -61,6 +69,26 @@ def main(
     """agentprint."""
 
 
+F = TypeVar("F", bound=StrEnum)
+
+
+def _auto_format(fmt: F | None, agent: F, human: F) -> F:
+    """No --format given: an AI agent (found by its env marker) gets `agent`, a person `human`."""
+    if fmt is not None:
+        return fmt
+    return agent if is_agent(os.environ) else human
+
+
+@contextmanager
+def _working(out: Console | None, plain: bool, words: str) -> Iterator[None]:
+    """A dim spinner while the work runs: only for a person at a terminal, never for an AI."""
+    if out is not None and should_animate(os.environ, sys.stdout, plain):
+        with out.status(words, spinner="dots", spinner_style="ap.dim"):
+            yield
+    else:
+        yield
+
+
 def _emit(
     findings: list[Finding],
     fmt: Format,
@@ -68,6 +96,8 @@ def _emit(
     moment: Moment,
     package: Path | None = None,
     labels: Collection[str] = (),
+    out: Console | None = None,
+    header: str | None = None,
 ) -> None:
     if fmt is Format.json:
         typer.echo(to_json(findings, moment))
@@ -76,7 +106,48 @@ def _emit(
     elif fmt is Format.agent:
         typer.echo(to_agent(findings, fail_on, moment))
     else:
-        print_table(findings, Console())
+        out = out or themed_console(dict(os.environ))
+        print_table(findings, out, fail_on=fail_on, header=header)
+
+
+def _roster_size(home: Path | None) -> int:
+    """How many AI agents are on the machine being swept."""
+    from .roster import roster
+
+    if home is None:
+        return sum(s.found for s in roster(Path.home(), dict(os.environ)))
+    return sum(s.found for s in roster(home.absolute(), {}))
+
+
+def run_scan_command(
+    path: Path,
+    home: Path | None,
+    no_home: bool,
+    fmt: Format | None,
+    fail_on: FailOn,
+    plain: bool,
+) -> int:
+    """`agentprint scan`, returning the exit code (the menu runs it too)."""
+    fmt = _auto_format(fmt, Format.agent, Format.table)
+    home_dir = None if no_home else (home or Path.home())
+    for target in (path, home_dir):
+        if target is not None and not target.is_dir():
+            typer.secho(f"error: {target} does not exist or is not a directory", err=True, fg="red")
+            return 2
+    out = themed_console(dict(os.environ), plain=plain) if fmt is Format.table else None
+    started = time.perf_counter()
+    with _working(out, plain, "sweeping…"):
+        findings = run_scan(home_dir, path)
+    header = None
+    if out is not None:
+        secs = time.perf_counter() - started
+        if home_dir is None:
+            header = f"agentprint scan  {path} · {secs:.2f}s"
+        else:
+            where = f"{'~' if home is None else _short(str(home))} + {path}"
+            header = f"agentprint scan  {where} · roster {_roster_size(home)} · {secs:.2f}s"
+    _emit(findings, fmt, fail_on, Moment.scan, out=out, header=header)
+    return exit_code(findings, fail_on)
 
 
 @app.command()
@@ -88,18 +159,40 @@ def scan(
     no_home: Annotated[
         bool, typer.Option("--no-home", help="Only scan PATH, not your home directory.")
     ] = False,
-    fmt: FormatOpt = Format.table,
+    fmt: FormatOpt = None,
     fail_on: FailOnOpt = FailOn.high,
+    plain: PlainOpt = False,
 ) -> None:
     """Find secrets that AI coding agents left in history and settings files."""
-    home_dir = None if no_home else (home or Path.home())
-    for target in (path, home_dir):
-        if target is not None and not target.is_dir():
-            typer.secho(f"error: {target} does not exist or is not a directory", err=True, fg="red")
-            raise typer.Exit(2)
-    findings = run_scan(home_dir, path)
-    _emit(findings, fmt, fail_on, Moment.scan)
-    raise typer.Exit(exit_code(findings, fail_on))
+    raise typer.Exit(run_scan_command(path, home, no_home, fmt, fail_on, plain))
+
+
+def run_pack_command(target: Path, fmt: Format | None, fail_on: FailOn, plain: bool) -> int:
+    """`agentprint pack`, returning the exit code (the menu runs it too)."""
+    fmt = _auto_format(fmt, Format.agent, Format.table)
+    out = themed_console(dict(os.environ), plain=plain) if fmt is Format.table else None
+    started = time.perf_counter()
+    try:
+        with _working(out, plain, "preflighting…"):
+            listings = collect(target, is_agent_file)
+    except PackError as exc:
+        typer.secho(f"error: {exc}", err=True, fg=typer.colors.RED)
+        return 2
+    secs = time.perf_counter() - started
+    findings = [finding for listing in listings for finding in check_listing(listing)]
+    labels = [listing.label for listing in listings]
+    header = f"agentprint pack  {', '.join(labels)} · {secs:.2f}s" if out is not None else None
+    _emit(
+        findings,
+        fmt,
+        fail_on,
+        Moment.publish,
+        package=target,
+        labels=labels,
+        out=out,
+        header=header,
+    )
+    return exit_code(findings, fail_on)
 
 
 @app.command()
@@ -108,8 +201,9 @@ def pack(
         Path,
         typer.Argument(help="Project directory, or a built package (.tgz, .tar.gz, .whl, .zip)."),
     ] = Path("."),
-    fmt: FormatOpt = Format.table,
+    fmt: FormatOpt = None,
     fail_on: FailOnOpt = FailOn.high,
+    plain: PlainOpt = False,
 ) -> None:
     """Check what a package would publish: agent files and the keys inside them.
 
@@ -117,15 +211,7 @@ def pack(
     Python projects are built with `uv build`, which runs the project's build backend and may
     download it from PyPI: only point it at projects you trust, or pass a built archive.
     """
-    try:
-        listings = collect(target, is_agent_file)
-    except PackError as exc:
-        typer.secho(f"error: {exc}", err=True, fg=typer.colors.RED)
-        raise typer.Exit(2) from exc
-    findings = [finding for listing in listings for finding in check_listing(listing)]
-    labels = [listing.label for listing in listings]
-    _emit(findings, fmt, fail_on, Moment.publish, package=target, labels=labels)
-    raise typer.Exit(exit_code(findings, fail_on))
+    raise typer.Exit(run_pack_command(target, fmt, fail_on, plain))
 
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -256,8 +342,6 @@ def status(
 
     from .roster import roster, summary_line
     from .sanitize import clean
-    from .ui.detect import is_agent
-    from .ui.theme import console
 
     if home is None:
         home_dir, env = Path.home(), dict(os.environ)
@@ -266,7 +350,7 @@ def status(
     else:
         typer.secho(f"error: {home} is not a directory", err=True, fg=typer.colors.RED)
         raise typer.Exit(2)
-    fmt = fmt or (StatusFormat.agent if is_agent(os.environ) else StatusFormat.table)
+    fmt = _auto_format(fmt, StatusFormat.agent, StatusFormat.table)
     states = roster(home_dir, env)
     if fmt is StatusFormat.json:
         agents = [
@@ -280,7 +364,7 @@ def status(
         if any(s.found and not s.armed for s in states):
             typer.echo("Arm unarmed agents with: agentprint install")
     else:
-        out = console(env or dict(os.environ), plain=plain)
+        out = themed_console(env or dict(os.environ), plain=plain)
         out.print(Text(f"agentprint {__version__} · roster", style="ap.dim"))
         out.print(Text(summary_line(states)))
         width = max([14, *(len(clean(s.label)) + 2 for s in states if s.found)])

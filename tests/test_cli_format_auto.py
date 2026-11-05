@@ -1,0 +1,136 @@
+"""scan and pack pick their output for whoever runs them: an AI agent gets --format agent,
+a person gets the grouped layout, and pipes and --plain get it without escape codes."""
+
+import io
+import json
+import re
+import tarfile
+
+import pytest
+from rich.console import Console
+from typer.testing import CliRunner
+
+from agentprint.cli import app
+from agentprint.report import _short
+from tests import fakes
+
+
+@pytest.fixture(autouse=True)
+def _no_forced_color(monkeypatch):
+    for name in ("FORCE_COLOR", "TTY_COMPATIBLE", "NO_COLOR", "CI"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _scan(fake_home, fake_project, *extra, env=None):
+    args = ["scan", str(fake_project), "--home", str(fake_home), *extra]
+    return CliRunner(env=env).invoke(app, args)
+
+
+def _tarball(tmp_path):
+    data = b'{"x": 1}'
+    tgz = tmp_path / "p.tgz"
+    with tarfile.open(tgz, "w:gz") as tf:
+        info = tarfile.TarInfo("package/.claude/settings.local.json")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+    return tgz
+
+
+def test_agent_marker_switches_scan_to_agent_format(fake_home, fake_project):
+    result = _scan(fake_home, fake_project, env={"CLAUDECODE": "1"})
+    assert result.exit_code == 1
+    assert result.output.splitlines()[0].startswith("agentprint: ")
+    assert "\x1b[" not in result.output and "keys masked" not in result.output
+
+
+def test_agent_marker_switches_pack_to_agent_format(tmp_path):
+    result = CliRunner(env={"GEMINI_CLI": "1"}).invoke(app, ["pack", str(_tarball(tmp_path))])
+    assert result.exit_code == 1
+    assert result.output.startswith("agentprint: BLOCK")
+
+
+def test_explicit_format_wins_over_marker(fake_home, fake_project):
+    result = _scan(fake_home, fake_project, "--format", "json", env={"CLAUDECODE": "1"})
+    assert json.loads(result.output)["tool"] == "agentprint"
+    result = _scan(fake_home, fake_project, "--format", "table", env={"CLAUDECODE": "1"})
+    assert "BLOCK" in result.output and not result.output.startswith("agentprint: ")
+
+
+def test_piped_human_output_has_no_ansi(fake_home, fake_project):
+    result = _scan(fake_home, fake_project)
+    assert result.exit_code == 1
+    assert "\x1b[" not in result.output
+    assert "BLOCK" in result.output and "keys masked" in result.output
+    for key in fakes.ALL.values():
+        assert key not in result.output
+
+
+def test_plain_flag_has_no_ansi(fake_home, fake_project):
+    forced = {"FORCE_COLOR": "1"}  # rich would color this run, as in a real terminal
+    assert "\x1b[" in _scan(fake_home, fake_project, env=forced).output
+    result = _scan(fake_home, fake_project, "--plain", env=forced)
+    assert result.exit_code == 1
+    assert "\x1b[" not in result.output and "BLOCK" in result.output
+
+
+def test_pack_plain_flag_has_no_ansi(tmp_path):
+    runner = CliRunner(env={"FORCE_COLOR": "1"})
+    result = runner.invoke(app, ["pack", str(_tarball(tmp_path)), "--plain"])
+    assert result.exit_code == 1
+    assert "\x1b[" not in result.output and "BLOCK" in result.output
+
+
+def test_no_color_env_is_honoured(fake_home, fake_project):
+    result = _scan(fake_home, fake_project, env={"FORCE_COLOR": "1", "NO_COLOR": "1"})
+    assert not re.search(r"\x1b\[[0-9;]*[34]8;", result.output)  # bold may stay; no color
+
+
+def test_scan_header_names_home_project_roster_and_time(fake_home, fake_project):
+    first = _scan(fake_home, fake_project).output.splitlines()[0]
+    home, project = re.escape(_short(str(fake_home))), re.escape(str(fake_project))
+    pattern = rf"agentprint scan  {home} \+ {project}"
+    assert re.fullmatch(pattern + r" · roster \d+ · \d+\.\d\ds", first), first
+
+
+def test_scan_header_without_home(tmp_path):
+    first = CliRunner().invoke(app, ["scan", str(tmp_path), "--no-home"]).output.splitlines()[0]
+    assert re.fullmatch(rf"agentprint scan  {re.escape(str(tmp_path))} · \d+\.\d\ds", first)
+
+
+def test_pack_header_names_the_package(tmp_path):
+    first = CliRunner().invoke(app, ["pack", str(_tarball(tmp_path))]).output.splitlines()[0]
+    assert re.fullmatch(r"agentprint pack  p\.tgz · \d+\.\d\ds", first), first
+
+
+def test_no_spinner_when_piped(fake_home, fake_project):
+    assert "sweeping" not in _scan(fake_home, fake_project).output
+
+
+@pytest.fixture
+def spinner_calls(monkeypatch):
+    """Pretend should_animate() says yes (unless --plain), and record every spinner started."""
+    calls = []
+    real = Console.status
+
+    def status(self, *args, **kwargs):
+        calls.append((args, kwargs))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Console, "status", status)
+    monkeypatch.setattr("agentprint.cli.should_animate", lambda env, out, plain=False: not plain)
+    return calls
+
+
+def test_spinner_runs_while_a_person_waits(fake_home, fake_project, tmp_path, spinner_calls):
+    _scan(fake_home, fake_project)
+    CliRunner().invoke(app, ["pack", str(_tarball(tmp_path))])
+    style = {"spinner": "dots", "spinner_style": "ap.dim"}
+    assert spinner_calls == [(("sweeping…",), style), (("preflighting…",), style)]
+
+
+def test_spinner_never_on_the_ai_path_or_with_plain(fake_home, fake_project, spinner_calls):
+    _scan(fake_home, fake_project, env={"CLAUDECODE": "1"})
+    for fmt in ("agent", "json", "sarif"):
+        _scan(fake_home, fake_project, "--format", fmt)
+    _scan(fake_home, fake_project, "--plain")
+    assert spinner_calls == []

@@ -9,7 +9,6 @@ from agentprint.models import Severity
 from agentprint.ui.theme import SEVERITY_STYLE, console, is_light, theme
 
 
-@pytest.mark.xfail(strict=True, reason="report.py still has green until Task 6")
 def test_no_green_anywhere():
     root = Path(agentprint.__file__).parent
     for py in root.rglob("*.py"):
