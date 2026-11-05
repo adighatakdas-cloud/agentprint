@@ -15,11 +15,12 @@ import os
 import time
 import zlib
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
 from . import npm, pypi
 from .detect import new_record
+from .estimate import describe
 from .net import Http, Tally, TooLarge
 from .shard import shard_of
 
@@ -129,6 +130,7 @@ def run(
     recent: Callable | None = None,
     scan: Callable | None = None,
     redo: set[str] = frozenset(),
+    max_bytes: int | None = None,
     log: Callable[[str], None] = print,
 ) -> dict:
     """Scan one shard of a round. Safe to stop with Ctrl-C and run again to continue.
@@ -138,6 +140,8 @@ def run(
     name hashes to K, so N volunteers can split a round without overlap.
     `redo`: scan again the packages whose newest result has one of these statuses (for
     example after a fix). The new line is appended; readers keep the newest line per package.
+    `max_bytes`: stop handing out work once this folder has downloaded that much for `eco`
+    (all runs together); a later run with a higher budget carries on.
     """
     private_dir(out).mkdir(parents=True, exist_ok=True)
     (private_dir(out) / "README.txt").write_text(PRIVATE_NOTE, encoding="utf-8")
@@ -151,36 +155,56 @@ def run(
     scan = scan or REGISTRIES[eco].scan
     targets = _targets(eco, out, n, http, recent, log, window, shard)
     results_path = private_dir(out) / f"results-{eco}.jsonl"
-    newest = {row.get("key"): row.get("status") for row in read_jsonl(results_path)}
+    previous = read_jsonl(results_path)
+    newest = {row.get("key"): row.get("status") for row in previous}
     done = {k for k, status in newest.items() if status not in redo}
     todo = [t for t in targets if key(t) not in done]
     log(f"{eco}: {len(targets)} targets, {len(done & {key(t) for t in targets})} already done")
+    log(describe(eco, len(todo)))
+    meta = json.loads((private_dir(out) / f"meta-{eco}.json").read_text())
+    used = meta.get("enumeration_bytes", 0) + sum(r.get("bytes", 0) for r in previous)
+    if max_bytes is not None:
+        log(f"{eco}: --max-gb {max_bytes / 1e9:g}: stops at that much, {used / 1e9:.2f} GB used")
 
     session = {"eco": eco, "start": time.time(), "processed": 0, "interrupted": False}
+    session["stopped"] = None
     counts = {"candidates": 0, "secrets": 0, "errors": 0}
+    pending = iter(todo)
+    inflight: set = set()
     pool = ThreadPoolExecutor(max_workers=workers)
     try:
         with results_path.open("a", encoding="utf-8") as results:
-            futures = [
-                pool.submit(
-                    _one, eco, http, t, scan, zlib.crc32(key(t).encode()) % 100 < validate_pct
-                )
-                for t in todo
-            ]
-            for future in as_completed(futures):
-                rec = future.result()
-                results.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                results.flush()
-                session["processed"] += 1
-                counts["candidates"] += rec["candidate_count"] > 0
-                counts["secrets"] += bool(rec["secrets"])
-                counts["errors"] += rec["status"] == "error"
-                if session["processed"] % 100 == 0 or session["processed"] == len(todo):
-                    log(
-                        f"{eco}: {session['processed']}/{len(todo)} done; "
-                        f"{counts['candidates']} with agent files, "
-                        f"{counts['secrets']} with key-shaped strings, {counts['errors']} errors"
-                    )
+            while True:
+                # Hand out work a few at a time, so a budget stop leaves nothing half-queued.
+                while session["stopped"] is None and len(inflight) < workers:
+                    if max_bytes is not None and used >= max_bytes:
+                        session["stopped"] = "max-gb"
+                        log(f"{eco}: reached --max-gb; run again with a higher --max-gb to go on")
+                        break
+                    target = next(pending, None)
+                    if target is None:
+                        break
+                    check = zlib.crc32(key(target).encode()) % 100 < validate_pct
+                    inflight.add(pool.submit(_one, eco, http, target, scan, check))
+                if not inflight:
+                    break
+                finished, inflight = wait(inflight, return_when=FIRST_COMPLETED)
+                for future in finished:
+                    rec = future.result()
+                    results.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                    results.flush()
+                    used += rec["bytes"]
+                    session["processed"] += 1
+                    counts["candidates"] += rec["candidate_count"] > 0
+                    counts["secrets"] += bool(rec["secrets"])
+                    counts["errors"] += rec["status"] == "error"
+                    if session["processed"] % 100 == 0 or session["processed"] == len(todo):
+                        log(
+                            f"{eco}: {session['processed']}/{len(todo)} done; "
+                            f"{counts['candidates']} with agent files, "
+                            f"{counts['secrets']} with key-shaped strings, "
+                            f"{counts['errors']} errors, {used / 1e9:.2f} GB"
+                        )
     except KeyboardInterrupt:
         session["interrupted"] = True
         log(f"{eco}: interrupted; run the same command again to continue")

@@ -20,7 +20,11 @@ REGISTRY = "https://registry.npmjs.org"
 JSDELIVR = "https://data.jsdelivr.com/v1/packages/npm"
 PAGE = 10_000  # the most the replication feed returns per request
 MAX_JSON_BYTES = 32 * 1024 * 1024
-MAX_TARBALL_BYTES = 64 * 1024 * 1024
+# Default size cap. Packages that unpack to more than this are skipped without downloading
+# (jsDelivr does not list them either); in the pilot they were ~2% of packages but most of the
+# bandwidth. Volunteers can raise it with --npm-max-mb.
+DEFAULT_MAX_MB = 150
+MAX_TARBALL_BYTES = DEFAULT_MAX_MB * 1_000_000
 
 
 def _url_name(name: str) -> str:
@@ -87,7 +91,15 @@ def _live(http: Http, lo: int, hi: int, tally: Tally) -> dict[str, int]:
     return found
 
 
-def scan(http: Http, target: dict, tally: Tally, *, validate: bool = False) -> dict:
+def scan(
+    http: Http,
+    target: dict,
+    tally: Tally,
+    *,
+    validate: bool = False,
+    max_mb: float | None = None,
+) -> dict:
+    cap = MAX_TARBALL_BYTES if max_mb is None else int(max_mb * 1_000_000)
     name = target["name"]
     rec = new_record("npm", name)
     resp = http.get(f"{REGISTRY}/{_url_name(name)}/latest", tally=tally, max_bytes=MAX_JSON_BYTES)
@@ -98,6 +110,12 @@ def scan(http: Http, target: dict, tally: Tally, *, validate: bool = False) -> d
     version = str(manifest["version"])
     tarball = manifest["dist"]["tarball"]
     rec["version"] = version
+    unpacked = manifest["dist"].get("unpackedSize")
+    rec["unpacked_size"] = unpacked
+    if isinstance(unpacked, int) and unpacked > cap:
+        rec.update(status="skipped", reason=f"over the {cap / 1e6:g} MB size cap")
+        rec["too_large"].append("package")
+        return rec
 
     listed = None
     js_url = f"{JSDELIVR}/{_url_name(name)}@{quote(version, safe='')}?structure=flat"
@@ -118,7 +136,7 @@ def scan(http: Http, target: dict, tally: Tally, *, validate: bool = False) -> d
         resp = http.get(
             tarball,
             headers={"Accept-Encoding": "identity"},
-            max_bytes=MAX_TARBALL_BYTES,
+            max_bytes=cap,
             tally=tally,
         )
     except TooLarge:

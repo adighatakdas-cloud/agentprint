@@ -11,6 +11,7 @@ import argparse
 from functools import partial
 from pathlib import Path
 
+from . import npm, pypi
 from .net import Http, RateLimiter, Tally
 from .run import REGISTRIES, run
 from .shard import parse_shard, parse_window
@@ -24,6 +25,8 @@ HOST_RATES = {"data.jsdelivr.com": 1.6, "replicate.npmjs.com": 1.0}
 SKIP_NEWEST = {"npm": 15_000, "pypi": 2_000}
 # Feed entries per scanned package in the Nov 2026 pilot (npm change numbers, PyPI serials).
 ENTRIES_PER_PACKAGE = {"npm": 3.5, "pypi": 6.0}
+# Size caps can be raised, but never past this: everything is read in memory.
+MAX_SIZE_CAP_MB = 256
 
 
 def _arg(parse):
@@ -34,6 +37,20 @@ def _arg(parse):
             raise argparse.ArgumentTypeError(str(exc)) from exc
 
     return convert
+
+
+def _size_mb(text: str) -> float:
+    value = float(text)
+    if not 1 <= value <= MAX_SIZE_CAP_MB:
+        raise argparse.ArgumentTypeError(f"must be between 1 and {MAX_SIZE_CAP_MB} (MB)")
+    return value
+
+
+def _gb(text: str) -> float:
+    value = float(text)
+    if value <= 0:
+        raise argparse.ArgumentTypeError("must be more than 0")
+    return value
 
 
 def _http() -> Http:
@@ -64,6 +81,19 @@ def main(argv: list[str] | None = None) -> int:
     go.add_argument("--limit", type=int, help="without --window: this many newest packages")
     go.add_argument("--out", type=Path, required=True, help="output folder (keep it out of git)")
     go.add_argument("--workers", type=int, default=6, choices=range(1, 9), metavar="1-8")
+    go.add_argument("--max-gb", type=_gb, help="stop after downloading this much (all runs)")
+    go.add_argument(
+        "--npm-max-mb",
+        type=_size_mb,
+        default=npm.DEFAULT_MAX_MB,
+        help=f"skip npm packages bigger than this, unpacked (default {npm.DEFAULT_MAX_MB})",
+    )
+    go.add_argument(
+        "--sdist-max-mb",
+        type=_size_mb,
+        default=pypi.DEFAULT_SDIST_MAX_MB,
+        help=f"don't download PyPI sdists bigger than this (default {pypi.DEFAULT_SDIST_MAX_MB})",
+    )
     go.add_argument(
         "--skip-newest",
         type=int,
@@ -103,6 +133,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.window is None:
             skip = SKIP_NEWEST[args.eco] if args.skip_newest is None else args.skip_newest
             recent = partial(REGISTRIES[args.eco].recent, skip_newest=skip)
+        if args.eco == "npm":
+            scan = partial(npm.scan, max_mb=args.npm_max_mb)
+        else:
+            scan = partial(pypi.scan, sdist_max_mb=args.sdist_max_mb)
         try:
             session = run(
                 args.eco,
@@ -115,6 +149,8 @@ def main(argv: list[str] | None = None) -> int:
                 validate_pct=args.validate_pct,
                 redo=set(args.redo),
                 recent=recent,
+                scan=scan,
+                max_bytes=None if args.max_gb is None else round(args.max_gb * 1e9),
             )
         except ValueError as exc:
             parser.error(str(exc))

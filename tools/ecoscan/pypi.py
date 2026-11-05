@@ -20,7 +20,10 @@ from .net import Http, HttpError, RangeFile, Tally, TooLarge, json_of
 
 PYPI = "https://pypi.org"
 MAX_JSON_BYTES = 32 * 1024 * 1024
-MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024  # whole-file downloads (.tar.gz sdists)
+# Default cap for whole-file downloads (.tar.gz sdists). In the pilot, sdists over 10 MB were
+# ~4% of releases but half the bandwidth. Volunteers can raise it with --sdist-max-mb.
+DEFAULT_SDIST_MAX_MB = 10
+MAX_DOWNLOAD_BYTES = DEFAULT_SDIST_MAX_MB * 1_000_000
 MAX_RANGE_BYTES = 64 * 1024 * 1024  # bytes read from one zip with Range requests
 
 
@@ -109,24 +112,30 @@ def _pick(rows: list, found: dict, removed: set) -> None:
             found[key] = {"name": name, "version": version, "serial": serial}
 
 
-def _listing(http: Http, archive: str, info: dict, tally: Tally, rec: dict):
+def _listing(http: Http, archive: str, info: dict, tally: Tally, rec: dict, cap: int):
     filename, url, size = info["filename"], info["url"], int(info.get("size") or 0)
     if filename.endswith((".zip", ".whl")):
         rec["method"].append(f"{archive}:range")
         remote = RangeFile(http, url, size, max_bytes=MAX_RANGE_BYTES, tally=tally)
         return read_archive_fileobj(remote, filename, is_candidate)
-    if size > MAX_DOWNLOAD_BYTES:
+    if size > cap:
         raise TooLarge(f"{size} bytes")
     rec["method"].append(f"{archive}:full")
-    resp = http.get(
-        url, headers={"Accept-Encoding": "identity"}, max_bytes=MAX_DOWNLOAD_BYTES, tally=tally
-    )
+    resp = http.get(url, headers={"Accept-Encoding": "identity"}, max_bytes=cap, tally=tally)
     if resp.status != 200:
         raise HttpError(f"HTTP {resp.status} for {archive}")
     return read_archive_bytes(resp.body, filename, is_candidate)
 
 
-def scan(http: Http, target: dict, tally: Tally, *, validate: bool = False) -> dict:
+def scan(
+    http: Http,
+    target: dict,
+    tally: Tally,
+    *,
+    validate: bool = False,
+    sdist_max_mb: float | None = None,
+) -> dict:
+    cap = MAX_DOWNLOAD_BYTES if sdist_max_mb is None else int(sdist_max_mb * 1_000_000)
     name, version = target["name"], target["version"]
     rec = new_record("pypi", name, version)
     url = f"{PYPI}/pypi/{quote(name, safe='')}/{quote(version, safe='')}/json"
@@ -147,7 +156,7 @@ def scan(http: Http, target: dict, tally: Tally, *, validate: bool = False) -> d
     read = 0
     for archive, info in picks:
         try:
-            listing = _listing(http, archive, info, tally, rec)
+            listing = _listing(http, archive, info, tally, rec, cap)
         except TooLarge:
             rec["too_large"].append(archive)
             continue
