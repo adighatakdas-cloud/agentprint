@@ -67,6 +67,12 @@ def should_animate(env: Mapping[str, str], stdout: TextIO | None, plain: bool = 
     )
 
 
+def plain_help(env: Mapping[str, str], stdout: TextIO | None) -> bool:
+    """Help text without escape codes: for an AI agent (even in a real terminal) and for any
+    pipe. Only a person at a terminal gets typer's colored help."""
+    return is_agent(env) or not _tty(stdout)
+
+
 def is_interactive(env: Mapping[str, str], stdin: TextIO | None, stdout: TextIO | None) -> bool:
     return (
         _tty(stdin) and _tty(stdout) and not env.get("CI") and not _dumb(env) and not is_agent(env)

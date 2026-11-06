@@ -9,10 +9,11 @@ from collections.abc import Collection, Iterator
 from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, TypeVar
+from typing import Annotated, Any, TypeVar
 
 import typer
 from rich.console import Console
+from typer.core import TyperCommand, TyperGroup
 
 from . import __version__
 from .advice import Moment
@@ -23,12 +24,44 @@ from .pack import PackError, collect
 from .report import FailOn, _short, exit_code, print_table, to_agent, to_json
 from .sarif import to_sarif
 from .scanner import scan as run_scan
-from .ui.detect import is_agent, is_interactive, should_animate
+from .ui.detect import is_agent, is_interactive, plain_help, should_animate
 from .ui.theme import console as themed_console
 
 AGENT_NAMES = ", ".join(ALL_INTEGRATIONS)  # help text stays in step with the integrations
 
+
+def _plain(command: TyperGroup | TyperCommand) -> None:
+    """Typer's documented switch for plain help: rich_markup_mode=None (click's formatter, no
+    escape codes), here set for one run on the command and every subcommand."""
+    command.rich_markup_mode = None
+    for sub in getattr(command, "commands", {}).values():
+        _plain(sub)
+
+
+class _Group(TyperGroup):
+    """AI agents and pipes get plain help and usage errors. Typer's own rich console forces
+    color whenever GITHUB_ACTIONS, FORCE_COLOR or PY_COLORS is set, even into a pipe, so the
+    choice is made here, once per run, before any help is printed (--help is handled while the
+    arguments are read). A person at a terminal keeps typer's colored help."""
+
+    def main(self, *args: Any, **kwargs: Any) -> Any:
+        if plain_help(os.environ, sys.stdout):
+            _plain(self)
+        return super().main(*args, **kwargs)
+
+
+def _print_help(ctx: typer.Context, plain: bool = False) -> None:
+    """Print the help once. Typer's rich help prints itself and get_help() returns ""; plain
+    help is returned as text."""
+    if plain:
+        _plain(ctx.command)
+    text = ctx.get_help()
+    if text:
+        typer.echo(text)
+
+
 app = typer.Typer(
+    cls=_Group,
     add_completion=False,
     help="Audit what AI coding agents leave behind: keys in history files, and agent "
     "files leaking into npm/PyPI packages. Offline. Secrets are always redacted.",
@@ -72,7 +105,7 @@ def main(
         return
     if not is_interactive(os.environ, sys.stdin, sys.stdout):
         # Pipes, CI and AI agents: the help text, and never a wait for a key.
-        typer.echo(ctx.get_help())
+        _print_help(ctx, plain)
         raise typer.Exit(0)
     raise typer.Exit(_bare(ctx, plain))
 
@@ -122,7 +155,7 @@ def _run_action(ctx: typer.Context, action: str | None, plain: bool) -> int:
     if action == "status":
         return run_status_command(None, None, plain)
     if action == "help":
-        typer.echo(ctx.get_help())
+        _print_help(ctx, plain)
     return 0
 
 

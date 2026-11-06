@@ -2,7 +2,13 @@ import io
 
 import pytest
 
-from agentprint.ui.detect import AGENT_MARKERS, is_agent, is_interactive, should_animate
+from agentprint.ui.detect import (
+    AGENT_MARKERS,
+    is_agent,
+    is_interactive,
+    plain_help,
+    should_animate,
+)
 
 
 class FakeTTY(io.StringIO):
@@ -64,3 +70,11 @@ def test_closed_or_missing_stream_is_not_a_terminal(missing):
         assert not is_interactive({}, streams["stdin"], streams["stdout"])
     assert not should_animate({}, None)
     assert not should_animate({}, closed)
+
+
+def test_plain_help_for_agents_and_pipes_colored_only_for_a_person_at_a_terminal():
+    assert plain_help({"CLAUDECODE": "1"}, FakeTTY())  # an AI agent, even in a real terminal
+    assert plain_help({}, io.StringIO())  # a pipe
+    assert plain_help({}, None)  # no stdout at all
+    assert not plain_help({}, FakeTTY())
+    assert not plain_help({"CI": "1", "NO_COLOR": "1"}, FakeTTY())  # rich handles those itself

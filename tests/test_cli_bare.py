@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 import typer
+import typer.main
+import typer.rich_utils
 from typer.testing import CliRunner
 
 from agentprint import __version__, cli
@@ -198,6 +200,74 @@ def test_menu_help_prints_usage(human, monkeypatch):
     assert r.exit_code == 0 and "Usage" in r.output
 
 
+# ---- help: plain text for AI agents and pipes; typer's colors only for a person at a terminal --
+
+
+def test_menu_help_into_a_pipe_is_plain_even_when_color_is_forced(human, monkeypatch):
+    monkeypatch.setattr(typer.rich_utils, "FORCE_TERMINAL", True)  # as under GITHUB_ACTIONS
+    _pick(monkeypatch, "help")
+    r = runner.invoke(app, [])
+    assert r.exit_code == 0 and "Usage" in r.output
+    assert "\x1b[" not in r.output
+
+
+def test_menu_help_with_plain_is_plain_at_a_terminal(human, monkeypatch):
+    monkeypatch.setattr(typer.rich_utils, "FORCE_TERMINAL", True)
+    monkeypatch.setattr(cli, "plain_help", lambda *a: False)  # a person at a real terminal
+    _pick(monkeypatch, "help")
+    r = runner.invoke(app, ["--plain"])
+    assert r.exit_code == 0 and "Usage" in r.output
+    assert "\x1b[" not in r.output
+
+
+def test_rich_help_at_a_terminal_adds_no_blank_line(human, monkeypatch):
+    """Typer's rich help prints itself and get_help() returns "": nothing more to echo."""
+    monkeypatch.setattr(cli, "plain_help", lambda *a: False)  # a person at a real terminal
+    _pick(monkeypatch, "help")
+    r = runner.invoke(app, [])
+    assert "Usage" in r.output and not r.output.endswith("\n\n")
+
+
+def test_bare_help_ends_without_a_blank_line():
+    r = runner.invoke(app, [])
+    assert "Usage" in r.output and r.output.endswith("\n") and not r.output.endswith("\n\n")
+
+
+def test_every_command_help_is_plain_when_typer_would_force_color(monkeypatch):
+    monkeypatch.setattr(typer.rich_utils, "FORCE_TERMINAL", True)  # as under GITHUB_ACTIONS
+    names = list(typer.main.get_command(app).commands)
+    assert {"scan", "pack", "install", "status"} <= set(names)
+    for args in ([], *([name] for name in names)):
+        r = runner.invoke(app, [*args, "--help"])
+        assert r.exit_code == 0 and "Usage" in r.output, args
+        assert "\x1b[" not in r.output, args
+
+
+FORCED = {"GITHUB_ACTIONS": "true", "FORCE_COLOR": "1"}  # typer's console forces color for these
+
+
+def _piped(home: Path, args: list[str], **extra: str) -> subprocess.CompletedProcess:
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(home), **FORCED, **extra}
+    return subprocess.run([*CHILD, *args], env=env, cwd=home, stdin=subprocess.DEVNULL,
+                          capture_output=True, timeout=30)  # fmt: skip
+
+
+@pytest.mark.parametrize("args", [[], ["--help"], ["scan", "--help"]], ids=["bare", "help", "scan"])
+@pytest.mark.parametrize("agent", [{}, {"CLAUDECODE": "1"}], ids=["pipe", "agent"])
+def test_help_into_a_pipe_has_no_escape_codes_even_when_color_is_forced(tmp_path, args, agent):
+    r = _piped(tmp_path, args, **agent)
+    assert r.returncode == 0, r.stderr
+    assert b"Usage" in r.stdout
+    assert b"\x1b[" not in r.stdout + r.stderr
+
+
+def test_usage_error_for_an_agent_has_no_escape_codes(tmp_path):
+    r = _piped(tmp_path, ["scan", "--no-such-option"], CLAUDECODE="1")
+    assert r.returncode == 2
+    assert b"No such option" in r.stderr
+    assert b"\x1b[" not in r.stdout + r.stderr
+
+
 @pytest.mark.parametrize("action", [None, "quit"])
 def test_menu_quit_exits_0(human, monkeypatch, action):
     monkeypatch.setattr(cli, "run_scan_command", lambda *a: pytest.fail("scan ran"))
@@ -256,7 +326,7 @@ def _env(home: Path, **extra: str) -> dict[str, str]:
 class _Pty:
     """Runs agentprint on a pseudo-terminal and reads its screen with a deadline."""
 
-    def __init__(self, home: Path, env: dict[str, str], stdin_tty=True, stdout_tty=True):
+    def __init__(self, home: Path, env: dict[str, str], stdin_tty=True, stdout_tty=True, args=()):
         import fcntl
         import pty
         import struct
@@ -267,7 +337,7 @@ class _Pty:
         self.before = termios.tcgetattr(self.slave)
         out = self.slave if stdout_tty else subprocess.PIPE
         self.proc = subprocess.Popen(
-            CHILD,
+            [*CHILD, *args],
             stdin=self.slave if stdin_tty else subprocess.DEVNULL,
             stdout=out,
             stderr=out,
@@ -344,6 +414,20 @@ def test_bare_with_agent_marker_in_pty_prints_help_fast(tmp_path, run_pty):
     assert time.monotonic() - started < 5
     assert "Usage" in p.screen
     assert not seen_welcome(tmp_path)  # an AI agent is not a person seeing the welcome
+
+
+@posix
+def test_help_for_an_agent_in_a_real_terminal_has_no_escape_codes(tmp_path, run_pty):
+    p = run_pty(tmp_path, _env(tmp_path, CLAUDECODE="1", **FORCED), args=["--help"])
+    assert p.wait() == 0
+    assert "Usage" in p.screen and b"\x1b[" not in p.raw
+
+
+@posix
+def test_help_for_a_person_at_a_terminal_keeps_typer_colors(tmp_path, run_pty):
+    p = run_pty(tmp_path, _env(tmp_path), args=["--help"])
+    assert p.wait() == 0
+    assert "Usage" in p.screen and b"\x1b[" in p.raw
 
 
 @posix
