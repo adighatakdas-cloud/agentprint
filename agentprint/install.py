@@ -369,10 +369,21 @@ def select(names: list[str] | None, home: Path, env: Mapping[str, str]) -> list[
     return [i for i in chosen if i.installed(home, env)]
 
 
+APPLY_HINT = "Run without --dry-run to apply."
+
+
 def install(
-    home: Path, env: Mapping[str, str], names: list[str] | None, dry_run: bool, echo: Echo
+    home: Path,
+    env: Mapping[str, str],
+    names: list[str] | None,
+    dry_run: bool,
+    echo: Echo,
+    *,
+    apply_hint: str | None = APPLY_HINT,
 ) -> int:
-    """Arm the agents found; returns how many files changed (or would, in a dry run)."""
+    """Arm the agents found; returns how many files changed (or would, in a dry run).
+
+    apply_hint ends a dry run's count line; the menu, which asks y/N itself, passes None."""
     agentprint = resolve_agentprint()
     launch = Launch(hook=str(home / STATE_DIR / "bin" / HOOK_MARK), mcp=(*agentprint, "mcp"))
     found = select(names, home, env)
@@ -412,7 +423,7 @@ def install(
     if changed == 0:
         echo("Everything is already set up. Nothing changed.")
     elif dry_run:
-        echo(f"{changed} file(s) would change. Run without --dry-run to apply.")
+        echo(f"{changed} file(s) would change." + (f" {apply_hint}" if apply_hint else ""))
     else:
         echo(f"Done: {changed} file(s) changed. Backups: {_shown(home, home / STATE_DIR)}")
         echo("Undo everything with: agentprint uninstall")
@@ -496,9 +507,17 @@ def _marker_reverts(path: Path) -> list[Edit]:
 
 
 def uninstall(
-    home: Path, env: Mapping[str, str], names: list[str] | None, dry_run: bool, echo: Echo
+    home: Path,
+    env: Mapping[str, str],
+    names: list[str] | None,
+    dry_run: bool,
+    echo: Echo,
+    *,
+    apply_hint: str | None = APPLY_HINT,
 ) -> int:
-    """Disarm the agents; returns how many files changed (or would, in a dry run)."""
+    """Disarm the agents; returns how many files changed (or would, in a dry run).
+
+    apply_hint ends a dry run's count line; the menu, which asks y/N itself, passes None."""
     launch = Launch(hook=str(home / STATE_DIR / "bin" / HOOK_MARK), mcp=("agentprint", "mcp"))
     chosen = list(names) if names else list(ALL_INTEGRATIONS)
     state = State.load(home)
@@ -531,7 +550,7 @@ def uninstall(
         changed += result not in {"same", "kept"}
         exact = exact and result in {"same", "restored", "removed"}
     if dry_run:
-        echo(f"\n{changed} file(s) would change. Run without --dry-run to apply.")
+        echo(f"\n{changed} file(s) would change." + (f" {apply_hint}" if apply_hint else ""))
         return changed
     if last and exact:
         shutil.rmtree(home / STATE_DIR / "backups", ignore_errors=True)

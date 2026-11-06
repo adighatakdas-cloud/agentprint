@@ -198,7 +198,7 @@ def _arm(arm: bool) -> int:
 
     run = run_install if arm else run_uninstall
     home_dir, env, names = _setup_args(None, None)  # your home and env, as the commands use
-    if not run(home_dir, env, names, True, typer.echo):
+    if not run(home_dir, env, names, True, typer.echo, apply_hint=None):  # the menu asks
         return 0  # nothing would change, so nothing to ask
     typer.echo("")
     if typer.confirm("Arm these agents?" if arm else "Disarm these agents?", default=False):

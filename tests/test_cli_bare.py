@@ -169,8 +169,8 @@ def test_menu_says_preflight_asks_before_a_python_build():
 def _fake_setup(monkeypatch, which, changes):
     calls = []
 
-    def run(home, env, names, dry_run, echo):
-        calls.append({"home": home, "env": env, "names": names, "dry_run": dry_run})
+    def run(home, env, names, dry_run, echo, **kwargs):
+        calls.append({"home": home, "env": env, "names": names, "dry_run": dry_run, **kwargs})
         echo(f"fake {which} dry_run={dry_run}")
         return changes
 
@@ -203,6 +203,36 @@ def test_menu_setup_yes_runs_for_real_with_real_home_and_env(human, monkeypatch,
     for c in calls:
         assert c["home"] == human and c["names"] is None
         assert c["env"]["CODEX_HOME"] == str(human / "codex-elsewhere")
+
+
+@pytest.mark.parametrize("action", ["install", "uninstall"])
+def test_menu_dry_run_drops_the_command_line_hint(human, monkeypatch, action):
+    """The menu asks y/N itself: "Run without --dry-run to apply." would contradict it."""
+    calls = _fake_setup(monkeypatch, action, 2)
+    _pick(monkeypatch, action)
+    runner.invoke(app, [], input="\n")
+    assert calls[0]["dry_run"] is True and calls[0]["apply_hint"] is None
+
+
+def test_apply_hint_is_optional_and_on_by_default(tmp_path):
+    from agentprint import install
+
+    (tmp_path / ".claude").mkdir()
+    default, quiet = [], []
+    install.install(tmp_path, {}, None, True, default.append)
+    install.install(tmp_path, {}, None, True, quiet.append, apply_hint=None)
+    assert default[-1 - _notes(default)].endswith("would change. Run without --dry-run to apply.")
+    assert quiet[-1 - _notes(quiet)].endswith("file(s) would change.")
+    for kwargs in ({}, {"apply_hint": None}):
+        out = []
+        assert install.uninstall(tmp_path, {}, None, True, out.append, **kwargs) == 0
+        hinted = out[-1].endswith("Run without --dry-run to apply.")
+        assert hinted is ("apply_hint" not in kwargs)
+
+
+def _notes(lines):
+    """How many "Note for ..." lines end install's output."""
+    return sum(1 for line in lines if line.startswith("Note for "))
 
 
 def test_menu_setup_nothing_to_change_does_not_ask(human, monkeypatch):
