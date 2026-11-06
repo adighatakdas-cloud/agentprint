@@ -76,6 +76,9 @@ const screen = [
 {/* A classic inline script, so it runs before the first paint: no flash of the last frame. */}
 <script is:inline>
   {
+    // The generated text is never rewritten: the sweep draws on a layer over the welcome,
+    // typing uncovers each command, and lines wait behind a class. Anything that goes wrong,
+    // and print or reduced motion (landing.css), falls back to that real text.
     const fig = document.currentScript.previousElementSibling;
     const screen = fig.querySelector(".ap-term-screen");
     const replay = fig.querySelector(".ap-term-replay");
@@ -84,9 +87,8 @@ const screen = [
     const EDGE = 3;
     const STEPS = 30;
     const welcome = screen.querySelector(".ap-blk-welcome");
-    const original = welcome.innerHTML;
-    const typed = [...screen.querySelectorAll(".ap-typed")].map((el) => [el, el.textContent]);
-    const shown = [...screen.querySelectorAll(".ap-blk-scan .ap-ln, .ap-blk-agent .ap-ln")];
+    const commands = [...screen.querySelectorAll(".ap-cmd")];
+    const output = (cmd) => [...cmd.closest(".ap-blk").querySelectorAll(".ap-ln")].filter((ln) => ln !== cmd);
     // Each welcome line as cells: one character and the opening tag of the run it sits in.
     const cells = [...welcome.querySelectorAll(".ap-ln")].map((ln) =>
       [...ln.childNodes].flatMap((node) => {
@@ -99,10 +101,15 @@ const screen = [
     const glyph = () => GLYPHS[Math.floor(Math.random() * GLYPHS.length)];
     const NOISE = '<span class="ap-noise">';
     const RED = '<span class="ap-edge">';
+    const layer = document.createElement("span");
+    layer.className = "ap-sweep";
+    layer.setAttribute("aria-hidden", "true");
+    const cursor = document.createElement("span");
+    cursor.className = "ap-cursor";
 
     // Same rule as agentprint/ui/sweep.py: below edge-3 settled, the next 3 red, the rest faint.
     function frame(edge) {
-      welcome.innerHTML = cells
+      layer.innerHTML = cells
         .map((line) => {
           let html = "";
           let run = null;
@@ -118,17 +125,17 @@ const screen = [
             buf += esc(c.ch === " " || open === c.open ? c.ch : glyph());
           });
           flush();
-          return `<span class="ap-ln">${html}</span>`;
+          return html;
         })
         .join("\n");
     }
 
     let run = 0;
+    let io = null;
     const STOP = Symbol("stop");
     const wait = (ms, id) =>
       new Promise((ok, no) => setTimeout(() => (id === run ? ok() : no(STOP)), ms));
-    const cursor = document.createElement("span");
-    cursor.className = "ap-cursor";
+    const show = (el) => el.classList.remove("ap-off");
 
     function follow(el) {
       const pad = parseFloat(getComputedStyle(screen).paddingBottom);
@@ -137,82 +144,94 @@ const screen = [
       if (over > 0) screen.scrollTop += over;
     }
     function reset() {
+      cursor.remove();
+      commands.forEach((cmd) => cmd.classList.remove("ap-typing"));
+      screen.setAttribute("aria-busy", "true");
+      screen.querySelectorAll(".ap-ln").forEach((ln) => ln.classList.add("ap-off"));
+      welcome.append(layer);
       frame(0);
-      shown.forEach((ln) => ln.classList.add("ap-off"));
-      typed.forEach(([el]) => (el.textContent = ""));
       screen.scrollTop = 0;
       screen.scrollLeft = 0;
-      screen.setAttribute("aria-busy", "true");
     }
     function finish() {
       run += 1;
-      welcome.innerHTML = original;
-      shown.forEach((ln) => ln.classList.remove("ap-off"));
-      typed.forEach(([el, text]) => (el.textContent = text));
+      layer.remove();
       cursor.remove();
+      commands.forEach((cmd) => cmd.classList.remove("ap-typing"));
+      screen.querySelectorAll(".ap-off").forEach(show);
       screen.removeAttribute("aria-busy");
     }
-    async function type(el, text, id) {
-      const line = el.closest(".ap-ln");
-      line.classList.remove("ap-off");
-      line.append(cursor);
-      follow(line);
+    // Something failed: show the whole run for good, with nothing left to replay.
+    function giveUp() {
+      replay.hidden = true;
+      if (io) io.disconnect();
+      finish();
+    }
+    async function type(cmd, id) {
+      const length = cmd.querySelector(".ap-typed").textContent.length;
+      cmd.style.setProperty("--typed", 0);
+      cmd.classList.add("ap-typing");
+      show(cmd);
+      cmd.append(cursor);
+      follow(cmd);
       await wait(800, id);
-      for (let i = 1; i <= text.length; i += 1) {
-        el.textContent = text.slice(0, i);
+      for (let i = 1; i <= length; i += 1) {
+        cmd.style.setProperty("--typed", i);
         await wait(35, id);
       }
+      cmd.classList.remove("ap-typing");
       cursor.remove();
     }
     async function reveal(lines, id) {
       for (const ln of lines) {
         await wait(60, id);
-        ln.classList.remove("ap-off");
+        show(ln);
         follow(ln);
       }
     }
     async function play() {
       const id = ++run;
-      reset();
       try {
+        reset();
         for (let i = 0; i < STEPS; i += 1) {
           frame(Math.round(((i + 1) * (width + EDGE)) / STEPS));
           await wait(40, id);
         }
-        welcome.innerHTML = original;
-        const [[scanCmd, scanText], [packCmd, packText]] = typed;
-        const out = (cmd) => shown.filter((ln) => ln.closest(".ap-blk") === cmd.closest(".ap-blk") && !ln.contains(cmd));
-        await type(scanCmd, scanText, id);
-        await reveal(out(scanCmd), id);
-        await type(packCmd, packText, id);
-        await reveal(out(packCmd), id);
+        layer.remove();
+        welcome.querySelectorAll(".ap-ln").forEach(show);
+        for (const cmd of commands) {
+          await type(cmd, id);
+          await reveal(output(cmd), id);
+        }
         finish();
       } catch (e) {
-        if (e !== STOP) throw e;
+        if (e === STOP) return;
+        giveUp();
+        throw e;
       }
     }
 
     if (!reduce.matches && "IntersectionObserver" in window) {
-      reset();
-      replay.hidden = false;
-      replay.addEventListener("click", play);
-      const io = new IntersectionObserver(
-        (entries) => {
-          if (entries.some((e) => e.isIntersecting)) {
-            io.disconnect();
-            play();
-          }
-        },
-        { threshold: 0.3 },
-      );
-      io.observe(fig);
-      // Reduced motion switched on mid-run: show everything now.
-      reduce.addEventListener("change", () => {
-        if (!reduce.matches) return;
-        io.disconnect();
-        finish();
-        replay.hidden = true;
-      });
+      try {
+        reset();
+        replay.hidden = false;
+        replay.addEventListener("click", play);
+        io = new IntersectionObserver(
+          (entries) => {
+            if (entries.some((e) => e.isIntersecting)) {
+              io.disconnect();
+              play();
+            }
+          },
+          { threshold: 0.3 },
+        );
+        io.observe(fig);
+        // Reduced motion switched on mid-run: show everything now.
+        reduce.addEventListener("change", () => reduce.matches && giveUp());
+      } catch (e) {
+        giveUp();
+        throw e;
+      }
     }
   }
 </script>

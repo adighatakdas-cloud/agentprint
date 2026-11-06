@@ -11,7 +11,8 @@
   }
 }
 
-/* 1. Hero: copy left, terminal right from 960 px; stacked below. */
+/* 1. Hero: copy left, terminal right from 1120 px; stacked below. Two columns start only where
+   the terminal column holds all 80 columns at the 11 px floor (tests/test_landing.py checks it). */
 .ap-hero {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -19,9 +20,9 @@
   gap: 2.5rem;
   padding-block: 1.5rem 1rem;
 }
-@media (min-width: 60rem) {
+@media (min-width: 70rem) {
   .ap-hero {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.32fr);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.36fr);
     align-items: start;
     gap: 3rem;
     padding-block: 3rem 1.5rem;
@@ -51,7 +52,7 @@
   color: var(--ap-strong);
   text-wrap: balance;
 }
-@media (min-width: 60rem) {
+@media (min-width: 70rem) {
   /* The eyebrow sits on the terminal title's baseline: same 36 px row, under the same 1 px edge. */
   .ap-hero .ap-eyebrow {
     margin-top: 1px;
@@ -113,7 +114,8 @@
 .ap-term {
   container-type: inline-size;
   min-width: 0;
-  max-width: 100%;
+  /* Stacked, the panel is never wider than 80 columns at 13 px: no empty band on the right. */
+  max-width: min(100%, calc(48 * 13px + 2.5rem + 12px + 2px));
   margin: 0;
   overflow: hidden;
   border: 1px solid var(--ap-border);
@@ -237,12 +239,50 @@
   vertical-align: top;
   background: var(--ap-dim);
 }
-@media (prefers-reduced-motion: reduce) {
+/* Typing uncovers the command one column at a time; the text itself never changes. */
+.ap-typing .ap-typed {
+  display: inline-block;
+  width: calc(var(--typed, 0) * 1ch);
+  height: 1.15em;
+  vertical-align: top;
+  overflow: hidden;
+}
+/* The sweep draws on a layer over the welcome, whose real lines wait underneath. */
+.ap-blk-welcome {
+  display: inline-block;
+  position: relative;
+  vertical-align: top;
+}
+.ap-sweep {
+  position: absolute;
+  inset: 0;
+}
+/* Printed, or with reduced motion, the panel is the real run whatever state the script left. */
+@media print, (prefers-reduced-motion: reduce) {
   .ap-term .ap-off {
     visibility: visible;
   }
+  .ap-term .ap-sweep,
   .ap-term .ap-cursor {
     display: none;
+  }
+  .ap-term .ap-typing .ap-typed {
+    display: inline;
+    width: auto;
+  }
+}
+@media print {
+  /* A terminal prints as a terminal, even with background graphics off: its text is light. */
+  .ap-term {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .ap-term-replay {
+    display: none;
+  }
+  .ap-term-screen {
+    max-height: none;
+    overflow: visible;
   }
 }
 
