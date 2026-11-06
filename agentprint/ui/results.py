@@ -3,6 +3,9 @@
 One group per severity, two lines per print (id and where, then what), the fix list, then the
 verdict. AI agents never see this layout: they get `--format agent`. Every scanned string is
 cleaned and goes into rich Text as plain text, so markup in a file name prints literally.
+
+Prose wraps at word boundaries under its own indent (ui/layout.py). Lines naming a path (the
+header and each "where") are printed whole, so a long path can still be copied in one piece.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from rich.text import Text
 from agentprint.models import Finding, Severity
 from agentprint.report import FailOn, _plural, _short, exit_code, summary
 from agentprint.sanitize import clean, safe_step
+from agentprint.ui.layout import hang
 from agentprint.ui.theme import SEVERITY_STYLE
 
 # What redact() in agentprint/secrets.py prints for a key: its first 4 characters and length.
@@ -32,7 +36,7 @@ def _where(f: Finding) -> Text:
 
 def _detail(f: Finding) -> Text:
     detail = clean(f.detail)
-    line = Text(DETAIL_INDENT)
+    line = Text()
     end = 0
     for stub in STUB.finditer(detail):
         line.append(detail[end : stub.start()])
@@ -45,19 +49,20 @@ def _detail(f: Finding) -> Text:
     return line
 
 
-def _verdict(findings: list[Finding], fail_on: FailOn) -> Text:
+def _verdict(findings: list[Finding], fail_on: FailOn, width: int | None) -> list[Text]:
     prints = _plural(len(findings), "print")
     if exit_code(findings, fail_on):
         counts = " · ".join(f"{n} {name}" for name, n in summary(findings).items() if n)
-        return Text.assemble((" BLOCK ", "ap.block"), f"  {prints} · {counts} · keys masked")
-    line = Text.assemble((" CLEAR ", "ap.clear_label"))
-    if not findings:
-        line.append("  no prints · keys masked")
+        label, text = (" BLOCK ", "ap.block"), f"{prints} · {counts} · keys masked"
+    elif not findings:
+        label, text = (" CLEAR ", "ap.clear_label"), "no prints · keys masked"
     elif fail_on is FailOn.none:
-        line.append(f"  {prints} · --fail-on none (report only) · keys masked")
+        label = (" CLEAR ", "ap.clear_label")
+        text = f"{prints} · --fail-on none (report only) · keys masked"
     else:
-        line.append(f"  {prints} · none at or above --fail-on {fail_on} · keys masked")
-    return line
+        label = (" CLEAR ", "ap.clear_label")
+        text = f"{prints} · none at or above --fail-on {fail_on} · keys masked"
+    return hang(Text.assemble(label, "  "), text, width)
 
 
 def render(
@@ -67,8 +72,9 @@ def render(
     fail_on: FailOn = FailOn.high,
     header: str | None = None,
 ) -> None:
+    width = console.width
     if header is not None:
-        console.print(Text(clean(header), style="ap.dim"))
+        console.print(Text(clean(header), style="ap.dim"), soft_wrap=True)  # names paths
         console.print()
     shown: list[Finding] = []
     for severity in sorted(Severity, reverse=True):
@@ -78,14 +84,19 @@ def render(
         name = f"{severity.name.lower():<10}"
         console.print(Text.assemble((name, SEVERITY_STYLE[severity]), (str(len(group)), "ap.dim")))
         for f in group:
-            console.print(_where(f))
-            console.print(_detail(f))
+            console.print(_where(f), soft_wrap=True)  # one line, so the path copies whole
+            for line in hang(DETAIL_INDENT, _detail(f), width):
+                console.print(line)
         console.print()
         shown += group
     if shown:
         console.print(Text("Fix", style="ap.dim"))
-        fixes = dict.fromkeys((f.check_id, f.fix) for f in shown)  # unique, in the order shown
+        fixes = list(dict.fromkeys((f.check_id, f.fix) for f in shown))  # unique, in order
+        digits = len(str(len(fixes)))  # numbers right-aligned, so the ids stay in one column
         for n, (check_id, fix) in enumerate(fixes, 1):
-            console.print(Text.assemble((f"  {n}  {check_id}", "ap.dim"), f"  {safe_step(fix)}"))
+            lead = Text.assemble((f"  {n:>{digits}}  {check_id}", "ap.dim"), "  ")
+            for line in hang(lead, safe_step(fix), width):
+                console.print(line)
         console.print()
-    console.print(_verdict(findings, fail_on))
+    for line in _verdict(findings, fail_on, width):
+        console.print(line)

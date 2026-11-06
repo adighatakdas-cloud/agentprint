@@ -153,10 +153,12 @@ def test_never_prints_full_key():
 class _Lines:
     """Stands in for a Console and keeps every printed line as rich Text, styles by name."""
 
+    width = 120
+
     def __init__(self) -> None:
         self.lines: list[Text] = []
 
-    def print(self, line: Text | None = None) -> None:
+    def print(self, line: Text | None = None, **kwargs) -> None:
         self.lines.append(line or Text())
 
 
@@ -199,3 +201,67 @@ def test_themed_console_renders_without_error():
     out = themed_console({}, record=True, force_terminal=True, width=120)
     render(_three(), out, header=HEADER)
     assert out.export_text(styles=False) == EXPECTED
+
+
+# ---- narrow terminals: prose wraps under its own indent; path lines stay whole ---------------
+
+LONG_DETAIL = (
+    "history file history.jsonl in this agent folder is readable by its group and other users "
+    "(mode 0644)"
+)
+LONG_FIX = (
+    "Ask the human to rotate this key at its provider (an AI agent can't). Then replace the "
+    'value with "${GITHUB_TOKEN}" and export GITHUB_TOKEN in the shell that starts the agent.'
+)
+
+
+def _long() -> list[Finding]:
+    return [
+        _finding("AP008", Severity.MEDIUM, "/very/long/path/" + "d" * 70, None, LONG_DETAIL, "x"),
+        _finding("AP005", Severity.CRITICAL, "/p/.claude.json", 10, LONG_DETAIL, LONG_FIX),
+    ]
+
+
+def test_at_width_60_prose_wraps_under_its_indent():
+    out = themed_console({}, record=True, width=60)  # what a person's terminal gets
+    render(_long(), out, header=HEADER)
+    lines = out.export_text(styles=False).splitlines()
+    where = [ln for ln in lines if ln.startswith("  AP0")]
+    assert any(len(ln) > 60 for ln in where)  # a long path stays on one line, to copy whole
+    for ln in lines:
+        if ln not in where and ln != HEADER:
+            assert len(ln) <= 60, ln
+    details = [ln for ln in lines if ln.startswith(" " * 9) and not ln.startswith(" " * 12)]
+    assert len(details) >= 4  # each long detail took more than one line, all under the path
+    fix_block = lines[lines.index("Fix") + 1 : lines.index("Fix") + 1 + 6]
+    assert fix_block[0].startswith("  1  AP005  Ask the human")
+    first_blank = fix_block.index("") if "" in fix_block else len(fix_block)
+    for ln in fix_block[1:first_blank]:  # continuation lines start under the fix text
+        if not ln.startswith("  2  "):
+            assert ln.startswith(" " * 12) and ln[12] != " ", ln
+
+
+def test_verdict_wraps_under_its_text():
+    many = [
+        _finding("AP00" + str(i % 8 + 1), sev, f"/f{i}", 1, "d", f"fix {i}")
+        for i, sev in enumerate(Severity)
+    ]
+    lines = _text(many, width=40).splitlines()
+    verdict = lines[next(i for i, ln in enumerate(lines) if ln.startswith(" BLOCK ")) :]
+    assert len(verdict) > 1 and all(len(ln) <= 40 for ln in verdict)
+    assert verdict == [
+        " BLOCK   4 prints · 1 critical ·",
+        "         1 high · 1 medium · 1 low ·",
+        "         keys masked",
+    ]
+
+
+def test_ten_or_more_fixes_keep_the_id_column_aligned():
+    many = [
+        _finding("AP003", Severity.MEDIUM, f"/f{i}", 1, "d", f"fix number {i}") for i in range(11)
+    ]
+    lines = _text(many).splitlines()
+    fix_lines = lines[lines.index("Fix") + 1 : lines.index("Fix") + 12]
+    assert fix_lines[0] == "   1  AP003  fix number 0"
+    assert fix_lines[10] == "  11  AP003  fix number 10"
+    assert {ln.index("AP003") for ln in fix_lines} == {6}

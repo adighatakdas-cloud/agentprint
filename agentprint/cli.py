@@ -518,9 +518,13 @@ def _show_welcome(home_dir: Path, env: dict[str, str], plain: bool) -> None:
     from .ui.welcome import mark_welcome, welcome_lines
 
     theme_env = env or dict(os.environ)
-    lines = welcome_lines(
-        roster(home_dir, env), __version__, _short(os.getcwd()), light=is_light(theme_env)
-    )
     out = themed_console(theme_env, plain=plain)
+    lines = welcome_lines(
+        roster(home_dir, env),
+        __version__,
+        _short(os.getcwd()),
+        light=is_light(theme_env),
+        width=out.width,
+    )
     sweep.play(out, lines, should_animate(theme_env, sys.stdout, plain))
     mark_welcome(home_dir)

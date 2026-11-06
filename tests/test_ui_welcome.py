@@ -1,6 +1,7 @@
 import io
 import os
 import random
+import re
 import stat
 
 import pytest
@@ -164,3 +165,58 @@ def test_menu_header_cleans_the_folder_name():
 
     text = "\n".join(line.plain for line in menu.intro_lines([], HOSTILE))
     assert "\x1b" not in text and "pwned" not in text
+
+
+UNARMED = {"codex": "Codex", "cursor": "Cursor", "gemini": "Gemini CLI", "copilot": "Copilot"}
+UNARMED |= {"opencode": "OpenCode", "hermes": "Hermes"}
+MANY = [
+    AgentState("claude-code", "Claude Code", True, True),
+    *(AgentState(name, label, True, False) for name, label in UNARMED.items()),
+]
+LONG_CWD = "~/work/clients/some-very-long-client-name/monorepo/packages/the-app-itself"
+
+
+@pytest.mark.parametrize("width", [60, 80])
+def test_welcome_fits_the_terminal(width):
+    lines = [ln.plain for ln in welcome_lines(MANY, "0.1.0", LONG_CWD, width=width)]
+    assert all(len(ln) <= width for ln in lines), "\n".join(lines)
+    folder = next(ln for ln in lines if "offline" in ln)
+    assert folder.endswith(" · offline · no telemetry") and "…" in folder
+    assert "the-app-itself" in folder  # the end of the path is kept: the folder's own name
+    start = next(i for i, ln in enumerate(lines) if "agents armed" in ln)
+    roster = lines[start : lines.index("", start)]
+    assert len(roster) > 1 and all(ln.startswith(" " * 10) and ln[10] != " " for ln in roster)
+
+
+def test_welcome_wide_terminal_is_the_spec_layout():
+    lines = welcome_lines(STATES, "0.1.0", "~/work/my-app", width=120)
+    assert "\n".join(line.plain for line in lines) == SPEC
+
+
+def test_welcome_command_builds_lines_for_the_terminal_width(tmp_path, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "60")
+    deep = tmp_path / ("x" * 80)
+    deep.mkdir()
+    monkeypatch.chdir(deep)
+    r = CliRunner().invoke(app, ["welcome", "--home", str(tmp_path)])
+    assert r.exit_code == 0
+    assert all(len(ln) <= 60 for ln in r.output.splitlines()), r.output
+    assert "· offline · no telemetry" in r.output
+
+
+def test_sweep_never_crops_a_line(monkeypatch):
+    monkeypatch.setattr(sweep.time, "sleep", lambda s: None)
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=True, width=60)
+    sweep.play(console, welcome_lines(MANY, "0.1.0", LONG_CWD, width=60), animate=True)
+    assert "no telemetry" in buf.getvalue()
+
+
+def test_sweep_on_a_tiny_terminal_loses_no_words(monkeypatch):
+    monkeypatch.setattr(sweep.time, "sleep", lambda s: None)
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=True, width=24)
+    sweep.play(console, welcome_lines(MANY, "0.1.0", LONG_CWD, width=24), animate=True)
+    shown = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", buf.getvalue())
+    for word in ("telemetry", "Copilot", "install", "ships"):
+        assert word in shown

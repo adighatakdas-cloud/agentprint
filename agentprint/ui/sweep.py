@@ -28,13 +28,14 @@ def _frame_text(lines: list[Text], width: int, edge: int, rng: random.Random) ->
     for line in lines:
         settled = max(0, min(edge - EDGE, len(line.plain)))
         shown = max(0, min(edge, len(line.plain)))
-        row = Text(no_wrap=True, overflow="crop")
+        row = Text()
         row.append_text(line[:settled])
         row.append_text(_noise(line, settled, shown, "ap.red", rng))
         row.append_text(_noise(line, shown, width, "ap.faint", rng))
         out.append(row)
-    joined = Text("\n", no_wrap=True, overflow="crop").join(out)
-    return joined
+    # The lines are built to fit the terminal. On one too narrow even for that, a row wraps
+    # rather than being cut off, and wraps the same way in every frame (spaces never move).
+    return Text("\n").join(out)
 
 
 def frames(lines: list[Text], steps: int = 30, *, rng: random.Random) -> Iterator[Text]:

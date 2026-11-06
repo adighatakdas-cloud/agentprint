@@ -64,15 +64,17 @@ def test_guard_catches_a_compound_style():
         _strict([bad])
 
 
-def test_welcome_styles_resolve():
-    lines = welcome_lines(STATES, "0.1.0", "~/work/my-app")
+@pytest.mark.parametrize("width", [None, 40, 60, 100])
+def test_welcome_styles_resolve(width):
+    lines = welcome_lines(STATES, "0.1.0", "~/work/my-app", width=width)
     assert _strict(lines) > 0
     frames = list(sweep.frames(lines, rng=random.Random(0)))
     assert _strict(frames) > 0
 
 
 def test_menu_styles_resolve():
-    assert _strict(menu.intro_lines(STATES, "~/work/my-app")) > 0
+    for width in (None, 40, 80):
+        assert _strict(menu.intro_lines(STATES, "~/work/my-app", width=width)) > 0
     for current in range(len(menu.ITEMS)):
         assert _strict([t for row in menu.rows(current) for t in row]) > 0
 

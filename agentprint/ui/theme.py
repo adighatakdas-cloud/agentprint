@@ -64,13 +64,9 @@ def console(
         kwargs.setdefault("no_color", True)
         kwargs.setdefault("force_terminal", False)
     # Otherwise no_color stays unset, so rich honours a NO_COLOR environment variable.
-    return Console(
-        file=file,
-        theme=theme(env),
-        highlight=False,
-        soft_wrap=True,
-        **kwargs,
-    )
+    # soft_wrap stays off: the screens build their lines to fit (ui/layout.py) and print the
+    # few lines that name a path with soft_wrap=True themselves.
+    return Console(file=file, theme=theme(env), highlight=False, **kwargs)
 
 
 SEVERITY_STYLE: dict[Severity, str] = {s: f"ap.sev.{s.name.lower()}" for s in Severity}

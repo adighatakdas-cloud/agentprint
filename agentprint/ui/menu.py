@@ -24,7 +24,8 @@ from rich.text import Text
 
 from agentprint import __version__
 from agentprint.roster import AgentState
-from agentprint.ui.welcome import INDENT, header_lines, summary_text
+from agentprint.ui.layout import hang
+from agentprint.ui.welcome import INDENT, header_lines, summary_lines
 
 # (action, label, help): the action is what the CLI runs for that row.
 ITEMS: tuple[tuple[str, str, str], ...] = (
@@ -59,19 +60,21 @@ def idle_seconds(env: Mapping[str, str]) -> float:
     return value if 0 < value <= IDLE_MAX and math.isfinite(value) else IDLE_DEFAULT
 
 
-def intro_lines(states: Sequence[AgentState], cwd: str, light: bool = False) -> list[Text]:
-    """What stays on screen above the menu: header, roster summary and the commands."""
-    commands = Text(INDENT)
-    commands.append("agentprint ")
+def intro_lines(
+    states: Sequence[AgentState], cwd: str, light: bool = False, width: int | None = None
+) -> list[Text]:
+    """What stays on screen above the menu: header, roster summary and the commands, built to
+    fit `width` columns."""
+    commands = Text("agentprint ")
     for i, word in enumerate(COMMANDS):
         if i:
             commands.append(" · ", style="ap.dim")
         commands.append(word, style="ap.strong")
     return [
-        *header_lines(__version__, cwd, light),
+        *header_lines(__version__, cwd, light, width),
         Text(""),
-        summary_text(list(states)),
-        commands,
+        *summary_lines(list(states), width),
+        *hang(INDENT, commands, width),
         Text(""),
     ]
 
@@ -115,7 +118,7 @@ def choose(
 
     Without a key reader (Windows), a numbered list and input() instead.
     """
-    for line in intro_lines(states, cwd, light):
+    for line in intro_lines(states, cwd, light, console.width):
         console.print(line)
     if reader is None:
         return _numbered(console)
