@@ -17,8 +17,24 @@ from tests import fakes
 
 @pytest.fixture(autouse=True)
 def _no_forced_color(monkeypatch):
-    for name in ("FORCE_COLOR", "TTY_COMPATIBLE", "NO_COLOR", "CI"):
+    for name in ("FORCE_COLOR", "TTY_COMPATIBLE", "NO_COLOR", "CI", "COLORTERM"):
         monkeypatch.delenv(name, raising=False)
+    # The same terminal everywhere: GitHub Actions has no TERM, and rich then picks 16 colors.
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+
+SGR = re.compile(r"\x1b\[([0-9;]*)m")
+
+
+def _color_codes(text: str) -> list[str]:
+    """Every SGR escape that sets a color: 30-49 and 90-107 (incl. 38/48 for 256 and true
+    color). Bold (1) and reset (0) are not colors."""
+    found = []
+    for params in SGR.findall(text):
+        numbers = [int(p) for p in params.split(";") if p]
+        if any(30 <= n <= 49 or 90 <= n <= 107 for n in numbers):
+            found.append(params)
+    return found
 
 
 def _scan(fake_home, fake_project, *extra, env=None):
@@ -80,9 +96,24 @@ def test_pack_plain_flag_has_no_ansi(tmp_path):
     assert "\x1b[" not in result.output and "BLOCK" in result.output
 
 
-def test_no_color_env_is_honoured(fake_home, fake_project):
+def test_color_code_check_sees_every_color_system():
+    assert _color_codes("\x1b[1;93mx\x1b[0m \x1b[37my\x1b[0m") == ["1;93", "37"]  # 16 colors
+    assert _color_codes("\x1b[38;5;203mx \x1b[1;38;2;255;176;32my") == [
+        "38;5;203",
+        "1;38;2;255;176;32",
+    ]
+    assert _color_codes("\x1b[1mbold\x1b[0m \x1b[7mreverse\x1b[0m") == []
+
+
+@pytest.mark.parametrize("term", ["xterm-256color", None])
+def test_no_color_env_is_honoured(fake_home, fake_project, monkeypatch, term):
+    if term is None:
+        monkeypatch.delenv("TERM")  # as on GitHub Actions: rich falls back to 16 colors
+    forced = _scan(fake_home, fake_project, env={"FORCE_COLOR": "1"})
+    assert _color_codes(forced.output)  # the control: forced color is on
     result = _scan(fake_home, fake_project, env={"FORCE_COLOR": "1", "NO_COLOR": "1"})
-    assert not re.search(r"\x1b\[[0-9;]*[34]8;", result.output)  # bold may stay; no color
+    assert "BLOCK" in result.output
+    assert _color_codes(result.output) == []  # bold may stay; no color
 
 
 def test_scan_header_names_home_project_roster_and_time(fake_home, fake_project):
