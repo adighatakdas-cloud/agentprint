@@ -48,7 +48,8 @@ IDLE_DEFAULT = 60.0
 IDLE_MAX = 3600.0
 ESC_WAIT = 0.05  # how long a lone ESC waits for the rest of an arrow key's sequence
 LABEL_WIDTH = max(len(label) for _, label, _ in ITEMS)
-FULL_WIDTH = len(INDENT) + 2 + LABEL_WIDTH + 2 + max(len(h) for _, _, h in ITEMS)
+HELP_MIN = 30  # the rows keep the header's indent while the help column gets this many
+INDENTED_WIDTH = len(INDENT) + 2 + LABEL_WIDTH + 2 + HELP_MIN
 
 
 def idle_seconds(env: Mapping[str, str]) -> float:
@@ -95,13 +96,14 @@ def rows(current: int) -> list[tuple[Text, Text, Text]]:
 
 
 def view(current: int, width: int) -> RenderableType:
-    """The menu. Help text wraps in its own column on a narrow terminal."""
+    """The menu, under the header's indent. Help text wraps in its own column; only a very
+    narrow terminal drops the indent."""
     table = Table.grid(padding=(0, 2, 0, 0))
     table.add_column(no_wrap=True, min_width=2 + LABEL_WIDTH)
     table.add_column()
     for pointer, label, help_text in rows(current):
         table.add_row(Text.assemble(pointer, " ", label), help_text)
-    left = len(INDENT) if width >= FULL_WIDTH else 0
+    left = len(INDENT) if width >= INDENTED_WIDTH else 0
     hint = Text(HINT, style="ap.dim")
     return Padding(Group(table, Text(""), hint), (0, 0, 0, left), expand=False)
 

@@ -281,3 +281,30 @@ def test_module_imports_without_termios():
         "import agentprint.ui.menu, agentprint.cli\n"
     )
     subprocess.run([sys.executable, "-c", code], check=True, timeout=30)
+
+
+@pytest.mark.parametrize("width", [64, 80, 100])
+def test_menu_rows_line_up_with_the_header(width):
+    """macOS Terminal opens 80 columns wide: the rows keep the header's 10-column indent."""
+    _, out = _choose(["quit"], width=width)
+    lines = [ln.rstrip() for ln in out.replace("\r", "\n").splitlines()]
+    assert any(ln.startswith(menu.INDENT + "agentprint scan · pack") for ln in lines)
+    assert any(ln.startswith(menu.INDENT + "› Sweep this machine") for ln in lines)
+    assert any(ln.startswith(menu.INDENT + "  Preflight a package") for ln in lines)
+    assert any(ln.startswith(menu.INDENT + "↑↓ move") for ln in lines)
+    assert all(len(ln) <= width for ln in lines), "\n".join(lines)
+
+
+def test_menu_help_wraps_in_its_column():
+    _, out = _choose(["quit"], width=80)
+    lines = [ln.rstrip() for ln in out.replace("\r", "\n").splitlines()]
+    row = next(i for i, ln in enumerate(lines) if "Arm my agents" in ln)
+    help_col = lines[row].index("add the tripwire")
+    assert lines[row + 1][:help_col].strip() == ""  # the rest of the help, under its column
+    assert lines[row + 1].strip() == "changes first)"
+
+
+def test_very_narrow_menu_drops_the_indent():
+    _, out = _choose(["quit"], width=40)
+    lines = [ln.rstrip() for ln in out.replace("\r", "\n").splitlines()]
+    assert any(ln.startswith("› Sweep this machine") for ln in lines)
