@@ -1,8 +1,9 @@
 name: Live agents
 
 # Runs real agent CLIs (pinned versions) against a local mock model, in a throwaway HOME, to
-# prove agentprint's hooks block a leaky publish/push inside each agent. No accounts, no real
-# keys, no network to any model provider: see tests/live/. One job per agent, in parallel.
+# prove agentprint's hooks block a leaky publish/push inside each agent, and that an agent
+# running agentprint gets plain text and never waits on the menu. No accounts, no real keys,
+# no network to any model provider: see tests/live/. One job per agent, in parallel.
 
 on:
   pull_request:

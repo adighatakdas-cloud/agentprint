@@ -14,9 +14,12 @@ from tests.live import harness
 from tests.live.runner import (
     AgentCLI,
     assert_blocked,
+    assert_help_not_menu,
     assert_ran,
+    assert_scan_output,
     run,
     shared_cache,
+    shell_probe,
     uninstall_leaves_nothing,
 )
 
@@ -75,3 +78,22 @@ def test_clean_action_runs(tmp_path, action):
     outcome = run(OPENCODE, tmp_path, action, leaky=False)
     assert_ran(outcome, action)
     assert uninstall_leaves_nothing(OPENCODE, outcome.home) == []
+
+
+# What OpenCode's shell shows the commands it runs, as a person starts it from a terminal
+# (harness.PROBE prints names only).
+SHELL = {"markers": ["OPENCODE"], "color": [], "stdin_tty": False, "stdout_tty": False}
+
+
+def test_the_shell_shows_the_agent_marker(tmp_path):
+    assert shell_probe(run(OPENCODE, tmp_path, "probe", leaky=False)) == SHELL
+
+
+def test_scan_output_is_plain_text_for_the_model(tmp_path):
+    outcome = run(OPENCODE, tmp_path, "scan", leaky=False)
+    assert_scan_output(outcome, agent_format=bool(SHELL["markers"]))
+
+
+def test_bare_agentprint_does_not_hang(tmp_path):
+    outcome = run(OPENCODE, tmp_path, "bare", leaky=False)
+    assert_help_not_menu(outcome)
