@@ -16,7 +16,7 @@ Require python3
 Set Shell "bash"
 Set FontSize 20
 Set Width 1260
-Set Height 1000
+Set Height 1100
 Set Padding 24
 Set WindowBar Colorful
 Set TypingSpeed 25ms
@@ -25,13 +25,42 @@ Set WaitTimeout 60s
 Hide
 Type `export DEMO=/tmp/agentprint-demo && python3 demo/build_demo.py "$DEMO" > /dev/null`
 Type ` && cd "$DEMO" && export HOME="$DEMO" && unset GEMINI_CLI_HOME CODEX_HOME CLAUDE_CONFIG_DIR`
+Type ` && unset CI GITHUB_ACTIONS CLAUDECODE GEMINI_CLI CODEX_SANDBOX_NETWORK_DISABLED CODEX_THREAD_ID CURSOR_AGENT OPENCODE COPILOT_CLI HERMES_SESSION_ID ANTIGRAVITY_AGENT`
+Type ` && rm -rf "$DEMO/.agentprint" && export TERM=xterm-256color`
 Enter
 Wait
 Ctrl+L
 Sleep 300ms
 Show
 
-# 1. What AI agents left behind: on this (fake) machine and in the project.
+# 1. First run, as a person sees it: the mascot welcome sweeps in.
+Type "agentprint"
+Sleep 400ms
+Enter
+Sleep 6s
+Wait
+Sleep 3s
+Ctrl+L
+
+# 2. Next run: the arrow-key menu. Move down to Roster and pick it.
+Type "agentprint"
+Sleep 400ms
+Enter
+Sleep 2s
+Down
+Sleep 700ms
+Down
+Sleep 700ms
+Down
+Sleep 700ms
+Down
+Sleep 1s
+Enter
+Wait
+Sleep 3s
+Ctrl+L
+
+# 3. What AI agents left behind: grouped results ending on the BLOCK line.
 Type "agentprint scan --home fake-home my-app"
 Sleep 400ms
 Enter
@@ -39,15 +68,7 @@ Wait
 Sleep 4s
 Ctrl+L
 
-# 2. Wire agentprint into every agent it finds (dry run: shows the changes, writes nothing).
-Type "agentprint install --dry-run --home fake-home"
-Sleep 400ms
-Enter
-Wait
-Sleep 2500ms
-Ctrl+L
-
-# 3. Before `npm publish`: the package would ship .claude/settings.local.json with a key in it.
+# 4. Before `npm publish`: the package would ship .claude/settings.local.json with a key in it.
 #    This is the answer an AI agent gets (from the hook, the MCP tool or this command):
 #    the verdict first, then fix steps it can do itself, then what only the human can do.
 Type "agentprint pack my-app --format agent"

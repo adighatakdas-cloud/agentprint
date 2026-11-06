@@ -75,9 +75,18 @@ def test_build_script_refuses_a_folder_it_did_not_make(tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["notes.txt"]
 
 
-def test_tape_shows_scan_install_then_pack():
+def test_tape_shows_scan_then_pack():
     # ends on the BLOCK verdict an AI agent gets: the strongest last frame
-    assert [c.split()[1] for c in COMMANDS] == ["scan", "install", "pack"]
+    assert [c.split()[1] for c in COMMANDS] == ["scan", "pack"]
+
+
+def test_tape_records_a_first_run_not_an_agent_run():
+    from agentprint.ui.detect import AGENT_MARKERS
+
+    tape = TAPE.read_text(encoding="utf-8")
+    for name in (*AGENT_MARKERS, "CI", "GITHUB_ACTIONS"):
+        assert re.search(rf"\bunset\b[^`\n]*\b{name}\b", tape), name
+    assert ".agentprint" in tape  # the welcome must not count as already seen
 
 
 def _snapshot(root: Path) -> dict[str, bytes]:
