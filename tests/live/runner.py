@@ -6,8 +6,9 @@ the mock), and `run` does the rest: fake HOME, fake npm/git on PATH, a leaky or 
 and what happened (did the fake publish/push run; what the agent sent back to the model).
 
 Actions: "publish" and "push" try the guarded command. "scan", "bare" and "probe" run in a clean
-project, with the agent started as from a person's own terminal (harness.user_terminal):
-`agentprint scan`, bare `agentprint`, or a probe of what the agent's shell looks like.
+project, with the agent started from a color terminal with color forced on
+(harness.color_terminal): `agentprint scan`, bare `agentprint`, or a probe of what the agent's
+shell looks like.
 """
 
 from __future__ import annotations
@@ -103,7 +104,7 @@ def run(agent: AgentCLI, tmp_path: Path, action: str, leaky: bool) -> Outcome:
         installer.install(home, {}, [agent.name], False, lines.append)
         env = harness.agent_env(home, bin_dir, [exe.parent], **agent.env(home, url))
         if action in CLEAN_ACTIONS:
-            env = harness.user_terminal(env)
+            env = harness.color_terminal(env)
         result = subprocess.run(
             agent.argv(exe, prompt),
             cwd=project,

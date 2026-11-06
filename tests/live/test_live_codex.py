@@ -71,13 +71,13 @@ def test_clean_action_runs(tmp_path, action):
     assert uninstall_leaves_nothing(CODEX, outcome.home) == []
 
 
-# What Codex's shell shows the commands it runs, as a person starts it from a terminal
-# (harness.PROBE prints names only).
+# What Codex's shell shows the commands it runs, started from a color terminal with color
+# forced on (harness.color_terminal; harness.PROBE prints names only).
 # Codex sets NO_COLOR itself; CODEX_SANDBOX_NETWORK_DISABLED only under a network-off sandbox,
 # which this run bypasses.
 SHELL = {
     "markers": ["CODEX_THREAD_ID"],
-    "color": ["NO_COLOR"],
+    "color": ["NO_COLOR", "FORCE_COLOR", "GITHUB_ACTIONS"],
     "stdin_tty": False,
     "stdout_tty": False,
 }

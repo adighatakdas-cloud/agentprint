@@ -160,12 +160,13 @@ def agent_env(home: Path, bin_dir: Path, tool_dirs: list[Path], **extra: str) ->
     return env
 
 
-def user_terminal(env: dict[str, str]) -> dict[str, str]:
-    """The agent as a person starts it from their own terminal: no CI, no NO_COLOR, a color
-    TERM. Then what agentprint prints depends only on its own detection (the agent's marker,
-    or a pipe), not on switches the harness set."""
+def color_terminal(env: dict[str, str]) -> dict[str, str]:
+    """The agent started from a color terminal with color forced on: no CI, no NO_COLOR, a
+    color TERM, FORCE_COLOR (some people's shells) and GITHUB_ACTIONS (every Actions job; typer
+    forces color under it). The worst case for escape codes: whatever agentprint prints now
+    depends only on its own detection (the agent's marker, or a pipe)."""
     plain = {k: v for k, v in env.items() if k not in ("CI", "NO_COLOR")}
-    return {**plain, "TERM": "xterm-256color"}
+    return {**plain, "TERM": "xterm-256color", "FORCE_COLOR": "1", "GITHUB_ACTIONS": "true"}
 
 
 def _login_shell_files(home: Path, bin_dir: Path) -> None:

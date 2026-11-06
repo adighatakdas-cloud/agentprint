@@ -88,3 +88,14 @@ def test_help_not_menu():
         assert_help_not_menu(outcome("Usage\n› Sweep this machine\nmenu closed after 60 s idle"))
     with pytest.raises(AssertionError, match="no help"):
         assert_help_not_menu(outcome("agentprint: OK"))
+
+
+def test_color_terminal_forces_color_and_drops_the_switches_that_turn_it_off():
+    env = {"PATH": "/bin", "CI": "1", "NO_COLOR": "1", "TERM": "dumb", "HOME": "/h"}
+    assert harness.color_terminal(env) == {
+        "PATH": "/bin",
+        "HOME": "/h",
+        "TERM": "xterm-256color",
+        "FORCE_COLOR": "1",
+        "GITHUB_ACTIONS": "true",
+    }

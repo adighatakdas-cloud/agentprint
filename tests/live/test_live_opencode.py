@@ -80,9 +80,14 @@ def test_clean_action_runs(tmp_path, action):
     assert uninstall_leaves_nothing(OPENCODE, outcome.home) == []
 
 
-# What OpenCode's shell shows the commands it runs, as a person starts it from a terminal
-# (harness.PROBE prints names only).
-SHELL = {"markers": ["OPENCODE"], "color": [], "stdin_tty": False, "stdout_tty": False}
+# What OpenCode's shell shows the commands it runs, started from a color terminal with color
+# forced on (harness.color_terminal; harness.PROBE prints names only).
+SHELL = {
+    "markers": ["OPENCODE"],
+    "color": ["FORCE_COLOR", "GITHUB_ACTIONS"],
+    "stdin_tty": False,
+    "stdout_tty": False,
+}
 
 
 def test_the_shell_shows_the_agent_marker(tmp_path):
