@@ -36,17 +36,7 @@ mode (stored inside `state.vscdb`); OpenCode plugins (JavaScript); Hermes outbou
 
 ## What AP003 flags in each agent
 
-| Agent | Over-broad permission |
-|---|---|
-| Claude Code | `Bash(*)` and other blanket shell rules, `bypassPermissions` |
-| Codex | approval `never` together with `danger-full-access` |
-| Cursor | `Shell(*)`, `approvalMode: unrestricted` |
-| Gemini CLI | bare `run_shell_command`, a trusted MCP server |
-| Windsurf | a command allow-list entry that approves any command (`bash`, an empty prefix) |
-| OpenCode | `permission` set to `"allow"` for everything or for every shell command |
-| GitHub Copilot | `allow-all`, VS Code `chat.tools.global.autoApprove` |
-| Hermes Agent | `approvals.mode: off`, `hooks_auto_accept` |
-| Antigravity | `always-proceed`, `command(*)` |
+See the [AP003 page](https://adighatakdas-cloud.github.io/agentprint/checks/ap003/).
 
 ## What `install` changes
 

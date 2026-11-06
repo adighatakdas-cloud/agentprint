@@ -76,16 +76,18 @@ backend and may download it: use it on projects you trust, or pass an already-bu
 
 ## What it checks
 
+<!-- checks:start -->
 | ID | What it finds | Severity |
 |---|---|---|
-| AP001 | API key in an agent's history, transcript, paste cache, edit backups or chat database | high |
-| AP002 | API key in an agent settings or allowlist file | critical |
-| AP003 | Over-broad permission: `Bash(*)`, `bypassPermissions`, auto-approve modes ([per agent](https://github.com/adighatakdas-cloud/agentprint/blob/main/docs/supported-agents.md#what-ap003-flags-in-each-agent)) | medium |
-| AP004 | Agent hook that calls the network: `curl`, `wget`, `nc`, `\| sh`, a URL | medium |
-| AP005 | API key written inline in an MCP server entry (env, headers, args, URL) | critical |
-| AP006 | Agent file (e.g. `.claude/settings.local.json`, `.aider.chat.history.md`) would ship in your npm/PyPI package | high, medium or low |
-| AP007 | Personal agent file (e.g. `.claude/settings.local.json`, `CLAUDE.local.md`) in a git repo but not gitignored, or already committed | low |
-| AP008 | Agent history, settings or key store readable by other users on this machine (macOS and Linux) | medium; high for key stores |
+| [AP001](https://adighatakdas-cloud.github.io/agentprint/checks/ap001/) | An API key sits in an agent's history, transcript, paste cache, edit backups or chat database. | high |
+| [AP002](https://adighatakdas-cloud.github.io/agentprint/checks/ap002/) | An API key sits in an agent settings or allowlist file, or inside an agent file in a package or push. | critical |
+| [AP003](https://adighatakdas-cloud.github.io/agentprint/checks/ap003/) | An over-broad permission lets the agent run any command or skip every prompt, such as Bash(*) or bypassPermissions. | medium |
+| [AP004](https://adighatakdas-cloud.github.io/agentprint/checks/ap004/) | An agent hook calls the network, with curl, wget, nc, a pipe into a shell, or a URL. | medium |
+| [AP005](https://adighatakdas-cloud.github.io/agentprint/checks/ap005/) | An API key is written inline in an MCP server entry (env, headers, args, command or URL). | critical |
+| [AP006](https://adighatakdas-cloud.github.io/agentprint/checks/ap006/) | An agent file, such as .claude/settings.local.json, would ship in your npm or PyPI package. | high, medium or low, by file |
+| [AP007](https://adighatakdas-cloud.github.io/agentprint/checks/ap007/) | A personal agent file, such as CLAUDE.local.md, is in a git repo but not gitignored, or is already committed. | low |
+| [AP008](https://adighatakdas-cloud.github.io/agentprint/checks/ap008/) | Agent history, settings or a key store can be read by other users on this machine (macOS and Linux). | medium; high for key stores |
+<!-- checks:end -->
 
 Keys are found by pattern: Anthropic, OpenAI, GitHub, AWS, Stripe, Slack and Google formats,
 plus a generic "secret-looking name = random-looking value" rule. Every finding carries a fix

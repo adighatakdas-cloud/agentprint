@@ -26,7 +26,7 @@ export default defineConfig({
       lastUpdated: false,
       pagination: true,
       // Groups are added as their pages land: Start here, Checks, Reference, Census.
-      sidebar: [],
+      sidebar: [{ label: "Checks", items: [{ autogenerate: { directory: "checks" } }] }],
     }),
   ],
 });
