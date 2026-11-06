@@ -135,3 +135,32 @@ def test_welcome_interrupt_exits_130(tmp_path, monkeypatch):
     r = CliRunner().invoke(app, ["welcome", "--home", str(tmp_path)])
     assert r.exit_code == 130
     assert "Traceback" not in r.output
+
+
+HOSTILE = "evil\x1b]0;pwned\x07\x1b]52;c;ZXZpbA==\x07\x1b[2Jdir"
+
+
+def test_hostile_folder_name_is_cleaned_in_the_header():
+    from agentprint.ui.welcome import header_lines
+
+    text = "\n".join(line.plain for line in header_lines("0.1.0", f"~/{HOSTILE}"))
+    assert "\x1b" not in text and "\x07" not in text
+    assert "pwned" not in text and "ZXZpbA" not in text
+    assert "~/evildir · offline" in text
+
+
+@pytest.mark.skipif(os.name != "posix", reason="ESC in a folder name")
+def test_welcome_in_a_hostile_folder_writes_no_escape_sequence(tmp_path, monkeypatch):
+    folder = tmp_path / HOSTILE
+    folder.mkdir()
+    monkeypatch.chdir(folder)
+    r = CliRunner().invoke(app, ["welcome", "--home", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert "\x1b" not in r.output and "pwned" not in r.output and "ZXZpbA" not in r.output
+
+
+def test_menu_header_cleans_the_folder_name():
+    from agentprint.ui import menu
+
+    text = "\n".join(line.plain for line in menu.intro_lines([], HOSTILE))
+    assert "\x1b" not in text and "pwned" not in text

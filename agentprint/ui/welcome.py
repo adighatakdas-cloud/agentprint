@@ -9,6 +9,7 @@ from rich.text import Text
 
 from agentprint.install import STATE_DIR
 from agentprint.roster import AgentState, summary_line
+from agentprint.sanitize import clean
 from agentprint.ui.mascot import SMALL, half_blocks
 
 INDENT = " " * 10
@@ -21,6 +22,9 @@ TAGLINE = "The security check your AI coding agent runs for you."
 
 
 def header_lines(version: str, cwd: str, light: bool = False) -> list[Text]:
+    """Mascot, name, tagline and folder. The folder name is cleaned here, for every caller: a
+    folder can be named with escape sequences (window titles, clipboard writes)."""
+    cwd = clean(cwd)
     mascot = half_blocks(SMALL, light=light)
     first = mascot[0].copy()
     first.rstrip()
