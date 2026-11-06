@@ -25,8 +25,24 @@ export default defineConfig({
       plugins: [starlightLinksValidator()],
       lastUpdated: false,
       pagination: true,
-      // Groups are added as their pages land: Start here, Checks, Reference, Census.
-      sidebar: [{ label: "Checks", items: [{ autogenerate: { directory: "checks" } }] }],
+      sidebar: [
+        {
+          label: "Start here",
+          items: [{ slug: "get-started" }, { slug: "inside-your-agent" }, { slug: "ci" }],
+        },
+        { label: "Checks", items: [{ autogenerate: { directory: "checks" } }] },
+        {
+          label: "Reference",
+          items: [
+            { slug: "agents" },
+            { slug: "how-it-works" },
+            { slug: "privacy" },
+            { slug: "comparison" },
+            { slug: "glossary" },
+          ],
+        },
+        { label: "Census", items: [{ slug: "census" }, { slug: "census/pilot-2026-11" }] },
+      ],
     }),
   ],
 });

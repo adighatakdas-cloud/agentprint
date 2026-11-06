@@ -8,7 +8,7 @@ labels: scan-round
 <!-- Organizer: fill in the windows from `python -m tools.ecoscan window npm|pypi`,
      keep the shard count at 10 or change the checklist to match, then delete this comment. -->
 
-**Volunteers: read [docs/VOLUNTEER_SCAN.md](https://github.com/adighatakdas-cloud/agentprint/blob/main/docs/VOLUNTEER_SCAN.md) first.**
+**Volunteers: read [the census page](https://adighatakdas-cloud.github.io/agentprint/census/) first.**
 Never use or test a key you find. Never post private findings here.
 
 ## Round

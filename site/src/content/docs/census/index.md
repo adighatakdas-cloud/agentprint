@@ -1,4 +1,9 @@
-# Volunteer scan: help measure agent-file leaks on npm and PyPI
+---
+title: Census
+description: Help measure how often AI agent files and keys ship in new npm and PyPI packages, by scanning a small shard.
+---
+
+A census is a count: how many new npm and PyPI packages ship agent files, and how many of those hold keys. This page explains how to take part. Read the first round's results in the [pilot, November 2026](/agentprint/census/pilot-2026-11/).
 
 AI coding agents (Claude Code, Codex, Cursor, Gemini CLI and others) write files into project
 folders: settings, chat logs, instructions. Some of those files get published inside npm and
@@ -137,4 +142,4 @@ If there are no findings, there is nothing to send.
    and lists missing or unfinished shards.
 
 How the scan works in detail (enumeration, file lists, what counts as an agent file):
-[tools/ecoscan/README.md](../tools/ecoscan/README.md).
+[tools/ecoscan/README.md](https://github.com/adighatakdas-cloud/agentprint/blob/main/tools/ecoscan/README.md).

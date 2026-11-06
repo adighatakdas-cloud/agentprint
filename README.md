@@ -30,7 +30,7 @@ then, [run it from source](#from-source).
   [reported](https://bdtechtalks.com/2026/04/27/claude-code-api-token-leak/) that of about 46,500
   npm packages it scanned, 428 shipped `.claude/settings.local.json`, and 33 files in 30
   packages held credentials. Conventional secret scanning tends to miss these files.
-- **We measured it too.** Our [pilot scan](https://github.com/adighatakdas-cloud/agentprint/blob/main/docs/pilot-2026-11.md)
+- **We measured it too.** Our [pilot scan](https://adighatakdas-cloud.github.io/agentprint/census/pilot-2026-11/)
   of the newest 1,976 npm packages and 1,997 PyPI releases (5 November 2026, counts only) found
   agent files in 2.1% of npm packages and 9.2% of PyPI releases. 1 npm and 6 PyPI packages
   shipped files that should never ship. No key-shaped strings turned up inside those agent files.
@@ -165,7 +165,7 @@ account, no real key, a throwaway home folder) and checks that a leaky `npm publ
 is stopped with the reason reaching the model, and a clean one goes ahead. **Docs-verified:**
 built from the agent's documentation and real folders, not driven end to end (desktop apps with
 no headless mode, or an account needed). Versions and file paths:
-[docs/supported-agents.md](https://github.com/adighatakdas-cloud/agentprint/blob/main/docs/supported-agents.md).
+[the agents page](https://adighatakdas-cloud.github.io/agentprint/agents/).
 
 ## Use it in CI
 
@@ -245,7 +245,7 @@ ruff. A thin npm wrapper runs the same Python tool.
 
 We measure how often agent files, and keys inside them, ship in newly published packages, and
 tell maintainers privately first. Volunteers each scan a small shard and post counts only:
-see [docs/VOLUNTEER_SCAN.md](https://github.com/adighatakdas-cloud/agentprint/blob/main/docs/VOLUNTEER_SCAN.md).
+see [the census page](https://adighatakdas-cloud.github.io/agentprint/census/).
 
 ## Contributing
 

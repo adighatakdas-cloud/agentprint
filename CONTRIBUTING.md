@@ -64,7 +64,7 @@ synthetic. Note in the agent module where and when you checked the layout (for e
 2. Add one line to `ALL_AGENTS` in `agentprint/agents/__init__.py`. Every check picks it up.
 3. Add fake files for it in `tests/conftest.py` and a `tests/test_agent_<agent>.py` that checks
    which files are found, what `read_config` returns, and that a scan reports the planted keys.
-4. Add the agent to the tables in `README.md` and `docs/supported-agents.md`.
+4. Add the agent to the tables in `README.md`, `site/src/content/docs/agents.md` and `site/check-notes/ap003.md`.
 
 **Only package rules?** If agentprint doesn't read the agent's home folder yet, add one
 `_agent(...)` entry to `agentprint/agents/scan_only.py` instead.

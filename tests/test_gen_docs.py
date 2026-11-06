@@ -100,7 +100,7 @@ def test_check_notes_have_required_sections():
         assert headings == ["What it finds", "Why it matters", "How to fix", "Limits"], doc.id
 
 
-def test_supported_agents_points_at_ap003_page():
-    text = (gen_docs.ROOT / "docs/supported-agents.md").read_text()
+def test_agents_page_points_at_ap003_page():
+    text = (gen_docs.ROOT / "site/src/content/docs/agents.md").read_text()
     assert "| Over-broad permission |" not in text
-    assert f"{gen_docs.DOCS_URL}checks/ap003/" in text
+    assert "/agentprint/checks/ap003/" in text
