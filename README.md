@@ -54,8 +54,8 @@ npx agentprint-cli
 > **Pre-release:** the `uvx` and `npx` commands work after the first release. Until then, see [Get started](https://adighatakdas-cloud.github.io/agentprint/get-started/) to run from source.
 
 ```bash
-uvx agentprint scan      # sweep this machine and folder; prints what it finds, keys masked
-uvx agentprint install   # arm every agent it finds with the tripwire
+uvx agentprint scan      # sweep this machine and folder (keys masked)
+uvx agentprint install   # arm each agent it finds with the tripwire
 uvx agentprint pack      # preflight: what your package would publish
 ```
 
@@ -69,7 +69,7 @@ including running from a clone of this repo.
 |---|---|---|
 | [AP001](https://adighatakdas-cloud.github.io/agentprint/checks/ap001/) | An API key sits in an agent's history, transcript, paste cache, edit backups or chat database. | high |
 | [AP002](https://adighatakdas-cloud.github.io/agentprint/checks/ap002/) | An API key sits in an agent settings or allowlist file, or inside an agent file in a package or push. | critical |
-| [AP003](https://adighatakdas-cloud.github.io/agentprint/checks/ap003/) | An over-broad permission lets the agent run any command or skip every prompt, such as Bash(*) or bypassPermissions. | medium |
+| [AP003](https://adighatakdas-cloud.github.io/agentprint/checks/ap003/) | An over-broad permission lets the agent run any command or skip every prompt, such as Bash(\*) or bypassPermissions. | medium |
 | [AP004](https://adighatakdas-cloud.github.io/agentprint/checks/ap004/) | An agent hook calls the network, with curl, wget, nc, a pipe into a shell, or a URL. | medium |
 | [AP005](https://adighatakdas-cloud.github.io/agentprint/checks/ap005/) | An API key is written inline in an MCP server entry (env, headers, args, command or URL). | critical |
 | [AP006](https://adighatakdas-cloud.github.io/agentprint/checks/ap006/) | An agent file, such as .claude/settings.local.json, would ship in your npm or PyPI package. | high, medium or low, by file |
@@ -102,3 +102,5 @@ Details: [Inside your agent](https://adighatakdas-cloud.github.io/agentprint/ins
 [Contributing](https://github.com/adighatakdas-cloud/agentprint/blob/main/CONTRIBUTING.md) ·
 [Security](https://github.com/adighatakdas-cloud/agentprint/blob/main/SECURITY.md) ·
 [License (MIT)](https://github.com/adighatakdas-cloud/agentprint/blob/main/LICENSE)
+
+Built with Python 3.11+, uv, typer, rich, the MCP Python SDK, pytest and ruff; docs with Astro Starlight.

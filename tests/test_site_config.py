@@ -80,7 +80,16 @@ def test_text_contrast_both_modes():
     assert dark["--ap-ground"].upper() == "#050B14"
     assert light["--ap-ground"].upper() == "#F3F8FB"
     for mode, tok in (("dark", dark), ("light", light)):
-        for name in ("--ap-text", "--ap-dim", "--ap-strong", "--ap-amber"):
+        for name in (
+            "--ap-text",
+            "--ap-dim",
+            "--ap-strong",
+            "--ap-amber",
+            "--ap-red",
+            "--ap-high",
+            "--ap-medium",
+            "--ap-low",
+        ):
             r = _ratio(tok[name], tok["--ap-ground"])
             assert r >= 4.5, f"{mode} {name} {tok[name]} on ground is {r:.2f}:1"
 
@@ -121,6 +130,11 @@ def test_docs_workflow_is_pinned_and_deploys_only_when_public():
     cond = re.search(r"^\s+if:\s*(.+)$", deploy, re.MULTILINE).group(1)
     assert "!github.event.repository.private" in cond
     assert "refs/heads/main" in cond
+    assert "github.event_name == 'push'" in cond
+    assert "github.event_name == 'workflow_dispatch'" in cond
+    top_concurrency = text.split("\njobs:")[0].split("concurrency:")[1]
+    assert "github.ref" in top_concurrency and "pages" not in top_concurrency
+    assert re.search(r"concurrency:\n\s+group: pages\n\s+cancel-in-progress: false", deploy)
     top = text.split("\njobs:")[0]
     assert re.search(r"^permissions:\n  contents: read\n", top, re.MULTILINE)
     assert "pages: write" not in top and "id-token" not in top

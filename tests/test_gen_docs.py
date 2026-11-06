@@ -112,3 +112,32 @@ def test_agents_page_points_at_ap003_page():
     text = (gen_docs.ROOT / "site/src/content/docs/agents.md").read_text()
     assert "| Over-broad permission |" not in text
     assert "/agentprint/checks/ap003/" in text
+
+
+def test_cell_escapes_markdown_significant_characters():
+    assert gen_docs._cell("a|b <x> *.env and _k_ `c`") == r"a\|b \<x> \*.env and \_k\_ \`c\`"
+
+
+def test_check_pages_edit_the_note_not_the_generated_file():
+    for doc in gen_docs.check_docs():
+        page = gen_docs.check_page(doc)
+        assert f"/site/check-notes/{doc.slug}.md\n" in page.split("---\n")[1]
+    index = gen_docs.checks_index(gen_docs.check_docs())
+    assert "editUrl: false" in index and "label: All checks" in index
+
+
+def test_one_masked_example_stub_everywhere():
+    from pathlib import Path
+
+    docs = Path(__file__).resolve().parents[1] / "site" / "src" / "content" / "docs"
+    stubs = set()
+    for path in docs.rglob("*.md*"):
+        stubs |= set(re.findall(r"sk-a…\(len \d+\)", path.read_text(encoding="utf-8")))
+    assert stubs == {"sk-a…(len 105)"}
+
+
+def test_landing_title_is_not_duplicated():
+    from pathlib import Path
+
+    index = Path(__file__).resolve().parents[1] / "site" / "src" / "content" / "docs" / "index.mdx"
+    assert "agentprint: the security check" in index.read_text(encoding="utf-8").split("---")[1]

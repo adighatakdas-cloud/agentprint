@@ -1,5 +1,7 @@
 ---
 title: Checks
+sidebar: { label: All checks }
+editUrl: false
 description: What agentprint looks for, and how to fix each print.
 ---
 
@@ -11,7 +13,7 @@ Each check has an ID. Open one to see what it finds, why it matters and how to f
 |---|---|---|
 | [AP001](/agentprint/checks/ap001/) | An API key sits in an agent's history, transcript, paste cache, edit backups or chat database. | high |
 | [AP002](/agentprint/checks/ap002/) | An API key sits in an agent settings or allowlist file, or inside an agent file in a package or push. | critical |
-| [AP003](/agentprint/checks/ap003/) | An over-broad permission lets the agent run any command or skip every prompt, such as Bash(*) or bypassPermissions. | medium |
+| [AP003](/agentprint/checks/ap003/) | An over-broad permission lets the agent run any command or skip every prompt, such as Bash(\*) or bypassPermissions. | medium |
 | [AP004](/agentprint/checks/ap004/) | An agent hook calls the network, with curl, wget, nc, a pipe into a shell, or a URL. | medium |
 | [AP005](/agentprint/checks/ap005/) | An API key is written inline in an MCP server entry (env, headers, args, command or URL). | critical |
 | [AP006](/agentprint/checks/ap006/) | An agent file, such as .claude/settings.local.json, would ship in your npm or PyPI package. | high, medium or low, by file |

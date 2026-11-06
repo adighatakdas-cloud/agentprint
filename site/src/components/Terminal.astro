@@ -46,8 +46,15 @@ const pixels = (html: string) =>
 const row = (html: string, cls = "") => `<span class="ap-ln${cls}">${html}</span>`;
 const command = (text: string) =>
   row(`<span class="ap-prompt">$ </span><span class="ap-typed">${text}</span>`, " ap-cmd");
-const block = (name: string, rows: string[]) =>
-  `<span class="ap-blk ap-blk-${name}">${rows.join("\n")}</span>`;
+const block = (name: string, rows: string[], sep = "\n") =>
+  `<span class="ap-blk ap-blk-${name}">${rows.join(sep)}</span>`;
+// The brief wraps, so each of its lines is a block with a hanging indent: wrapped text lines up
+// under the first word, after the leading spaces and a "- " bullet.
+const hanging = (html: string) => {
+  const text = html.replace(/<[^>]*>/g, "");
+  const indent = (text.match(/^ */)?.[0].length ?? 0) + (/^ *- /.test(text) ? 2 : 0);
+  return indent ? `<span class="ap-ln" style="--ap-ind:${indent}ch">${html}</span>` : row(html);
+};
 
 const screen = [
   block("welcome", lines(pixels(welcome)).map((l) => row(l))),
@@ -57,8 +64,8 @@ const screen = [
   block("agent", [
     command(PACK),
     row("what your AI agent reads", " ap-caption"),
-    ...lines(agent).map((l) => row(l)),
-  ]),
+    ...lines(agent).map(hanging),
+  ], ""),
 ].join("\n");
 ---
 

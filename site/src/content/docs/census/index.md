@@ -1,5 +1,7 @@
 ---
 title: Census
+sidebar:
+  label: Take part
 description: Help measure how often AI agent files and keys ship in new npm and PyPI packages, by scanning a small shard.
 ---
 
@@ -29,7 +31,7 @@ For each package in your shard, `ecoscan`:
 
 Nothing is installed or run. Packages are read in memory and never unpacked to disk. No
 found key is ever used, tested, or sent anywhere. Every key-shaped string is cut to its
-first 4 characters and its length (`sk-a…(len 108)`) the moment it is found.
+first 4 characters and its length (`sk-a…(len 105)`) the moment it is found.
 
 The scan is polite by design. Request rates are fixed (at most 4 a second per site, 1.6 for
 jsDelivr) and cannot be raised; it backs off when a site is busy and honors `Retry-After`.

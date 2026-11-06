@@ -192,6 +192,12 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* One block per line (no newline between them) with a hanging indent from --ap-ind. */
+.ap-blk-agent .ap-ln {
+  display: block;
+  padding-left: var(--ap-ind, 0);
+  text-indent: calc(-1 * var(--ap-ind, 0));
+}
 /* Mascot cells: a box exactly one column wide and one line tall, painted instead of the glyph
    (which stays in the text for copying). Boxes snap to whole pixels, so rows and columns meet
    with no gap or seam at any font size. */

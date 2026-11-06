@@ -25,7 +25,7 @@ All of it produces one thing, a list of findings. They are already masked. A per
 
 ## Safety decisions
 
-- **Keys are masked at match time.** A full key exists only inside the check that found it, while that check reads the line. The finding stores the first 4 characters and the length (`sk-a…(len 108)`). No output format can print a full key, because no finding holds one.
+- **Keys are masked at match time.** A full key exists only inside the check that found it, while that check reads the line. The finding stores the first 4 characters and the length (`sk-a…(len 105)`). No output format can print a full key, because no finding holds one.
 - **Keys are never used.** Detection is by pattern only. agentprint never sends a key anywhere, not even to check whether it still works. `scan` makes no network calls.
 - **Hooks fail open.** A security tool that breaks your agent gets uninstalled. So any error lets the command run, with a warning. When agentprint cannot tell what a publish would upload, it says "could not check", never "OK".
 - **Scanned names are untrusted.** File names inside a package are chosen by whoever built it. Before any of that text is shown, agentprint removes terminal escape sequences, control characters and invisible Unicode, and caps the length. In output for an AI agent, scanned text is a quoted JSON string under a note that says it is data, not instructions.

@@ -14,6 +14,7 @@ import argparse
 import html
 import io
 import json
+import re
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -34,6 +35,7 @@ from agentprint.ui.welcome import welcome_lines
 
 ROOT = Path(__file__).resolve().parents[1]
 SITE = ROOT / "site"
+EDIT_BASE = "https://github.com/adighatakdas-cloud/agentprint/edit/main/site/check-notes"
 SNAPSHOTS = ROOT / "tests" / "data" / "snapshots"
 DOCS_URL = "https://adighatakdas-cloud.github.io/agentprint/"
 README_START = "<!-- checks:start -->"
@@ -98,7 +100,8 @@ def check_docs() -> list[CheckDoc]:
 
 
 def _cell(text: str) -> str:
-    return text.replace("|", "\\|")
+    """Escape what Markdown would read as markup in a table cell: `|`, `<`, `*`, `_`, backtick."""
+    return re.sub(r"([|<*_`])", r"\\\1", text)
 
 
 def check_page(doc: CheckDoc) -> str:
@@ -107,6 +110,7 @@ def check_page(doc: CheckDoc) -> str:
         f"title: {json.dumps(f'{doc.id}: {doc.title}', ensure_ascii=False)}\n"
         f"description: {json.dumps(doc.summary, ensure_ascii=False)}\n"
         f"sidebar: {{ label: {json.dumps(f'{doc.id} {doc.title}', ensure_ascii=False)} }}\n"
+        f"editUrl: {EDIT_BASE}/{doc.slug}.md\n"
         "---\n\n"
     )
     glance = (
@@ -128,6 +132,8 @@ def _table(docs: list[CheckDoc], link: str, summary_header: str) -> str:
 def checks_index(docs: list[CheckDoc]) -> str:
     return (
         "---\ntitle: Checks\n"
+        "sidebar: { label: All checks }\n"
+        "editUrl: false\n"
         "description: What agentprint looks for, and how to fix each print.\n---\n\n"
         f"{GENERATED}\n\n"
         "Each check has an ID. Open one to see what it finds, why it matters and how to fix it.\n\n"
