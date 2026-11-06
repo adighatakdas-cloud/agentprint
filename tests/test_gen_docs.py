@@ -6,6 +6,8 @@ import pytest
 
 from agentprint.checks import SCAN_CHECKS
 from agentprint.checks import ap006_package_leak as ap006
+from agentprint.integrations import ALL_INTEGRATIONS
+from agentprint.roster import SHORT_NAMES
 from agentprint.secrets import find_secrets
 from tools import gen_docs
 
@@ -42,6 +44,12 @@ def test_checks_json_feeds_the_landing_page():
     assert [d["id"] for d in data] == IDS
     assert data[2]["slug"] == "ap003"
     assert set(data[0]) == {"id", "title", "severity", "summary", "slug"}
+
+
+def test_agents_json_is_the_roster_in_roster_order():
+    data = json.loads((SITE / "src/data/agents.json").read_text())
+    assert data == [label for name, label in SHORT_NAMES.items() if name in ALL_INTEGRATIONS]
+    assert len(data) == len(ALL_INTEGRATIONS)
 
 
 def test_readme_table_links_each_check_page():

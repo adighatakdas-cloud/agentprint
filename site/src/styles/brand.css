@@ -69,6 +69,21 @@
   --sl-color-hairline: var(--ap-border);
 }
 
+/* A terminal stays dark in both themes and uses the terminal text and dim from the spec:
+   the generated fragments carry the CLI's own colors for a dark ground. */
+[data-ap-terminal] {
+  --ap-ground: #050b14;
+  --ap-panel: #0a1422;
+  --ap-border: #1a2d44;
+  --ap-text: #d5dee8;
+  --ap-strong: #f3f6fa;
+  --ap-dim: #6f8397;
+  --ap-faint: #1e2e42;
+  --ap-amber: #ffb020;
+  --ap-red: #ff3b4e;
+  color-scheme: dark;
+}
+
 .sl-markdown-content a:not(:where(.not-content *)) {
   color: var(--ap-amber);
 }

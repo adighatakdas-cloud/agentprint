@@ -21,6 +21,8 @@ export default defineConfig({
       social: [{ icon: "github", label: "GitHub", href: repo }],
       editLink: { baseUrl: `${repo}/edit/main/site/` },
       customCss: ["./src/styles/fonts.css", "./src/styles/brand.css"],
+      // The landing page sets `hero`; this draws it (pitch + terminal) instead of the stock hero.
+      components: { Hero: "./src/components/Hero.astro" },
       expressiveCode: { themes: [darkTheme, lightTheme] },
       plugins: [starlightLinksValidator()],
       lastUpdated: false,

@@ -24,6 +24,7 @@ from rich.console import Console
 import agentprint
 from agentprint.checks import SCAN_CHECKS
 from agentprint.checks import ap006_package_leak as ap006
+from agentprint.integrations import ALL_INTEGRATIONS
 from agentprint.models import Finding, Severity
 from agentprint.report import FailOn
 from agentprint.roster import SHORT_NAMES, AgentState
@@ -209,6 +210,14 @@ def _agent() -> str:
     return f'<span style="color: #D5DEE8">{html.escape(text)}</span>'
 
 
+def agent_names() -> list[str]:
+    """The landing page's "Works inside" line: every integration, by its roster name, in roster
+    order (an integration with no short name keeps its own label and goes last)."""
+    order = list(SHORT_NAMES)
+    names = sorted(ALL_INTEGRATIONS, key=lambda n: order.index(n) if n in order else len(order))
+    return [SHORT_NAMES.get(n, ALL_INTEGRATIONS[n].label) for n in names]
+
+
 def terminal_fragments() -> dict[str, str]:
     return {"welcome": _welcome(), "scan": _scan(), "agent": _agent()}
 
@@ -224,6 +233,9 @@ def outputs() -> dict[Path, str]:
     ]
     files[SITE / "src" / "data" / "checks.json"] = (
         json.dumps(summaries, indent=2, ensure_ascii=False) + "\n"
+    )
+    files[SITE / "src" / "data" / "agents.json"] = (
+        json.dumps(agent_names(), indent=2, ensure_ascii=False) + "\n"
     )
     for name, fragment in terminal_fragments().items():
         files[SITE / "src" / "data" / "terminal" / f"{name}.html"] = fragment

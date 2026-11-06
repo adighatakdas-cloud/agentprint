@@ -1,0 +1,25 @@
+---
+// The landing hero. It fills Starlight's Hero slot (astro.config.mjs), which renders only on a
+// page with `hero` in its frontmatter: the landing page. Its words live in index.mdx.
+import { Code } from "@astrojs/starlight/components";
+import Terminal from "./Terminal.astro";
+
+const { title, tagline } = Astro.locals.starlightRoute.entry.data.hero ?? {};
+const install = "uvx agentprint\nnpx agentprint-cli";
+---
+
+<div class="ap-hero">
+  <div class="ap-hero-copy">
+    <p class="ap-eyebrow">offline · open source · MIT</p>
+    <h1 id="_top" data-page-title>{title}</h1>
+    {tagline && <p class="ap-lede">{tagline}</p>}
+    <div class="ap-install">
+      <Code code={install} lang="sh" frame="none" />
+    </div>
+    <div class="ap-actions">
+      <a class="ap-btn ap-btn-primary" href="/agentprint/get-started/">Get started</a>
+      <a class="ap-btn" href="https://github.com/adighatakdas-cloud/agentprint">GitHub</a>
+    </div>
+  </div>
+  <Terminal />
+</div>
