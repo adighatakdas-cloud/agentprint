@@ -29,3 +29,7 @@ scans/
 # Copied into npm/ by the release workflow, never committed
 npm/README.md
 npm/LICENSE
+
+# Docs site
+node_modules/
+site/.astro/

@@ -1,0 +1,19 @@
+{
+  "name": "agentprint-docs",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "packageManager": "pnpm@10.34.5",
+  "scripts": {
+    "dev": "ASTRO_TELEMETRY_DISABLED=1 astro dev",
+    "build": "ASTRO_TELEMETRY_DISABLED=1 astro build",
+    "preview": "ASTRO_TELEMETRY_DISABLED=1 astro preview",
+    "audit-dist": "node scripts/audit-dist.mjs"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "0.42.9",
+    "@fontsource/ibm-plex-sans": "5.3.0",
+    "astro": "7.4.7",
+    "starlight-links-validator": "0.27.0"
+  }
+}
