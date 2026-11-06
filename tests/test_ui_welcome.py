@@ -220,3 +220,16 @@ def test_sweep_on_a_tiny_terminal_loses_no_words(monkeypatch):
     shown = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", buf.getvalue())
     for word in ("telemetry", "Copilot", "install", "ships"):
         assert word in shown
+
+
+@pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="needs a non-root POSIX user")
+def test_unreadable_state_folder_counts_as_seen(tmp_path):
+    """An unreadable ~/.agentprint can't be checked or written: no traceback, and no welcome
+    on every run either."""
+    folder = tmp_path / ".agentprint"
+    folder.mkdir()
+    folder.chmod(0o000)
+    try:
+        assert seen_welcome(tmp_path) is True
+    finally:
+        folder.chmod(0o700)

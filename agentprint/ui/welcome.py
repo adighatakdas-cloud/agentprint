@@ -95,7 +95,12 @@ def welcome_lines(
 
 
 def seen_welcome(home: Path) -> bool:
-    return (home / STATE_DIR / "welcomed").exists()
+    """True once the welcome was shown. A folder that can't be read counts as seen: the mark
+    couldn't be written there either, so the welcome would otherwise play on every run."""
+    try:
+        return (home / STATE_DIR / "welcomed").exists()
+    except OSError:
+        return True
 
 
 def mark_welcome(home: Path) -> None:
