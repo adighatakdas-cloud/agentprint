@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .install import State
 from .integrations import ALL_INTEGRATIONS
+from .report import _plural
 
 
 @dataclass(frozen=True)
@@ -51,7 +52,7 @@ def summary_line(states: list[AgentState]) -> str:
     if not found:
         return "no AI agents found on this machine"
     armed = sum(s.armed for s in found)
-    line = f"{armed} of {len(found)} agents armed"
+    line = f"{armed} of {_plural(len(found), 'agent')} armed"
     unarmed = [s.label for s in found if not s.armed]
     if unarmed:
         line += f" · {', '.join(unarmed)} {'is' if len(unarmed) == 1 else 'are'} not"

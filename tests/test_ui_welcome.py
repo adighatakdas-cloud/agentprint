@@ -19,7 +19,7 @@ SPEC = """\
 ██▄▀▄██   The security check your AI coding agent runs for you.
 ▀▄███▄▀   ~/work/my-app · offline · no telemetry
 
-          2 of 2 agents armed · Cursor, Gemini CLI are not
+          2 of 4 agents armed · Cursor, Gemini CLI are not
 
           › agentprint scan      sweep this machine for prints
           › agentprint pack      preflight a package before it ships
@@ -42,8 +42,7 @@ def _final():
 
 
 def test_welcome_text_matches_spec():
-    expected = SPEC.replace("2 of 2 agents", "2 of 4 agents")
-    assert _final() == expected
+    assert _final() == SPEC
 
 
 def test_armed_word_is_amber():

@@ -31,6 +31,8 @@ def test_summary_line_variants():
     assert (
         summary_line([_s("a", armed=True), _s("Cursor")]) == "1 of 2 agents armed · Cursor is not"
     )
+    assert summary_line([_s("Claude Code")]) == "0 of 1 agent armed · Claude Code is not"
+    assert summary_line([_s("a", armed=True)]) == "1 of 1 agent armed"
     assert summary_line([_s("a", found=False)]) == "no AI agents found on this machine"
     assert summary_line([]) == "no AI agents found on this machine"
 
