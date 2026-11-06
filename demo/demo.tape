@@ -26,7 +26,7 @@ Hide
 Type `export DEMO=/tmp/agentprint-demo && python3 demo/build_demo.py "$DEMO" > /dev/null`
 Type ` && cd "$DEMO" && export HOME="$DEMO" && unset GEMINI_CLI_HOME CODEX_HOME CLAUDE_CONFIG_DIR`
 Type ` && unset CI GITHUB_ACTIONS CLAUDECODE GEMINI_CLI CODEX_SANDBOX_NETWORK_DISABLED CODEX_THREAD_ID CURSOR_AGENT OPENCODE COPILOT_CLI HERMES_SESSION_ID ANTIGRAVITY_AGENT`
-Type ` && rm -rf "$DEMO/.agentprint" && export TERM=xterm-256color`
+Type ` && rm -rf "$DEMO/.agentprint" && mkdir -p "$DEMO/.claude" && export TERM=xterm-256color`
 Enter
 Wait
 Ctrl+L
