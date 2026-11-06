@@ -27,11 +27,11 @@ def header_lines(version: str, cwd: str, light: bool = False) -> list[Text]:
     lines = [first]
     name = Text()
     name.append("agent", style="ap.strong")
-    name.append("print", style="bold ap.amber")
+    name.append("print", style="ap.brand")
     name.append(f" {version}", style="ap.dim")
     beside = [
         name,
-        Text(TAGLINE, style="ap.strong"),
+        Text(TAGLINE),
         Text(f"{cwd} · offline · no telemetry", style="ap.dim"),
     ]
     for art, text in zip(mascot[1:], beside, strict=True):
@@ -68,7 +68,7 @@ def welcome_lines(
         line = Text(INDENT)
         line.append("› ", style="ap.dim")
         line.append("agentprint ")
-        line.append(f"{cmd:<10}".rstrip(), style="bold")
+        line.append(cmd, style="ap.strong")
         line.append(" " * (10 - len(cmd)))
         line.append(desc, style="ap.dim")
         lines.append(line)

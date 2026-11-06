@@ -43,6 +43,9 @@ def theme(env: Mapping[str, str]) -> Theme:
         "ap.faint": hx["faint"],
         "ap.clear": hx["clear"],
         "ap.strong": "bold",
+        # rich resolves a theme name only when it is the whole style string ("bold ap.amber"
+        # silently renders unstyled), so every compound style gets a name of its own here.
+        "ap.brand": f"bold {hx['amber']}",
         "ap.block": f"bold {_INK} on {hx['red']}",
         "ap.clear_label": f"bold {_INK} on {hx['clear']}",
     }
