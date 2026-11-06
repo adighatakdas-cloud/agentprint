@@ -371,14 +371,15 @@ def select(names: list[str] | None, home: Path, env: Mapping[str, str]) -> list[
 
 def install(
     home: Path, env: Mapping[str, str], names: list[str] | None, dry_run: bool, echo: Echo
-) -> None:
+) -> int:
+    """Arm the agents found; returns how many files changed (or would, in a dry run)."""
     agentprint = resolve_agentprint()
     launch = Launch(hook=str(home / STATE_DIR / "bin" / HOOK_MARK), mcp=(*agentprint, "mcp"))
     found = select(names, home, env)
     echo(f"agentprint install{' (dry run: nothing is written)' if dry_run else ''}")
     if not found:
         echo("No supported AI agent found under " + str(home) + ". Nothing to do.")
-        return
+        return 0
     echo("Agents found: " + ", ".join(i.label for i in found))
     echo("Agents will start agentprint with: " + " ".join(agentprint))
     if len(agentprint) == 2 and agentprint[1].startswith("agentprint=="):
@@ -418,6 +419,7 @@ def install(
     for integration in found:
         for note in integration.notes:
             echo(f"Note for {integration.label}: {note}")
+    return changed
 
 
 def _install_file(
@@ -495,7 +497,8 @@ def _marker_reverts(path: Path) -> list[Edit]:
 
 def uninstall(
     home: Path, env: Mapping[str, str], names: list[str] | None, dry_run: bool, echo: Echo
-) -> None:
+) -> int:
+    """Disarm the agents; returns how many files changed (or would, in a dry run)."""
     launch = Launch(hook=str(home / STATE_DIR / "bin" / HOOK_MARK), mcp=("agentprint", "mcp"))
     chosen = list(names) if names else list(ALL_INTEGRATIONS)
     state = State.load(home)
@@ -529,7 +532,7 @@ def uninstall(
         exact = exact and result in {"same", "restored", "removed"}
     if dry_run:
         echo(f"\n{changed} file(s) would change. Run without --dry-run to apply.")
-        return
+        return changed
     if last and exact:
         shutil.rmtree(home / STATE_DIR / "backups", ignore_errors=True)
         state.path.unlink(missing_ok=True)
@@ -544,6 +547,7 @@ def uninstall(
         if (home / STATE_DIR / "backups").exists():
             echo(f"Backups kept in {_shown(home, home / STATE_DIR / 'backups')}")
     echo(f"\nDone: {changed} file(s) changed." if changed else "\nNothing to remove.")
+    return changed
 
 
 def _rmdir_if_empty(directory: Path) -> bool:

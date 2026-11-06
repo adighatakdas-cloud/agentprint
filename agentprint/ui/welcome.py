@@ -42,7 +42,8 @@ def header_lines(version: str, cwd: str, light: bool = False) -> list[Text]:
     return lines
 
 
-def _summary(states: list[AgentState]) -> Text:
+def summary_text(states: list[AgentState]) -> Text:
+    """The roster summary, indented, with "armed" in amber and the unarmed names dim."""
     summary = summary_line(states)
     line = Text(INDENT)
     head, sep, tail = summary.partition("armed")
@@ -62,7 +63,7 @@ def welcome_lines(
     states: list[AgentState], version: str, cwd: str, light: bool = False
 ) -> list[Text]:
     lines = header_lines(version, cwd, light)
-    lines += [Text(""), _summary(states), Text("")]
+    lines += [Text(""), summary_text(states), Text("")]
     for cmd, desc in COMMANDS:
         line = Text(INDENT)
         line.append("› ", style="ap.dim")

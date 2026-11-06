@@ -52,3 +52,15 @@ def test_no_color_keeps_menu():
 @pytest.mark.parametrize("env", [{"CI": "1"}, {"TERM": "dumb"}, {"CLAUDECODE": "1"}])
 def test_menu_off_for_ci_dumb_and_agents(env):
     assert not is_interactive(env, FakeTTY(), FakeTTY())
+
+
+@pytest.mark.parametrize("missing", ["stdin", "stdout"])
+def test_closed_or_missing_stream_is_not_a_terminal(missing):
+    """`agentprint <&-` leaves sys.stdin as None; a closed file raises on isatty()."""
+    closed = io.StringIO()
+    closed.close()  # isatty() now raises ValueError
+    for gone in (None, closed):
+        streams = {"stdin": FakeTTY(), "stdout": FakeTTY(), missing: gone}
+        assert not is_interactive({}, streams["stdin"], streams["stdout"])
+    assert not should_animate({}, None)
+    assert not should_animate({}, closed)

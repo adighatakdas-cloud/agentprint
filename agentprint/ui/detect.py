@@ -48,9 +48,17 @@ def _dumb(env: Mapping[str, str]) -> bool:
     return env.get("TERM") == "dumb"
 
 
-def should_animate(env: Mapping[str, str], stdout: TextIO, plain: bool = False) -> bool:
+def _tty(stream: TextIO | None) -> bool:
+    """A real terminal. `agentprint <&-` leaves sys.stdin as None; a closed file raises."""
+    try:
+        return stream is not None and stream.isatty()
+    except (ValueError, OSError):
+        return False
+
+
+def should_animate(env: Mapping[str, str], stdout: TextIO | None, plain: bool = False) -> bool:
     return (
-        stdout.isatty()
+        _tty(stdout)
         and not plain
         and not env.get("CI")
         and not env.get("NO_COLOR")
@@ -59,11 +67,7 @@ def should_animate(env: Mapping[str, str], stdout: TextIO, plain: bool = False) 
     )
 
 
-def is_interactive(env: Mapping[str, str], stdin: TextIO, stdout: TextIO) -> bool:
+def is_interactive(env: Mapping[str, str], stdin: TextIO | None, stdout: TextIO | None) -> bool:
     return (
-        stdin.isatty()
-        and stdout.isatty()
-        and not env.get("CI")
-        and not _dumb(env)
-        and not is_agent(env)
+        _tty(stdin) and _tty(stdout) and not env.get("CI") and not _dumb(env) and not is_agent(env)
     )

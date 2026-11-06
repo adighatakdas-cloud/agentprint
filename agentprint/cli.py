@@ -23,14 +23,13 @@ from .pack import PackError, collect
 from .report import FailOn, _short, exit_code, print_table, to_agent, to_json
 from .sarif import to_sarif
 from .scanner import scan as run_scan
-from .ui.detect import is_agent, should_animate
+from .ui.detect import is_agent, is_interactive, should_animate
 from .ui.theme import console as themed_console
 
 AGENT_NAMES = ", ".join(ALL_INTEGRATIONS)  # help text stays in step with the integrations
 
 app = typer.Typer(
     add_completion=False,
-    no_args_is_help=True,
     help="Audit what AI coding agents leave behind: keys in history files, and agent "
     "files leaking into npm/PyPI packages. Offline. Secrets are always redacted.",
 )
@@ -59,14 +58,87 @@ def _version(value: bool) -> None:
         raise typer.Exit()
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def main(
+    ctx: typer.Context,
     version: Annotated[
         bool,
         typer.Option("--version", callback=_version, is_eager=True, help="Show version and exit."),
     ] = False,
+    plain: PlainOpt = False,
 ) -> None:
     """agentprint."""
+    if ctx.invoked_subcommand is not None:
+        return
+    if not is_interactive(os.environ, sys.stdin, sys.stdout):
+        # Pipes, CI and AI agents: the help text, and never a wait for a key.
+        typer.echo(ctx.get_help())
+        raise typer.Exit(0)
+    raise typer.Exit(_bare(ctx, plain))
+
+
+def _bare(ctx: typer.Context, plain: bool) -> int:
+    """Bare `agentprint` for a person at a terminal: the welcome once, then the menu."""
+    from contextlib import nullcontext
+
+    from .roster import roster
+    from .ui import menu
+    from .ui.theme import is_light
+    from .ui.welcome import seen_welcome
+
+    home, env = Path.home(), dict(os.environ)
+    try:
+        if not seen_welcome(home):
+            _show_welcome(home, env, plain)
+            return 0
+        # The menu draws itself in place, so even --plain needs a terminal console (no color).
+        out = themed_console(env, **({"no_color": True} if plain else {}))
+        keys = menu.posix_reader(sys.stdin) if os.name == "posix" else nullcontext(None)
+        with keys as read_key:
+            action = menu.choose(
+                out,
+                read_key,
+                menu.idle_seconds(env),
+                roster(home, env),
+                _short(os.getcwd()),
+                is_light(env),
+            )
+        return _run_action(ctx, action, plain)
+    except KeyboardInterrupt:
+        return 130
+    except typer.Abort:  # Ctrl-C (or Ctrl-D) at a y/N question
+        typer.echo("", err=True)
+        return 130
+
+
+def _run_action(ctx: typer.Context, action: str | None, plain: bool) -> int:
+    """Run what was picked in the menu, through the same code as the command itself."""
+    if action == "scan":
+        return run_scan_command(Path("."), None, False, None, FailOn.high, plain)
+    if action == "pack":
+        return run_pack_command(Path("."), None, FailOn.high, plain)
+    if action in ("install", "uninstall"):
+        return _arm(action == "install")
+    if action == "status":
+        return run_status_command(None, None, plain)
+    if action == "help":
+        typer.echo(ctx.get_help())
+    return 0
+
+
+def _arm(arm: bool) -> int:
+    """Menu install/uninstall: show what would change, ask, and only change it on a yes."""
+    from .install import install as run_install
+    from .install import uninstall as run_uninstall
+
+    run = run_install if arm else run_uninstall
+    home_dir, env, names = _setup_args(None, None)  # your home and env, as the commands use
+    if not run(home_dir, env, names, True, typer.echo):
+        return 0  # nothing would change, so nothing to ask
+    typer.echo("")
+    if typer.confirm("Arm these agents?" if arm else "Disarm these agents?", default=False):
+        run(home_dir, env, names, False, typer.echo)
+    return 0
 
 
 F = TypeVar("F", bound=StrEnum)
@@ -324,18 +396,8 @@ class StatusFormat(StrEnum):
     agent = "agent"
 
 
-@app.command()
-def status(
-    home: Annotated[
-        Path | None, typer.Option(help="Home directory to check. Default: yours.")
-    ] = None,
-    fmt: Annotated[
-        StatusFormat | None,
-        typer.Option("--format", "-f", help="Output format. Default: agent inside an AI agent."),
-    ] = None,
-    plain: Annotated[bool, typer.Option("--plain", help="No colors.")] = False,
-) -> None:
-    """Print the roster: which AI agents are here, and which have agentprint armed."""
+def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool) -> int:
+    """`agentprint status`, returning the exit code (the menu runs it too)."""
     import json as json_lib
 
     from rich.text import Text
@@ -349,7 +411,7 @@ def status(
         home_dir, env = home.absolute(), {}
     else:
         typer.secho(f"error: {home} is not a directory", err=True, fg=typer.colors.RED)
-        raise typer.Exit(2)
+        return 2
     fmt = _auto_format(fmt, StatusFormat.agent, StatusFormat.table)
     states = roster(home_dir, env)
     if fmt is StatusFormat.json:
@@ -376,6 +438,22 @@ def status(
         missing = [clean(s.label) for s in states if not s.found]
         if missing:
             out.print(Text("not found: " + ", ".join(missing), style="ap.dim"))
+    return 0
+
+
+@app.command()
+def status(
+    home: Annotated[
+        Path | None, typer.Option(help="Home directory to check. Default: yours.")
+    ] = None,
+    fmt: Annotated[
+        StatusFormat | None,
+        typer.Option("--format", "-f", help="Output format. Default: agent inside an AI agent."),
+    ] = None,
+    plain: Annotated[bool, typer.Option("--plain", help="No colors.")] = False,
+) -> None:
+    """Print the roster: which AI agents are here, and which have agentprint armed."""
+    raise typer.Exit(run_status_command(home, fmt, plain))
 
 
 @app.command()
@@ -386,11 +464,6 @@ def welcome(
     plain: PlainOpt = False,
 ) -> None:
     """Show the welcome screen again."""
-    from .roster import roster
-    from .ui.sweep import play
-    from .ui.theme import is_light
-    from .ui.welcome import mark_welcome, welcome_lines
-
     if home is None:
         home_dir, env = Path.home(), dict(os.environ)
     elif home.is_dir():
@@ -398,13 +471,23 @@ def welcome(
     else:
         typer.secho(f"error: {home} is not a directory", err=True, fg=typer.colors.RED)
         raise typer.Exit(2)
+    try:
+        _show_welcome(home_dir, env, plain)
+    except KeyboardInterrupt:
+        raise typer.Exit(130) from None
+
+
+def _show_welcome(home_dir: Path, env: dict[str, str], plain: bool) -> None:
+    """Play the welcome, then remember it was seen. Ctrl-C raises KeyboardInterrupt."""
+    from .roster import roster
+    from .ui import sweep
+    from .ui.theme import is_light
+    from .ui.welcome import mark_welcome, welcome_lines
+
     theme_env = env or dict(os.environ)
     lines = welcome_lines(
         roster(home_dir, env), __version__, _short(os.getcwd()), light=is_light(theme_env)
     )
     out = themed_console(theme_env, plain=plain)
-    try:
-        play(out, lines, should_animate(theme_env, sys.stdout, plain))
-    except KeyboardInterrupt:
-        raise typer.Exit(130) from None
+    sweep.play(out, lines, should_animate(theme_env, sys.stdout, plain))
     mark_welcome(home_dir)
