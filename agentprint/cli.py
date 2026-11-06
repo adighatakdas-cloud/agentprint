@@ -437,6 +437,7 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
 
     from .roster import roster, summary_line
     from .sanitize import clean
+    from .ui.layout import hang
 
     if home is None:
         home_dir, env = Path.home(), dict(os.environ)
@@ -461,7 +462,8 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
     else:
         out = themed_console(env or dict(os.environ), plain=plain)
         out.print(Text(f"agentprint {__version__} · roster", style="ap.dim"))
-        out.print(Text(summary_line(states)))
+        for line in hang("", summary_line(states), out.width):
+            out.print(line)
         width = max([14, *(len(clean(s.label)) + 2 for s in states if s.found)])
         for s in states:
             if s.found:
@@ -470,7 +472,9 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
                 out.print(line)
         missing = [clean(s.label) for s in states if not s.found]
         if missing:
-            out.print(Text("not found: " + ", ".join(missing), style="ap.dim"))
+            body = Text(", ".join(missing), style="ap.dim")
+            for line in hang(Text("not found: ", style="ap.dim"), body, out.width):
+                out.print(line)
     return 0
 
 

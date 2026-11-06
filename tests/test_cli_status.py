@@ -82,3 +82,13 @@ def test_status_table_aligns_with_longest_label(tmp_path):
     rows = [ln for ln in r.output.splitlines() if ln.endswith(("armed", "unarmed"))]
     assert any(ln.startswith("Antigravity") for ln in rows)
     assert len({ln.rindex(" ") for ln in rows}) == 1
+
+
+def test_status_table_wraps_under_its_labels(tmp_path, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "50")
+    r = runner.invoke(app, ["status", "--home", str(_home(tmp_path)), "--format", "table"])
+    lines = r.output.splitlines()
+    assert all(len(ln) <= 50 for ln in lines), r.output
+    start = next(i for i, ln in enumerate(lines) if ln.startswith("not found: "))
+    assert len(lines) > start + 1
+    assert all(ln.startswith(" " * 11) and ln[11] != " " for ln in lines[start + 1 :])
