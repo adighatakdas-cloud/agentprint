@@ -92,19 +92,16 @@ def strip_jsonc(text: str) -> str:
     return "".join(out)
 
 
-@lru_cache(maxsize=256)
-def _load_cached(path: str, _mtime_ns: int, _size: int) -> Any:
-    try:
-        raw = Path(path).read_bytes()
-    except OSError:
-        return None
+def parse(raw: bytes, name: str) -> Any:
+    """Parsed content of a config file's bytes, or None. `name` (the file's name or path) picks
+    the format by its ending, exactly as `load` does: TOML, YAML, else JSON or JSONC."""
     if b"\x00" in raw:
         return None
     text = raw.decode("utf-8", errors="replace")
     try:
-        if path.endswith(".toml"):
+        if name.endswith(".toml"):
             return tomllib.loads(text)
-        if path.endswith((".yaml", ".yml")):
+        if name.endswith((".yaml", ".yml")):
             return _load_yaml(text)
         try:
             return json.loads(text)
@@ -112,6 +109,15 @@ def _load_cached(path: str, _mtime_ns: int, _size: int) -> Any:
             return json.loads(strip_jsonc(text))
     except Exception:  # any parse failure (incl. RecursionError) means "no structure"
         return None
+
+
+@lru_cache(maxsize=256)
+def _load_cached(path: str, _mtime_ns: int, _size: int) -> Any:
+    try:
+        raw = Path(path).read_bytes()
+    except OSError:
+        return None
+    return parse(raw, path)
 
 
 def load(path: Path) -> Any:
@@ -126,6 +132,12 @@ def load(path: Path) -> Any:
     except OSError:
         return None
     return _load_cached(str(path), st.st_mtime_ns, st.st_size)
+
+
+def forget() -> None:
+    """Drop cached parses. Call after editing files in place: an edit that keeps the size can
+    land within the same mtime tick, and the cache would then return the old content."""
+    _load_cached.cache_clear()
 
 
 def find_line(path: Path, needle: str) -> int | None:

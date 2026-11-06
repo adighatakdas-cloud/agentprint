@@ -31,7 +31,6 @@ on stderr: a broken agentprint never blocks, and never answers with Cursor-break
 
 from __future__ import annotations
 
-import contextlib
 import difflib
 import json
 import os
@@ -60,6 +59,9 @@ from .integrations.base import (
     YamlEdit,
     expanded_size,
 )
+from .safewrite import atomic_write as _atomic_write
+from .safewrite import private_dir as _private
+from .safewrite import real as _real
 from .sanitize import clean
 from .secrets import find_secrets, redact
 
@@ -136,6 +138,8 @@ exit 0
 
 # ---- state, backups, safe writes --------------------------------------------------------------
 
+# _atomic_write, _real and _private come from safewrite (shared with `agentprint fix`).
+
 
 @dataclass
 class State:
@@ -156,11 +160,6 @@ class State:
         data = {"version": 1, "files": self.files, "dirs": self.dirs}
         self.dirs.extend(d for d in _mkdirs(self.path.parent) if d not in self.dirs)
         _atomic_write(self.path, json.dumps(data, indent=2) + "\n", 0o600)
-
-
-def _real(path: Path) -> Path:
-    """Edit through symlinks (dotfile setups) instead of replacing the link."""
-    return path.resolve() if path.is_symlink() else path
 
 
 def _read(path: Path) -> str | None:
@@ -191,26 +190,6 @@ def _read_only(path: Path) -> bool:
         return not _real(path).stat().st_mode & stat.S_IWUSR
     except FileNotFoundError:
         return False
-
-
-def _atomic_write(path: Path, text: str, mode: int | None = None) -> None:
-    """Write via a temp file that is private (0600) from its first byte, then give it the
-    original file's mode (or `mode`, or 0600 for a new file) and move it into place."""
-    target = _real(path)
-    tmp = target.with_name(f".{target.name}.agentprint-tmp")
-    with contextlib.suppress(FileNotFoundError):
-        tmp.unlink()  # a leftover from an interrupted run
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(text.encode("utf-8"))
-        final = stat.S_IMODE(target.stat().st_mode) if target.exists() else (mode or 0o600)
-        os.chmod(tmp, final)
-        os.replace(tmp, target)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            tmp.unlink()
-        raise
 
 
 def _backup_path(home: Path, path: Path) -> Path:
@@ -491,11 +470,6 @@ def _write_with_backup(
     _atomic_write(path, new, mode)
     entry["agent"] = agent
     state.files[key] = entry
-
-
-def _private(directory: Path) -> None:
-    for d in [directory, *[p for p in directory.rglob("*") if p.is_dir()]]:
-        d.chmod(stat.S_IRWXU)
 
 
 # ---- uninstall --------------------------------------------------------------------------------
