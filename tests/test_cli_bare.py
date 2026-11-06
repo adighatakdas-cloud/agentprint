@@ -75,8 +75,8 @@ def human(monkeypatch, tmp_path):
 def _pick(monkeypatch, action):
     seen = {}
 
-    def choose(console, reader, idle, states=(), cwd=".", light=False):
-        seen.update(reader=reader, idle=idle, states=states, cwd=cwd)
+    def choose(console, reader, idle, states=(), cwd=".", light=False, numbered=False):
+        seen.update(reader=reader, idle=idle, states=states, cwd=cwd, numbered=numbered)
         if isinstance(action, BaseException):
             raise action
         return action

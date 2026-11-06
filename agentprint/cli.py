@@ -121,8 +121,6 @@ def _top_plain(ctx: typer.Context, plain: bool) -> bool:
 
 def _bare(ctx: typer.Context, plain: bool) -> int:
     """Bare `agentprint` for a person at a terminal: the welcome once, then the menu."""
-    from contextlib import nullcontext
-
     from .roster import roster
     from .ui import menu
     from .ui.theme import is_light
@@ -135,7 +133,7 @@ def _bare(ctx: typer.Context, plain: bool) -> int:
             return 0
         # The menu draws itself in place, so even --plain needs a terminal console (no color).
         out = themed_console(env, **({"no_color": True} if plain else {}))
-        keys = menu.posix_reader(sys.stdin) if os.name == "posix" else nullcontext(None)
+        keys, numbered = menu.key_reader(sys.stdin)
         with keys as read_key:
             action = menu.choose(
                 out,
@@ -144,6 +142,7 @@ def _bare(ctx: typer.Context, plain: bool) -> int:
                 roster(home, env),
                 _short(os.getcwd()),
                 is_light(env),
+                numbered=numbered,
             )
         return _run_action(ctx, action, plain)
     except KeyboardInterrupt:

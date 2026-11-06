@@ -3,6 +3,7 @@
 import io
 import os
 import re
+import sys
 
 import pytest
 
@@ -147,31 +148,118 @@ def test_idle_seconds(value, expected):
     assert menu.idle_seconds(env) == expected
 
 
-def test_numbered_prompt_without_a_key_reader(monkeypatch):
-    """Windows has no termios: a numbered list and input()."""
+def test_numbered_list_on_windows_picks_with_a_digit():
+    """Windows: a numbered list (type 1-7), read one key at a time with the same idle limit."""
     buf, con = _console()
-    monkeypatch.setattr("builtins.input", lambda prompt="": "3")
-    assert menu.choose(con, None, 60.0, STATES, "~") == "install"
+    assert menu.choose(con, _reader(["3"]), 60.0, STATES, "~", numbered=True) == "install"
     out = _plain(buf)
     assert "agentprint scan · pack · install · status · --help" in out
     assert "1  Sweep this machine" in out and "7  Quit" in out
+    assert "press 1-7 · q quit" in out
+    assert out.rstrip().endswith("› Arm my agents")
 
 
-@pytest.mark.parametrize("answer", ["", "x", "0", "8", "7"])
-def test_numbered_prompt_other_answers_mean_quit(monkeypatch, answer):
+@pytest.mark.parametrize("keys", [["enter"], ["quit"], ["7"], ["up", "down", "quit"]])
+def test_numbered_list_other_keys_mean_quit(keys):
+    _, con = _console()
+    assert menu.choose(con, _reader(keys), 60.0, numbered=True) is None
+
+
+def test_numbered_list_closes_after_idle():
     buf, con = _console()
-    monkeypatch.setattr("builtins.input", lambda prompt="": answer)
-    assert menu.choose(con, None, 60.0) is None
+    waits = []
+
+    def reader(timeout):
+        waits.append(timeout)
+        return "down" if len(waits) == 1 else None  # arrows mean nothing in the list
+
+    assert menu.choose(con, reader, 1.0, numbered=True) is None
+    assert waits == [1.0, 1.0]
+    assert "menu closed after 1 s idle · run agentprint again" in _plain(buf)
 
 
-def test_numbered_prompt_eof_means_quit(monkeypatch):
-    buf, con = _console()
+# ---- keys on Windows (msvcrt), with a stand-in module -----------------------------------------
 
-    def eof(prompt=""):
-        raise EOFError
 
-    monkeypatch.setattr("builtins.input", eof)
-    assert menu.choose(con, None, 60.0) is None
+class _FakeMsvcrt:
+    def __init__(self, typed: str) -> None:
+        self.keys = list(typed)
+
+    def kbhit(self) -> bool:
+        return bool(self.keys)
+
+    def getwch(self) -> str:
+        return self.keys.pop(0)
+
+
+@pytest.fixture
+def msvcrt(monkeypatch):
+    def install(typed: str) -> _FakeMsvcrt:
+        fake = _FakeMsvcrt(typed)
+        monkeypatch.setitem(sys.modules, "msvcrt", fake)
+        return fake
+
+    return install
+
+
+@pytest.mark.parametrize(
+    ("typed", "keys"),
+    [
+        ("\xe0H", ["up"]),
+        ("\xe0P", ["down"]),
+        ("\x00H", ["up"]),
+        ("\x00P", ["down"]),
+        ("k", ["up"]),
+        ("j", ["down"]),
+        ("\r", ["enter"]),
+        ("q", ["quit"]),
+        ("Q", ["quit"]),
+        ("\x1b", ["quit"]),
+        ("\x1a", ["quit"]),  # Ctrl-Z
+        ("5", ["5"]),
+        ("\xe0P\xe0P\r", ["down", "down", "enter"]),
+        ("x9\xe0K\xe0M\x00;3", ["3"]),  # other keys, left/right and F1 are skipped
+        ("\xe0H5", ["up", "5"]),  # an arrow's second half is never read as a key
+    ],
+)
+def test_windows_reader_parses_keys(msvcrt, typed, keys):
+    msvcrt(typed)
+    with menu.windows_reader() as read_key:
+        assert [read_key(1.0) for _ in keys] == keys
+        assert read_key(0.05) is None
+
+
+def test_windows_reader_times_out_without_a_key(msvcrt):
+    import time
+
+    msvcrt("")
+    with menu.windows_reader() as read_key:
+        started = time.monotonic()
+        assert read_key(0.1) is None
+        assert 0.09 <= time.monotonic() - started < 1.0
+
+
+def test_windows_reader_ctrl_c_interrupts(msvcrt):
+    msvcrt("\x03")
+    with pytest.raises(KeyboardInterrupt), menu.windows_reader() as read_key:
+        read_key(1.0)
+
+
+def test_windows_reader_drops_unread_keys(msvcrt):
+    fake = msvcrt("5xyz")
+    with menu.windows_reader() as read_key:
+        assert read_key(1.0) == "5"
+    assert fake.keys == []  # typed but never read: not left for the next prompt
+
+
+def test_key_reader_per_system(msvcrt):
+    msvcrt("2")
+    readers, numbered = menu.key_reader(None, "nt")
+    assert numbered is True
+    with readers as read_key:
+        assert read_key(1.0) == "2"
+    _, numbered = menu.key_reader(None, "posix")
+    assert numbered is False
 
 
 # ---- the real key reader, on a pseudo-terminal ------------------------------------------------

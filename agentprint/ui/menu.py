@@ -4,6 +4,9 @@ Only a person at a real terminal gets here (`detect.is_interactive`); AI agents,
 get the help text instead. Two safety nets for an AI agent nobody recognised: the commands are
 printed above the menu, so reading the screen is enough to learn them, and the menu closes by
 itself after AGENTPRINT_MENU_IDLE seconds (default 60) without a key, so nothing waits for good.
+
+Keys come from termios on macOS and Linux (the arrow-key menu) and from msvcrt on Windows (a
+numbered list: press 1-7). Both read against the same idle deadline.
 """
 
 from __future__ import annotations
@@ -13,8 +16,8 @@ import os
 import select
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
-from typing import Protocol
+from contextlib import AbstractContextManager, contextmanager
+from typing import Any, Protocol
 
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
@@ -110,20 +113,21 @@ def view(current: int, width: int) -> RenderableType:
 
 def choose(
     console: Console,
-    reader: KeyReader | None,
+    reader: KeyReader,
     idle: float,
     states: Sequence[AgentState] = (),
     cwd: str = ".",
     light: bool = False,
+    numbered: bool = False,
 ) -> str | None:
     """Print the intro, then let the person pick a row. None: quit, or `idle` s without a key.
 
-    Without a key reader (Windows), a numbered list and input() instead.
+    numbered (Windows): a numbered list, picked with a digit, instead of the arrow-key menu.
     """
     for line in intro_lines(states, cwd, light, console.width):
         console.print(line)
-    if reader is None:
-        return _numbered(console)
+    if numbered:
+        return _numbered(console, reader, idle)
     current, picked, timed_out = 0, None, False
     live = Live(view(current, console.width), console=console, auto_refresh=False, transient=True)
     # Not `with Live(...)`: a Ctrl-C that lands while the first frame is drawn would skip
@@ -149,12 +153,15 @@ def choose(
     finally:
         live.stop()
     if timed_out:
-        console.print(
-            Text(f"{INDENT}menu closed after {idle:.0f} s idle · run agentprint again"),
-            style="ap.dim",
-        )
-        return None
+        return _closed(console, idle)
     return _picked(console, picked)
+
+
+def _closed(console: Console, idle: float) -> None:
+    console.print(
+        Text(f"{INDENT}menu closed after {idle:.0f} s idle · run agentprint again"),
+        style="ap.dim",
+    )
 
 
 def _picked(console: Console, index: int | None) -> str | None:
@@ -169,20 +176,34 @@ def _picked(console: Console, index: int | None) -> str | None:
     return action
 
 
-def _numbered(console: Console) -> str | None:
+def _numbered(console: Console, reader: KeyReader, idle: float) -> str | None:
+    """The numbered list: a digit picks, q, Esc or Enter quits, other keys are ignored."""
     for n, (_, label, help_text) in enumerate(ITEMS, 1):
-        line = Text(f"{INDENT}{n}  ")
-        line.append(label.ljust(LABEL_WIDTH), style="ap.strong")
-        if help_text:
-            line.append(f"  {help_text}", style="ap.dim")
-        console.print(line)
-    try:
-        answer = input(f"\n{INDENT}pick 1-{len(ITEMS)}: ").strip()
-    except EOFError:
-        return None
-    if answer.isdigit() and 1 <= int(answer) <= len(ITEMS):
-        return _picked(console, int(answer) - 1)
-    return None
+        lead = Text(f"{INDENT}{n}  ")
+        lead.append(label.ljust(LABEL_WIDTH), style="ap.strong")
+        lead.append("  ")
+        for line in hang(lead, Text(help_text, style="ap.dim"), console.width):
+            line.rstrip()
+            console.print(line)
+    console.print()
+    console.print(Text(f"{INDENT}press 1-{len(ITEMS)} · q quit", style="ap.dim"))
+    while True:
+        key = reader(idle)
+        if key is None:
+            return _closed(console, idle)
+        if key in ("quit", "enter"):
+            return None
+        if key.isdigit() and 1 <= int(key) <= len(ITEMS):
+            return _picked(console, int(key) - 1)
+
+
+def key_reader(
+    stream: Any, system: str = os.name
+) -> tuple[AbstractContextManager[KeyReader], bool]:
+    """This system's key reader, and whether the menu is the numbered list (Windows)."""
+    if system == "posix":
+        return posix_reader(stream), False
+    return windows_reader(), True
 
 
 # ---- keys on macOS and Linux ------------------------------------------------------------------
@@ -280,3 +301,57 @@ def posix_reader(stream: _Fileno) -> Iterator[KeyReader]:
         yield _key_reader(fd)
     finally:
         termios.tcsetattr(fd, termios.TCSAFLUSH, saved)
+
+
+# ---- keys on Windows --------------------------------------------------------------------------
+
+POLL = 0.02  # how often the Windows reader looks for a key while it waits
+_WIN_KEYS = {
+    "\r": "enter",
+    "\n": "enter",
+    "q": "quit",
+    "Q": "quit",
+    "\x1b": "quit",  # Esc
+    "\x04": "quit",  # Ctrl-D
+    "\x1a": "quit",  # Ctrl-Z
+    "k": "up",
+    "j": "down",
+}
+_WIN_ARROWS = {"H": "up", "P": "down"}
+
+
+def _win_key(ch: str, second: Callable[[], str]) -> str | None:
+    """One key from msvcrt.getwch(). Arrows and function keys arrive as two characters: a
+    prefix ("\\xe0" or "\\x00"), then their code, which `second` reads."""
+    if ch in ("\xe0", "\x00"):
+        return _WIN_ARROWS.get(second())
+    if ch == "\x03":  # Ctrl-C, when the console hands it over as a key
+        raise KeyboardInterrupt
+    if len(ch) == 1 and "1" <= ch <= str(len(ITEMS)):
+        return ch
+    return _WIN_KEYS.get(ch)
+
+
+@contextmanager
+def windows_reader() -> Iterator[KeyReader]:
+    """Single keys from the Windows console for the life of the `with` block, each read
+    waiting at most `timeout` seconds. Keys typed but never read are dropped on the way out."""
+    import msvcrt  # Windows only: imported here so this module still imports elsewhere
+
+    def read_key(timeout: float) -> str | None:
+        deadline = time.monotonic() + timeout
+        while True:
+            while msvcrt.kbhit():
+                key = _win_key(msvcrt.getwch(), msvcrt.getwch)
+                if key is not None:
+                    return key
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            time.sleep(min(POLL, remaining))
+
+    try:
+        yield read_key
+    finally:
+        while msvcrt.kbhit():
+            msvcrt.getwch()
