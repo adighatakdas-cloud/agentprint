@@ -134,3 +134,29 @@ def test_spinner_never_on_the_ai_path_or_with_plain(fake_home, fake_project, spi
         _scan(fake_home, fake_project, "--format", fmt)
     _scan(fake_home, fake_project, "--plain")
     assert spinner_calls == []
+
+
+AGENT_FORCED = {"CLAUDECODE": "1", "FORCE_COLOR": "1", "TTY_COMPATIBLE": "1"}
+
+
+def test_agent_marker_means_no_color_in_the_table_layout(fake_home, fake_project):
+    """Any marker: no color, even when an AI agent asks for the person's layout."""
+    result = _scan(fake_home, fake_project, "--format", "table", env=AGENT_FORCED)
+    assert "BLOCK" in result.output and "\x1b[" not in result.output
+
+
+def test_agent_marker_means_no_color_in_status(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    args = ["status", "--home", str(tmp_path), "--format", "table"]
+    result = CliRunner(env=AGENT_FORCED).invoke(app, args)
+    assert result.exit_code == 0 and "agent armed" in result.output
+    assert "\x1b[" not in result.output
+
+
+def test_agent_marker_welcome_is_plain_and_not_remembered(tmp_path):
+    from agentprint.ui.welcome import seen_welcome
+
+    result = CliRunner(env=AGENT_FORCED).invoke(app, ["welcome", "--home", str(tmp_path)])
+    assert result.exit_code == 0 and "The security check" in result.output
+    assert "\x1b[" not in result.output
+    assert not seen_welcome(tmp_path)  # an AI agent is not a person seeing the welcome

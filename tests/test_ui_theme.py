@@ -57,3 +57,11 @@ def test_plain_console_writes_no_escape_codes(monkeypatch):
     c = console({}, file=out, plain=True)
     c.print(Text.assemble(("strong", "ap.strong"), (" BLOCK ", "ap.block")))
     assert out.getvalue() == "strong BLOCK \n"
+
+
+def test_agent_console_writes_no_escape_codes(monkeypatch):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    out = io.StringIO()
+    c = console({"CLAUDECODE": "1"}, file=out)
+    c.print(Text.assemble(("strong", "ap.strong"), (" BLOCK ", "ap.block")))
+    assert out.getvalue() == "strong BLOCK \n"

@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.theme import Theme
 
 from agentprint.models import Severity
+from agentprint.ui.detect import is_agent
 
 HEX: dict[str, str] = {
     "amber": "#FFB020",
@@ -60,7 +61,7 @@ def console(
     plain: bool = False,
     **kwargs: Any,
 ) -> Console:
-    if plain:  # --plain: no color, and no bold or reverse codes either
+    if plain or is_agent(env):  # --plain or an AI agent: no color, no bold or reverse codes
         kwargs.setdefault("no_color", True)
         kwargs.setdefault("force_terminal", False)
     # Otherwise no_color stays unset, so rich honours a NO_COLOR environment variable.

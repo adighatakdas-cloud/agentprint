@@ -511,7 +511,8 @@ def welcome(
 
 
 def _show_welcome(home_dir: Path, env: dict[str, str], plain: bool) -> None:
-    """Play the welcome, then remember it was seen. Ctrl-C raises KeyboardInterrupt."""
+    """Play the welcome, then remember a person saw it (an AI agent is not a person seeing
+    it). Ctrl-C raises KeyboardInterrupt."""
     from .roster import roster
     from .ui import sweep
     from .ui.theme import is_light
@@ -527,4 +528,5 @@ def _show_welcome(home_dir: Path, env: dict[str, str], plain: bool) -> None:
         width=out.width,
     )
     sweep.play(out, lines, should_animate(theme_env, sys.stdout, plain))
-    mark_welcome(home_dir)
+    if not is_agent(os.environ):
+        mark_welcome(home_dir)
