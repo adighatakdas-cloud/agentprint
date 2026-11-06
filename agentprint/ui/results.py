@@ -51,10 +51,12 @@ def _verdict(findings: list[Finding], fail_on: FailOn) -> Text:
         counts = " · ".join(f"{n} {name}" for name, n in summary(findings).items() if n)
         return Text.assemble((" BLOCK ", "ap.block"), f"  {prints} · {counts} · keys masked")
     line = Text.assemble((" CLEAR ", "ap.clear_label"))
-    if findings:
-        line.append(f"  {prints} below --fail-on {fail_on} · keys masked")
-    else:
+    if not findings:
         line.append("  no prints · keys masked")
+    elif fail_on is FailOn.none:
+        line.append(f"  {prints} · --fail-on none (report only) · keys masked")
+    else:
+        line.append(f"  {prints} · none at or above --fail-on {fail_on} · keys masked")
     return line
 
 

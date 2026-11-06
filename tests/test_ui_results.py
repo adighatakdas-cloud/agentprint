@@ -91,8 +91,16 @@ def test_clear_when_no_findings():
 def test_below_threshold_is_clear_with_count():
     low = [f for f in _three() if f.severity is Severity.HIGH]
     text = _text(low, fail_on=FailOn.critical)
-    assert text.splitlines()[-1] == " CLEAR   1 print below --fail-on critical · keys masked"
+    assert text.splitlines()[-1] == (
+        " CLEAR   1 print · none at or above --fail-on critical · keys masked"
+    )
     assert "AP001" in text  # the prints are still listed, with their fix
+
+
+def test_fail_on_none_says_report_only():
+    text = _text(_three(), fail_on=FailOn.none)
+    assert text.splitlines()[-1] == " CLEAR   3 prints · --fail-on none (report only) · keys masked"
+    assert _text([], fail_on=FailOn.none).splitlines()[-1] == " CLEAR   no prints · keys masked"
 
 
 def test_block_counts_only_nonzero_severities():
