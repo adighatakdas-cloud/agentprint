@@ -33,7 +33,11 @@ from agentprint.ui.welcome import INDENT, header_lines, summary_lines
 # (action, label, help): the action is what the CLI runs for that row.
 ITEMS: tuple[tuple[str, str, str], ...] = (
     ("scan", "Sweep this machine", "find prints AI agents left in history and settings"),
-    ("pack", "Preflight a package", "check what this folder would publish"),
+    (
+        "pack",
+        "Preflight a package",
+        "check what this folder would publish (asks before a Python build)",
+    ),
     ("install", "Arm my agents", "add the tripwire to every agent (shows the changes first)"),
     ("uninstall", "Disarm my agents", "remove what install added"),
     ("status", "Roster", "which agents are armed"),

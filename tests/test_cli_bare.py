@@ -126,6 +126,46 @@ def test_menu_pack_runs_the_pack_command(human, monkeypatch):
     assert r.exit_code == 0
 
 
+@pytest.mark.parametrize("marker", ["pyproject.toml", "setup.py"])
+def test_menu_pack_of_a_python_project_asks_first_and_no_is_the_default(
+    human, monkeypatch, tmp_path, marker
+):
+    """Preflighting a Python project runs `uv build` (its build code, maybe a download)."""
+    (tmp_path / marker).write_text("")
+    calls = []
+    monkeypatch.setattr(cli, "run_pack_command", lambda *a: calls.append(a) or 1)
+    _pick(monkeypatch, "pack")
+    r = runner.invoke(app, [], input="\n")
+    assert r.exit_code == 0, r.output
+    assert calls == []
+    assert "uv build" in r.output and "Build and preflight it? [y/N]" in r.output
+    assert "agentprint pack" in r.output  # how to check a built package instead
+
+
+def test_menu_pack_of_a_python_project_yes_runs_it(human, monkeypatch, tmp_path):
+    (tmp_path / "pyproject.toml").write_text("")
+    calls = []
+    monkeypatch.setattr(cli, "run_pack_command", lambda *a: calls.append(a) or 1)
+    _pick(monkeypatch, "pack")
+    r = runner.invoke(app, [], input="y\n")
+    assert calls == [(Path("."), None, FailOn.high, False)]
+    assert r.exit_code == 1
+
+
+def test_menu_pack_of_an_npm_project_does_not_ask(human, monkeypatch, tmp_path):
+    (tmp_path / "package.json").write_text("{}")
+    calls = []
+    monkeypatch.setattr(cli, "run_pack_command", lambda *a: calls.append(a) or 0)
+    monkeypatch.setattr(typer, "confirm", lambda *a, **k: pytest.fail("asked for npm"))
+    _pick(monkeypatch, "pack")
+    assert runner.invoke(app, []).exit_code == 0
+    assert len(calls) == 1
+
+
+def test_menu_says_preflight_asks_before_a_python_build():
+    assert "asks before a Python build" in dict((a, h) for a, _, h in menu.ITEMS)["pack"]
+
+
 def _fake_setup(monkeypatch, which, changes):
     calls = []
 

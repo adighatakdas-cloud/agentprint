@@ -157,6 +157,8 @@ def _run_action(ctx: typer.Context, action: str | None, plain: bool) -> int:
     if action == "scan":
         return run_scan_command(Path("."), None, False, None, FailOn.high, plain)
     if action == "pack":
+        if not _python_build_ok(Path("."), plain):
+            return 0
         return run_pack_command(Path("."), None, FailOn.high, plain)
     if action in ("install", "uninstall"):
         return _arm(action == "install")
@@ -165,6 +167,28 @@ def _run_action(ctx: typer.Context, action: str | None, plain: bool) -> int:
     if action == "help":
         _print_help(ctx, plain)
     return 0
+
+
+def _python_build_ok(folder: Path, plain: bool) -> bool:
+    """Menu preflight: a Python project has to be built first, and building runs its code.
+    Say so and ask (default No). Other folders need no question."""
+    if not ((folder / "pyproject.toml").is_file() or (folder / "setup.py").is_file()):
+        return True
+    out = themed_console(dict(os.environ), plain=plain)
+    out.print(
+        "This folder is a Python project. To preflight it, agentprint runs `uv build`, which "
+        "runs the project's own build code and may download its build tools. Only do this "
+        "for a project you trust.",
+        markup=False,
+    )
+    out.print()
+    if typer.confirm("Build and preflight it?", default=False):
+        return True
+    out.print(
+        "Not built. To check a package without building it: agentprint pack <file.whl>",
+        markup=False,
+    )
+    return False
 
 
 def _arm(arm: bool) -> int:
