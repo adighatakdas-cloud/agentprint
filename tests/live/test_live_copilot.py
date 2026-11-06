@@ -4,6 +4,10 @@ Custom endpoint: BYOK via COPILOT_PROVIDER_BASE_URL / COPILOT_PROVIDER_API_KEY /
 (OpenAI Chat Completions). "GitHub authentication is not required when using a custom
 provider" (`copilot help providers`); COPILOT_OFFLINE keeps it from contacting GitHub at all.
 https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-byok-models
+Path check: Copilot asks before a command touches a path outside the project and the temp
+folder, and with no one to ask it refuses. agentprint runs from this checkout's virtualenv, so
+`--allow-all-paths` ("disable file path verification") lets the model run it, as it would run
+an agentprint on the person's PATH.
 """
 
 import pytest
@@ -30,6 +34,7 @@ COPILOT = AgentCLI(
         "-p",
         prompt,
         "--allow-all-tools",
+        "--allow-all-paths",
         "--no-ask-user",
         "--no-auto-update",
     ],  # fmt: skip

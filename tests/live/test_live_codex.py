@@ -73,7 +73,14 @@ def test_clean_action_runs(tmp_path, action):
 
 # What Codex's shell shows the commands it runs, as a person starts it from a terminal
 # (harness.PROBE prints names only).
-SHELL = {"markers": ["CODEX_THREAD_ID"], "color": [], "stdin_tty": False, "stdout_tty": False}
+# Codex sets NO_COLOR itself; CODEX_SANDBOX_NETWORK_DISABLED only under a network-off sandbox,
+# which this run bypasses.
+SHELL = {
+    "markers": ["CODEX_THREAD_ID"],
+    "color": ["NO_COLOR"],
+    "stdin_tty": False,
+    "stdout_tty": False,
+}
 
 
 def test_the_shell_shows_the_agent_marker(tmp_path):
