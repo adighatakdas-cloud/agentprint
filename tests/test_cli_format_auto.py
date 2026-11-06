@@ -160,3 +160,34 @@ def test_agent_marker_welcome_is_plain_and_not_remembered(tmp_path):
     assert result.exit_code == 0 and "The security check" in result.output
     assert "\x1b[" not in result.output
     assert not seen_welcome(tmp_path)  # an AI agent is not a person seeing the welcome
+
+
+def _top_plain_cases(fake_home, fake_project, tmp_path):
+    return {
+        "scan": ["scan", str(fake_project), "--home", str(fake_home)],
+        "pack": ["pack", str(_tarball(tmp_path))],
+        "status": ["status", "--home", str(fake_home), "--format", "table"],
+        "welcome": ["welcome", "--home", str(fake_home)],
+    }
+
+
+@pytest.mark.parametrize("command", ["scan", "pack", "status", "welcome"])
+def test_top_level_plain_reaches_the_command(fake_home, fake_project, tmp_path, command):
+    """`agentprint --plain scan` is as plain as `agentprint scan --plain`."""
+    args = _top_plain_cases(fake_home, fake_project, tmp_path)[command]
+    forced = CliRunner(env={"FORCE_COLOR": "1"})
+    assert "\x1b[" in forced.invoke(app, args).output  # the control: color is forced on
+    result = forced.invoke(app, ["--plain", *args])
+    assert result.output and "\x1b[" not in result.output
+
+
+def test_top_level_plain_makes_command_help_plain(monkeypatch):
+    import typer.rich_utils
+
+    from agentprint import cli
+
+    monkeypatch.setattr(typer.rich_utils, "FORCE_TERMINAL", True)
+    monkeypatch.setattr(cli, "plain_help", lambda *a: False)  # a person at a real terminal
+    assert "\x1b[" in CliRunner().invoke(app, ["scan", "--help"]).output  # the control
+    result = CliRunner().invoke(app, ["--plain", "scan", "--help"])
+    assert "Usage" in result.output and "\x1b[" not in result.output

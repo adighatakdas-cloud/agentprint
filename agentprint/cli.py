@@ -101,6 +101,10 @@ def main(
     plain: PlainOpt = False,
 ) -> None:
     """agentprint."""
+    # `agentprint --plain scan` works like `agentprint scan --plain`: the commands read it here.
+    ctx.ensure_object(dict)["plain"] = plain
+    if plain:
+        _plain(ctx.command)  # and the commands' help is plain too
     if ctx.invoked_subcommand is not None:
         return
     if not is_interactive(os.environ, sys.stdin, sys.stdout):
@@ -108,6 +112,11 @@ def main(
         _print_help(ctx, plain)
         raise typer.Exit(0)
     raise typer.Exit(_bare(ctx, plain))
+
+
+def _top_plain(ctx: typer.Context, plain: bool) -> bool:
+    """--plain given to this command or before it (`agentprint --plain scan`)."""
+    return plain or bool(isinstance(ctx.obj, dict) and ctx.obj.get("plain"))
 
 
 def _bare(ctx: typer.Context, plain: bool) -> int:
@@ -257,6 +266,7 @@ def run_scan_command(
 
 @app.command()
 def scan(
+    ctx: typer.Context,
     path: Annotated[Path, typer.Argument(help="Project directory to scan.")] = Path("."),
     home: Annotated[
         Path | None, typer.Option(help="Home directory to scan. Default: yours.")
@@ -269,6 +279,7 @@ def scan(
     plain: PlainOpt = False,
 ) -> None:
     """Find secrets that AI coding agents left in history and settings files."""
+    plain = _top_plain(ctx, plain)
     raise typer.Exit(run_scan_command(path, home, no_home, fmt, fail_on, plain))
 
 
@@ -302,6 +313,7 @@ def run_pack_command(target: Path, fmt: Format | None, fail_on: FailOn, plain: b
 
 @app.command()
 def pack(
+    ctx: typer.Context,
     target: Annotated[
         Path,
         typer.Argument(help="Project directory, or a built package (.tgz, .tar.gz, .whl, .zip)."),
@@ -316,7 +328,7 @@ def pack(
     Python projects are built with `uv build`, which runs the project's build backend and may
     download it from PyPI: only point it at projects you trust, or pass a built archive.
     """
-    raise typer.Exit(run_pack_command(target, fmt, fail_on, plain))
+    raise typer.Exit(run_pack_command(target, fmt, fail_on, _top_plain(ctx, plain)))
 
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
@@ -480,6 +492,7 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
 
 @app.command()
 def status(
+    ctx: typer.Context,
     home: Annotated[
         Path | None, typer.Option(help="Home directory to check. Default: yours.")
     ] = None,
@@ -490,11 +503,12 @@ def status(
     plain: Annotated[bool, typer.Option("--plain", help="No colors.")] = False,
 ) -> None:
     """Print the roster: which AI agents are here, and which have agentprint armed."""
-    raise typer.Exit(run_status_command(home, fmt, plain))
+    raise typer.Exit(run_status_command(home, fmt, _top_plain(ctx, plain)))
 
 
 @app.command()
 def welcome(
+    ctx: typer.Context,
     home: Annotated[
         Path | None, typer.Option(help="Home directory to check. Default: yours.")
     ] = None,
@@ -509,7 +523,7 @@ def welcome(
         typer.secho(f"error: {home} is not a directory", err=True, fg=typer.colors.RED)
         raise typer.Exit(2)
     try:
-        _show_welcome(home_dir, env, plain)
+        _show_welcome(home_dir, env, _top_plain(ctx, plain))
     except KeyboardInterrupt:
         raise typer.Exit(130) from None
 
