@@ -1,4 +1,5 @@
-"""Draw the docs pages that mirror the code: check pages, the README table, landing terminals.
+"""Draw the docs pages that mirror the code: check pages, the README table, landing terminals,
+and the plugin, extension and MCP registry files (tools/plugins.py).
 
     uv run python -m tools.gen_docs            # write every file
     uv run python -m tools.gen_docs --check    # list stale files, exit 1 if any
@@ -43,6 +44,7 @@ from agentprint.ui import fixview
 from agentprint.ui.results import render
 from agentprint.ui.theme import theme
 from agentprint.ui.welcome import welcome_lines
+from tools import plugins as plugin_files
 from tools.benchmark import key_recall
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -398,6 +400,7 @@ def outputs() -> dict[Path, str]:
     )
     readme = ROOT / "README.md"
     files[readme] = replace_block(readme.read_text(encoding="utf-8"), readme_checks_block(docs))
+    files |= plugin_files.files()
     return files
 
 
