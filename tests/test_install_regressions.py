@@ -12,6 +12,10 @@ from agentprint import install
 from agentprint.integrations import claude_code
 from agentprint.integrations.base import BlockEdit
 
+# POSIX-only: asserts the /bin/sh launcher, hook command strings and file modes (Windows installs
+# only the MCP server and the note; see tests/test_windows_gate.py).
+pytestmark = pytest.mark.posix_only
+
 QUIET = lambda line: None  # noqa: E731
 
 

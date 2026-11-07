@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from agentprint.commands import Action, detect
+from tests.conftest import set_home
 
 CWD = Path("/work/app")
 
@@ -101,6 +102,6 @@ def test_unparseable_command_still_detected_without_cwd_change():
 
 
 def test_cd_to_home_and_tilde_expand(monkeypatch, tmp_path):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    set_home(monkeypatch, str(tmp_path))
     [risky] = detect("cd ~/proj && npm publish", CWD)
     assert risky.cwd == tmp_path / "proj"

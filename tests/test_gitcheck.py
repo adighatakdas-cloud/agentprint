@@ -7,6 +7,7 @@ import pytest
 from agentprint.checks.ap007_local_not_ignored import LocalFileNotIgnored
 from agentprint.gitcheck import check_push
 from tests import fakes
+from tests.conftest import set_home
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 
@@ -21,7 +22,7 @@ def repo(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    set_home(monkeypatch, str(tmp_path / "home"))
     root = tmp_path / "repo"
     root.mkdir()
     _git(root, "init", "-q")
