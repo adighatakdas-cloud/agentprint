@@ -21,6 +21,7 @@ import agentprint
 from agentprint import plugins
 from agentprint.integrations import ALL_INTEGRATIONS
 from agentprint.integrations.base import INSTRUCTIONS, FileEdit, JsonEdit, Launch
+from agentprint.integrations.cursor import RULE as CURSOR_RULE
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugins" / "agentprint"  # the Claude Code plugin; other ecosystems below it
@@ -202,6 +203,24 @@ def gemini() -> dict[Path, str]:
     }
 
 
+def cursor() -> dict[Path, str]:
+    """https://cursor.com/docs/reference/plugins"""
+    folder = PLUGIN / "cursor"
+    rule = CURSOR_RULE.replace(
+        "<!-- Written by `agentprint install`; `agentprint uninstall` deletes this file. -->",
+        f"<!-- Part of the agentprint plugin. {GENERATED} -->",
+    )
+    return {
+        ROOT / ".cursor-plugin" / "marketplace.json": _json(
+            _marketplace("plugins/agentprint/cursor")
+        ),
+        folder / ".cursor-plugin" / "plugin.json": _json(_plugin_manifest()),
+        folder / "hooks" / "hooks.json": install_text("cursor", "hook"),
+        folder / "mcp.json": _json({"mcpServers": {NAME: mcp_server("cursor")}}),
+        folder / "rules" / "agentprint.mdc": rule,
+    }
+
+
 def files() -> dict[Path, str]:
     out: dict[Path, str] = {}
     for part in (
@@ -209,6 +228,7 @@ def files() -> dict[Path, str]:
         codex,
         copilot,
         gemini,
+        cursor,
     ):
         out |= part()
     return out

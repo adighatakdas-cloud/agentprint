@@ -40,6 +40,7 @@ HOOK_FILES = {
     "codex": PLUGIN / "codex" / "hooks" / "hooks.json",
     "copilot": PLUGIN / "copilot" / "hooks.json",
     "gemini": ROOT / "hooks" / "hooks.json",
+    "cursor": PLUGIN / "cursor" / "hooks" / "hooks.json",
 }
 
 
@@ -359,3 +360,24 @@ def test_gemini_extension_sits_at_the_repository_root():
     [entry] = _load(ROOT / "hooks" / "hooks.json")["hooks"]["BeforeTool"]
     assert entry["matcher"] == "run_shell_command"
     assert entry["hooks"][0]["timeout"] == 60000  # milliseconds
+
+
+# ---- Cursor --------------------------------------------------------------------------------------
+
+
+def test_cursor_marketplace_manifest_and_rule():
+    market = _load(ROOT / ".cursor-plugin" / "marketplace.json")
+    [entry] = market["plugins"]
+    folder = ROOT / entry["source"]
+    manifest = _load(folder / ".cursor-plugin" / "plugin.json")
+    assert manifest["name"] == "agentprint" and manifest["version"] == __version__
+    rule = (folder / "rules" / "agentprint.mdc").read_text()
+    assert yaml.safe_load(rule.split("---\n")[1])["alwaysApply"] is True
+    assert "Written by `agentprint install`" not in rule  # the plugin's own, not install's
+
+
+def test_cursor_hook_matcher_only_fires_for_publish_and_push():
+    [entry] = _load(HOOK_FILES["cursor"])["hooks"]["beforeShellExecution"]
+    assert re.search(entry["matcher"], "npm publish")
+    assert re.search(entry["matcher"], "git push origin main")
+    assert not re.search(entry["matcher"], "git stash push")

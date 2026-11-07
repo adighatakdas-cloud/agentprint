@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": "/bin/sh -c 'PATH=\"$PATH:$HOME/.local/bin:$HOME/.cargo/bin\"; command -v uvx >/dev/null 2>&1 || { echo \"agentprint: uvx not found, so this command was not checked (install uv to turn it on)\" >&2; printf '\"'\"'%s\\n'\"'\"' '\"'\"'{\"permission\": \"allow\"}'\"'\"'; exit 0; }; out=$(uvx --from agentprint==0.1.1 agentprint guard --agent cursor); s=$?; case \"$s\" in 0) [ -n \"$out\" ] && printf \"%s\\n\" \"$out\"; exit 0 ;; 3) [ -n \"$out\" ] && printf \"%s\\n\" \"$out\"; exit 2 ;; esac; echo \"agentprint: hook check failed (exit $s); the command was allowed\" >&2; printf '\"'\"'%s\\n'\"'\"' '\"'\"'{\"permission\": \"allow\"}'\"'\"'; exit 0' agentprint-plugin",
+        "timeout": 60,
+        "matcher": "(?:^|[;&|({!`\\n]|\\$\\(|\\b(?:do|then|else|xargs|sudo|env|exec|eval|nohup|time|npx|pnpx|bunx|uvx|corepack)\\s|\\btimeout\\s+\\S+\\s|\\bpython[0-9.]*\\s+-m\\s)\\s*(?:\\w+=\\S*\\s+)*(?:\\S*/)?(?:(?:npm|pnpm|yarn|bun)\\b[^;&|\\n]*?\\b(?:publish|release|deploy|ship)\\b|(?:uv|poetry|hatch|flit)\\b[^;&|\\n]*?\\bpublish\\b|twine\\b[^;&|\\n]*?\\bupload\\b|(?:changeset|lerna)\\b[^;&|\\n]*?\\bpublish\\b|(?:np|semantic-release|release-it)(?:\\s|$)|git(?:\\s+-\\S+(?:\\s+[^-\\s]\\S*)?)*\\s+push\\b)"
+      }
+    ]
+  }
+}
