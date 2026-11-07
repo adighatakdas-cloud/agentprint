@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agentprint import install
+from agentprint import install, platform
 from agentprint.integrations import ALL_INTEGRATIONS
 
 AGENTPRINT = "/opt/agentprint/bin/agentprint"
@@ -27,6 +27,7 @@ HOOK_FILES = {
     "antigravity": ".gemini/config/hooks.json",
 }
 NO_SHELL = {"hermes"}  # runs the command with shlex.split, shell=False
+WINDOWS_HOOKED = sorted(name for name, i in ALL_INTEGRATIONS.items() if i.windows_hooks)
 
 
 @pytest.fixture(autouse=True)
@@ -91,22 +92,53 @@ def test_hook_allows_when_the_launcher_is_gone(home, agent):
     assert result.stdout.strip() == ALL_INTEGRATIONS[agent].reply(None).stdout.strip()
 
 
-@pytest.mark.posix_only
+def _launcher(home: Path) -> Path:
+    """This OS's launcher: agentprint-hook (POSIX) or agentprint-hook.ps1 (Windows)."""
+    return install._launcher_path(home, platform.is_windows())
+
+
 def test_reinstall_puts_a_deleted_launcher_back(home):
     _install(home)
-    launcher = home / ".agentprint" / "bin" / "agentprint-hook"
+    launcher = _launcher(home)
+    assert launcher.is_file()
     shutil.rmtree(home / ".agentprint")
     out = _install(home)
     assert launcher.is_file() and "Nothing changed" not in out
 
 
-@pytest.mark.posix_only
 def test_reinstall_replaces_a_stale_launcher(home):
     _install(home)
-    launcher = home / ".agentprint" / "bin" / "agentprint-hook"
+    launcher = _launcher(home)
     launcher.write_text(launcher.read_text().replace("guard", "guard-old"))
     _install(home)
     assert "guard-old" not in launcher.read_text()
+
+
+def _windows_hook_command(home: Path, agent: str) -> str:
+    data = json.loads((home / HOOK_FILES[agent]).read_text())
+    if agent == "copilot":
+        return data["hooks"]["preToolUse"][0]["powershell"]
+    if agent == "cursor":
+        return data["hooks"]["beforeShellExecution"][0]["command"]
+    [handler] = [h for g in data["hooks"]["PreToolUse"] for h in g["hooks"]]
+    return handler["commandWindows" if agent == "codex" else "command"]
+
+
+@pytest.mark.windows_only
+@pytest.mark.parametrize("agent", WINDOWS_HOOKED)
+def test_windows_hook_allows_when_the_launcher_is_gone(home, agent):
+    _install(home)
+    shutil.rmtree(home / ".agentprint")
+    command = _windows_hook_command(home, agent)
+    # Codex runs commandWindows as cmd.exe /C "<command>"; the others run theirs in PowerShell.
+    argv = (
+        f'cmd.exe /C "{command}"'
+        if agent == "codex"
+        else ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command]
+    )
+    result = subprocess.run(argv, input="{}", capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == ALL_INTEGRATIONS[agent].reply(None).stdout.strip()
 
 
 @pytest.mark.posix_only
