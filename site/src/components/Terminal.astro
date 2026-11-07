@@ -1,13 +1,18 @@
 ---
-// The landing terminal: the welcome, a sweep that ends on BLOCK, and the brief an AI agent reads.
-// Every line is in the HTML at build time, rendered by agentprint's own code (tools/gen_docs.py).
-// The script only replays it, and only when it runs and the reader allows motion.
+// The landing terminal: the welcome, a sweep that ends on BLOCK, `agentprint fix` turning it
+// CLEAR, and the brief an AI agent reads. Every line is in the HTML at build time, rendered by
+// agentprint's own code (tools/gen_docs.py). The script only replays it, and only when it runs
+// and the reader allows motion.
 import welcome from "../data/terminal/welcome.html?raw";
 import scan from "../data/terminal/scan.html?raw";
+import fix from "../data/terminal/fix.html?raw";
 import agent from "../data/terminal/agent.html?raw";
 
 const SCAN = "agentprint scan";
+const FIX = "agentprint fix";
 const PACK = "agentprint pack . --format agent";
+// fix's y/N question, as the generator writes it: plain text, then the answer a person typed.
+const ASK = /^(Apply \d+ fix(?:es)?\? \[y\/N\] )(y)$/;
 
 /** rich's export (flat <span style=…> runs, escaped text) as one balanced HTML string per line. */
 function lines(fragment: string): string[] {
@@ -46,6 +51,11 @@ const pixels = (html: string) =>
 const row = (html: string, cls = "") => `<span class="ap-ln${cls}">${html}</span>`;
 const command = (text: string) =>
   row(`<span class="ap-prompt">$ </span><span class="ap-typed">${text}</span>`, " ap-cmd");
+// The question stays as printed; only its answer is typed, like a command.
+const answer = (html: string) => {
+  const m = html.match(ASK);
+  return m ? row(`${m[1]}<span class="ap-typed">${m[2]}</span>`, " ap-cmd ap-answer") : row(html);
+};
 const block = (name: string, rows: string[], sep = "\n") =>
   `<span class="ap-blk ap-blk-${name}">${rows.join(sep)}</span>`;
 // The brief wraps, so each of its lines is a block with a hanging indent: wrapped text lines up
@@ -61,6 +71,8 @@ const screen = [
   "",
   block("scan", [command(SCAN), ...lines(scan).map((l) => row(l))]),
   "",
+  block("fix", [command(FIX), ...lines(fix).map(answer)]),
+  "",
   block("agent", [
     command(PACK),
     row("what your AI agent reads", " ap-caption"),
@@ -72,7 +84,7 @@ const screen = [
 <figure
   class="ap-term"
   data-ap-terminal
-  aria-label="agentprint in a terminal: the welcome, a scan that ends on BLOCK, and what an AI agent reads"
+  aria-label="agentprint in a terminal: the welcome, a scan that ends on BLOCK, agentprint fix turning it CLEAR, and what an AI agent reads"
 >
   <div class="ap-term-bar">
     <span class="ap-term-title">~/code/my-app — agentprint</span>
@@ -94,8 +106,14 @@ const screen = [
     const EDGE = 3;
     const STEPS = 30;
     const welcome = screen.querySelector(".ap-blk-welcome");
-    const commands = [...screen.querySelectorAll(".ap-cmd")];
-    const output = (cmd) => [...cmd.closest(".ap-blk").querySelectorAll(".ap-ln")].filter((ln) => ln !== cmd);
+    const rows = [...screen.querySelectorAll(".ap-ln")];
+    const commands = rows.filter((ln) => ln.classList.contains("ap-cmd"));
+    // What a command (or fix's typed answer) prints: the lines after it, up to the next one.
+    const output = (cmd) => {
+      const from = rows.indexOf(cmd) + 1;
+      const next = commands[commands.indexOf(cmd) + 1];
+      return rows.slice(from, next ? rows.indexOf(next) : rows.length);
+    };
     // Each welcome line as cells: one character and the opening tag of the run it sits in.
     const cells = [...welcome.querySelectorAll(".ap-ln")].map((ln) =>
       [...ln.childNodes].flatMap((node) => {
@@ -181,7 +199,8 @@ const screen = [
       show(cmd);
       cmd.append(cursor);
       follow(cmd);
-      await wait(800, id);
+      // A person reads the plan before answering the question.
+      await wait(cmd.classList.contains("ap-answer") ? 1400 : 800, id);
       for (let i = 1; i <= length; i += 1) {
         cmd.style.setProperty("--typed", i);
         await wait(35, id);

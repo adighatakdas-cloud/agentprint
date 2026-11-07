@@ -112,7 +112,8 @@ The README is short; the user docs live on the docs site.
 - Generated, never edit by hand: `site/src/content/docs/checks/`, the checks table between the
   `<!-- checks:start -->` markers in `README.md`, `site/src/data/`, and `docs/brand/` plus
   `site/src/assets/` logos.
-- After changing a check, a check note, an agent or `__version__`, run
+- After changing a check, a check note, an agent, the scan or fix views, the demo world
+  (`demo/build_demo.py`, which the landing terminal is drawn from) or `__version__`, run
   `uv run python -m tools.gen_docs`. After changing the mascot, run
   `uv run python -m tools.gen_brand`. Add `--check` to either to see whether files are current;
   CI fails on drift.

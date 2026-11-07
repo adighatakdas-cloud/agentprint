@@ -5,30 +5,40 @@
 
 Titles, severities and one-line fixes come from the check modules; the prose comes from
 site/check-notes/. Terminal fragments are rendered by the real renderers into a fixed-size
-console that ignores the environment, so the files are byte-identical on any machine.
+console that ignores the environment, so the files are byte-identical on any machine. The
+landing's sweep and fix are the real engine run on the demo world (demo/build_demo.py) in a
+private temporary folder, with a fixed environment.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import html
+import importlib.util
 import io
 import json
+import os
 import re
 import sys
-from collections.abc import Sequence
+import tempfile
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from rich.console import Console
+from rich.text import Text
 
 import agentprint
+from agentprint import fix as fixer
 from agentprint.checks import SCAN_CHECKS
 from agentprint.checks import ap006_package_leak as ap006
+from agentprint.fixreport import fixes, rows
 from agentprint.integrations import ALL_INTEGRATIONS
-from agentprint.models import Finding, Severity
 from agentprint.report import FailOn
 from agentprint.roster import SHORT_NAMES, AgentState
+from agentprint.scanner import scan
+from agentprint.ui import fixview
 from agentprint.ui.results import render
 from agentprint.ui.theme import theme
 from agentprint.ui.welcome import welcome_lines
@@ -37,6 +47,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SITE = ROOT / "site"
 EDIT_BASE = "https://github.com/adighatakdas-cloud/agentprint/edit/main/site/check-notes"
 SNAPSHOTS = ROOT / "tests" / "data" / "snapshots"
+DEMO = ROOT / "demo" / "build_demo.py"
 DOCS_URL = "https://adighatakdas-cloud.github.io/agentprint/"
 README_START = "<!-- checks:start -->"
 README_END = "<!-- checks:end -->"
@@ -48,6 +59,8 @@ GENERATED = (
 # What cli.run_scan_command prints for a home + project sweep; time and roster size are fixed
 # so the file never changes between runs (3 = the agents marked found in the welcome fragment).
 SCAN_HEADER = "agentprint scan  ~ + . · roster 3 · 0.38s"
+# What cli.run_fix_command prints first for `agentprint fix` (home + this folder).
+FIX_HEADER = "agentprint fix  ~ + ."
 
 
 @dataclass(frozen=True)
@@ -186,29 +199,71 @@ def _welcome() -> str:
     return _export(console)
 
 
-def _scan() -> str:
-    data = json.loads((SNAPSHOTS / "scan.json").read_text())
+def landing_world(root: Path) -> tuple[Path, Path]:
+    """The demo world laid out as on the landing: the fake home at root/home and the npm
+    project at ~/code/my-app inside it. Returns (home, project)."""
+    spec = importlib.util.spec_from_file_location("build_demo", DEMO)
+    assert spec is not None and spec.loader is not None
+    demo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(demo)
+    home = root / "home"
+    project = home / "code" / "my-app"
+    demo.build_home(home)
+    demo.build_project(project)
+    return home, project
 
-    def place(text: str) -> str:
-        return text.replace("<TMP>/home", "~").replace("<TMP>/proj", "~/code/my-app")
 
-    findings = [
-        Finding(
-            f["check_id"],
-            Severity[f["severity"].upper()],
-            f["title"],
-            f["agent"],
-            place(f["location"]),
-            f["line"],
-            f["detail"],
-            f["fix"],
-            f["count"],
-        )
-        for f in data["findings"][:5]
-    ]
-    console = _recording_console()
-    render(findings, console, fail_on=FailOn.high, header=SCAN_HEADER)
-    return _export(console)
+@contextlib.contextmanager
+def _fixed_env(home: Path) -> Iterator[None]:
+    """While the demo runs, the process sees only a fixed environment: HOME is the demo home,
+    nothing moves an agent's folder (GEMINI_CLI_HOME would point the sweep at a real one), and
+    git (AP007) reads no config and never climbs out of the demo folder into a real repo."""
+    saved = os.environ.copy()
+    os.environ.clear()
+    os.environ.update(
+        {
+            "PATH": saved.get("PATH", os.defpath),
+            "HOME": str(home),
+            "GIT_CEILING_DIRECTORIES": str(home.parent),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+        }
+    )
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+def _sweep_and_fix() -> tuple[str, str]:
+    """The landing's two middle blocks, from one run of the real engine on the demo world:
+    `agentprint scan` (ends on BLOCK), then `agentprint fix` answered y (ends on CLEAR).
+
+    The world sits in a private temporary folder (0700, so AP008 never sees it as readable),
+    HOME points at its fake home, and both blocks are drawn while it does: paths show from ~
+    exactly as the CLI prints them. The fix journal's timestamp is never shown."""
+    consoles = {"scan": _recording_console(), "fix": _recording_console()}
+    with tempfile.TemporaryDirectory(prefix="agentprint-landing-") as tmp:
+        root = Path(tmp).resolve()
+        with _fixed_env(root / "home"):
+            home, project = landing_world(root)
+            before = scan(home, project)
+            render(before, consoles["scan"], fail_on=FailOn.high, header=SCAN_HEADER)
+
+            plan = fixer.plan(before)
+            out = consoles["fix"]
+            fixview.render_plan(plan, out, header=FIX_HEADER)
+            # cli.run_fix_command asks with typer.confirm(..., prompt_suffix=" "); the answer
+            # is what a person types. Plain text: the landing types the answer.
+            out.print(Text(f"Apply {fixes(len(rows(plan.changes, plan.findings)))}? [y/N] y"))
+            outcome = fixer.apply(plan, home)
+            fixview.render_outcome(outcome, scan(home, project), out, FailOn.high, plan=plan)
+    swept, fixed = _export(consoles["scan"]), _export(consoles["fix"])
+    for fragment in (swept, fixed):  # a path of this machine must never reach the repo
+        if str(root) in fragment or tmp in fragment:
+            raise RuntimeError("a temporary path leaked into a landing fragment")
+    return swept, fixed
 
 
 def _agent() -> str:
@@ -225,7 +280,9 @@ def agent_names() -> list[str]:
 
 
 def terminal_fragments() -> dict[str, str]:
-    return {"welcome": _welcome(), "scan": _scan(), "agent": _agent()}
+    """The landing terminal's blocks, in the order it plays them."""
+    swept, fixed = _sweep_and_fix()
+    return {"welcome": _welcome(), "scan": swept, "fix": fixed, "agent": _agent()}
 
 
 def outputs() -> dict[Path, str]:
