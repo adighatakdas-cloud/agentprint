@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
 
@@ -41,17 +42,18 @@ def finding_dict(finding: Finding, moment: Moment = Moment.scan) -> dict:
     return data
 
 
-def to_json(findings: list[Finding], moment: Moment = Moment.scan) -> str:
-    return json.dumps(
-        {
-            "tool": "agentprint",
-            "version": __version__,
-            "summary": summary(findings),
-            "findings": [finding_dict(f, moment) for f in findings],
-        },
-        indent=2,
-        ensure_ascii=False,
-    )
+def to_json(
+    findings: list[Finding], moment: Moment = Moment.scan, not_checked: Sequence[str] = ()
+) -> str:
+    data: dict = {
+        "tool": "agentprint",
+        "version": __version__,
+        "summary": summary(findings),
+        "findings": [finding_dict(f, moment) for f in findings],
+    }
+    if not_checked:  # absent when everything was checked, so existing output is unchanged
+        data["not_checked"] = list(not_checked)
+    return json.dumps(data, indent=2, ensure_ascii=False)
 
 
 def _short(location: str) -> str:
@@ -64,11 +66,12 @@ def print_table(
     console: Console,
     fail_on: FailOn = FailOn.high,
     header: str | None = None,
+    not_checked: Sequence[str] = (),
 ) -> None:
     """The human view: findings grouped by severity, the fixes, then BLOCK or CLEAR."""
     from .ui.results import render  # ui.results builds on this module
 
-    render(findings, console, fail_on=fail_on, header=header)
+    render(findings, console, fail_on=fail_on, header=header, not_checked=not_checked)
 
 
 def exit_code(findings: list[Finding], fail_on: FailOn) -> int:
@@ -106,9 +109,19 @@ def _plural(n: int, word: str) -> str:
 
 
 def to_agent(
-    findings: list[Finding], fail_on: FailOn, moment: Moment, rerun: str | None = None
+    findings: list[Finding],
+    fail_on: FailOn,
+    moment: Moment,
+    rerun: str | None = None,
+    not_checked: Sequence[str] = (),
 ) -> str:
-    """Compact output for an AI agent. Line 1 is always the verdict."""
+    """Compact output for an AI agent. Line 1 is always the verdict; `not_checked` says what
+    this machine could not be checked for, so "OK" is never read as covering it."""
+    text = _to_agent(findings, fail_on, moment, rerun)
+    return text + "".join(f"\nnot_checked: {clean(note)}" for note in not_checked)
+
+
+def _to_agent(findings: list[Finding], fail_on: FailOn, moment: Moment, rerun: str | None) -> str:
     findings = sorted(findings, key=lambda f: -f.severity)
     blocking = [f for f in findings if exit_code([f], fail_on)]
     rest = [f for f in findings if not exit_code([f], fail_on)]

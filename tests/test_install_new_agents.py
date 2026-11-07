@@ -8,6 +8,10 @@ import yaml
 
 from agentprint import install
 
+# POSIX-only: asserts the /bin/sh launcher, hook command strings and file modes (Windows installs
+# only the MCP server and the note; see tests/test_windows_gate.py).
+pytestmark = pytest.mark.posix_only
+
 QUIET = lambda line: None  # noqa: E731
 AGENTPRINT = "/opt/agentprint/bin/agentprint"
 

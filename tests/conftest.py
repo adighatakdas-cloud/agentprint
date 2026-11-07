@@ -26,6 +26,39 @@ if not (Path(__file__).resolve().parent.parent / "tools").is_dir():
     collect_ignore_glob = ["test_ecoscan_*.py"]
 
 
+def home_vars(home: Path | str) -> dict[str, str]:
+    """The variables that name a user's home on POSIX and on Windows, all pointing under `home`."""
+    home = str(home)
+    return {
+        "HOME": home,
+        "USERPROFILE": home,
+        "APPDATA": str(Path(home) / "AppData" / "Roaming"),
+        "LOCALAPPDATA": str(Path(home) / "AppData" / "Local"),
+    }
+
+
+def set_home(monkeypatch: pytest.MonkeyPatch, home: Path | str) -> None:
+    """Make `home` the user's home for Path.home() and APPDATA lookups, on any OS."""
+    for name, value in home_vars(home).items():
+        monkeypatch.setenv(name, value)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line("markers", "posix_only: needs POSIX modes, /bin/sh or symlinks")
+    config.addinivalue_line("markers", "windows_only: needs Windows")
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    windows = os.name == "nt"
+    skip_posix = pytest.mark.skip(reason="POSIX only (modes, /bin/sh launcher, symlinks)")
+    skip_windows = pytest.mark.skip(reason="Windows only")
+    for item in items:
+        if windows and "posix_only" in item.keywords:
+            item.add_marker(skip_posix)
+        if not windows and "windows_only" in item.keywords:
+            item.add_marker(skip_windows)
+
+
 @pytest.fixture(autouse=True)
 def _no_gemini_cli_home(monkeypatch):
     """GEMINI_CLI_HOME moves ~/.gemini; a developer's own setting must not leak into tests."""

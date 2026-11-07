@@ -13,6 +13,10 @@ from agentprint import install
 from agentprint.cli import app
 from tests import fakes
 
+# POSIX-only: asserts the /bin/sh launcher, hook command strings and file modes (Windows installs
+# only the MCP server and the note; see tests/test_windows_gate.py).
+pytestmark = pytest.mark.posix_only
+
 runner = CliRunner()
 AGENTPRINT = ["/opt/agentprint/bin/agentprint"]
 
