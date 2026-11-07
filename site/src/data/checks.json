@@ -61,5 +61,19 @@
     "severity": "high to low by licence; no licence, UNLICENSED, SEE LICENSE IN, proprietary or only LicenseRef- choices count as closed; low for a private registry",
     "summary": "Source maps, original source or AI instruction files in your package hand an AI your code.",
     "slug": "ap009"
+  },
+  {
+    "id": "AP010",
+    "title": "Risky agent extension",
+    "severity": "high; critical for a credential sent out, medium for a piped download",
+    "summary": "A skill, rule, plugin or hook an agent loads has hidden characters, sends a credential out, pipes a download to a shell or hides a command.",
+    "slug": "ap010"
+  },
+  {
+    "id": "AP011",
+    "title": "MCP server runs an unpinned package",
+    "severity": "medium",
+    "summary": "An MCP server runs a package or image with no fixed version (npx, uvx, pipx run, docker run): each start gets whatever was published last.",
+    "slug": "ap011"
   }
 ]

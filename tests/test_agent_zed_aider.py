@@ -44,6 +44,7 @@ def test_zed_home_and_project(tmp_path):
     assert _no_ap008(_found(scan(home, project), "zed")) == {
         ("AP001", "threads.db"),
         ("AP005", "settings.json"),
+        ("AP011", "settings.json"),  # npx -y with no version
     }
     assert len([f for f in scan(home, project) if f.check_id == "AP005"]) == 2
 

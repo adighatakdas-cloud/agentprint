@@ -10,9 +10,11 @@ from .ap004_network_hook import CHECK as AP004
 from .ap005_mcp_inline_secret import CHECK as AP005
 from .ap007_local_not_ignored import CHECK as AP007
 from .ap008_readable_by_others import CHECK as AP008
+from .ap010_risky_extension import CHECK as AP010
+from .ap011_unpinned_mcp import CHECK as AP011
 from .base import Check
 
-SCAN_CHECKS: tuple[Check, ...] = (AP001, AP002, AP003, AP004, AP005, AP007, AP008)
+SCAN_CHECKS: tuple[Check, ...] = (AP001, AP002, AP003, AP004, AP005, AP007, AP008, AP010, AP011)
 
 # What `pack`, `fix --pack` and the publish guard read from a package: agent files first, with
 # the whole content budget exactly as before (AP006, and keys inside them), then what AP009

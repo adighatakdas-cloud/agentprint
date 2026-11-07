@@ -20,7 +20,7 @@ from tests.conftest import home_vars, set_home
 from tools import gen_docs
 
 SITE = gen_docs.ROOT / "site"
-IDS = [f"AP00{n}" for n in range(1, 10)]
+IDS = [f"AP{n:03d}" for n in range(1, 12)]
 
 
 def _text(fragment: str) -> str:
@@ -66,8 +66,8 @@ def test_agents_json_is_the_roster_in_roster_order():
 def test_readme_table_links_each_check_page():
     readme = (gen_docs.ROOT / "README.md").read_text()
     block = readme.split(gen_docs.README_START)[1].split(gen_docs.README_END)[0]
-    rows = [line for line in block.splitlines() if re.match(r"\| \[AP00\d", line)]
-    assert len(rows) == 9
+    rows = [line for line in block.splitlines() if re.match(r"\| \[AP0\d\d", line)]
+    assert len(rows) == len(IDS)
     for row, check_id in zip(rows, IDS, strict=True):
         assert f"{gen_docs.DOCS_URL}checks/{check_id.lower()}/" in row
 

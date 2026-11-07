@@ -46,10 +46,11 @@ def build_home(home: Path) -> None:
     _write(claude / "history.jsonl", json.dumps(prompt) + "\n", mode=0o644)
     # The agent may run any shell command without asking.
     _write(claude / "settings.json", _json({"permissions": {"allow": ["Bash(*)"]}}))
-    # A GitHub token written straight into an MCP server entry.
+    # A GitHub token written straight into an MCP server entry (the server itself is pinned to
+    # an exact version, so the story stays on the key; AP011 would print an unpinned one).
     github = {
         "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "args": ["-y", "@modelcontextprotocol/server-github@2025.4.8"],
         "env": {"GITHUB_TOKEN": GITHUB},
     }
     _write(home / ".claude.json", _json({"mcpServers": {"github": github}}))

@@ -65,6 +65,7 @@ def test_claude_desktop_config_and_logs_on_macos(tmp_path):
     found = _by_agent(scan(home, None), "claude-desktop")
     assert found - {("AP008", n) for _, n in found} == {
         ("AP005", "claude_desktop_config.json"),
+        ("AP011", "claude_desktop_config.json"),  # npx -y with no version
         ("AP001", "mcp-server-github.log"),
     }
 

@@ -68,7 +68,8 @@ def test_antigravity_mcp_servers(more_home, more_project):
 
 def test_antigravity_scan(more_home, more_project):
     findings = [f for f in scan(more_home, more_project) if f.agent == "antigravity"]
-    assert sorted({f.check_id for f in findings}) == ["AP001", "AP003", "AP004", "AP005"]
+    # AP011: the workspace's aws server runs `uvx aws-mcp` with no version.
+    assert sorted({f.check_id for f in findings}) == ["AP001", "AP003", "AP004", "AP005", "AP011"]
     assert "mcp_oauth_tokens.json" not in {Path(f.location).name for f in findings}
 
 
