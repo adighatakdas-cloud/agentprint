@@ -29,7 +29,7 @@ def iter_lines(path: Path) -> Iterator[tuple[int, str]]:
     try:
         if path.stat().st_size > MAX_BYTES or _is_binary(path):
             return
-        with path.open("r", encoding="utf-8", errors="replace") as fh:
+        with path.open("r", encoding="utf-8", errors="replace", newline="") as fh:
             yield from enumerate(fh, start=1)
     except OSError:
         return

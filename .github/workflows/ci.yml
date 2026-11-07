@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest  # macOS runs in test-other-os once the repo is public
+    runs-on: ubuntu-latest  # macOS and Windows run in test-other-os
     strategy:
       matrix:
         python: ["3.11", "3.13"]
@@ -40,14 +40,20 @@ jobs:
       - name: agentprint checks the npm wrapper package
         run: uv run agentprint pack npm --fail-on high
 
-  # Private macOS minutes cost 10x, so these switch on by themselves when the repo goes public.
+  # macOS and Windows. The Windows legs may fail without turning the run red while the Windows
+  # port is young (continue-on-error); the macOS leg is a hard gate.
   test-other-os:
-    if: ${{ !github.event.repository.private }}
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    env:
+      PYTHONUTF8: "1"
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest]  # Windows CI returns after launch, with skips for POSIX-only tests
+        include:
+          - {os: macos-latest, python: "3.13", experimental: false}
+          - {os: windows-latest, python: "3.11", experimental: true}
+          - {os: windows-latest, python: "3.13", experimental: true}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -57,5 +63,8 @@ jobs:
         with:
           node-version: "22"
           package-manager-cache: false
-      - run: uv sync --locked --python 3.13
+      - run: uv sync --locked --python "$PYTHON"
+        shell: bash
+        env:
+          PYTHON: ${{ matrix.python }}
       - run: uv run pytest -m "integration or not integration"

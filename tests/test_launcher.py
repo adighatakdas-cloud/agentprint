@@ -47,6 +47,7 @@ def test_every_agent_has_documented_block_semantics():
     assert set(BLOCKS) == set(ALL_INTEGRATIONS)
 
 
+@pytest.mark.posix_only
 @pytest.mark.parametrize("agent", AGENTS)
 def test_allow_passes_through_with_exit_0(tmp_path, agent):
     allow = ALL_INTEGRATIONS[agent].reply(None)
@@ -56,6 +57,7 @@ def test_allow_passes_through_with_exit_0(tmp_path, agent):
     assert result.stdout.strip() == allow.stdout.strip()
 
 
+@pytest.mark.posix_only
 @pytest.mark.parametrize("agent", AGENTS)
 def test_block_uses_the_agents_own_mechanism(tmp_path, agent):
     block = ALL_INTEGRATIONS[agent].reply(Verdict(True, "agentprint: BLOCK — 1 problem"))
@@ -68,6 +70,7 @@ def test_block_uses_the_agents_own_mechanism(tmp_path, agent):
         assert "agentprint: BLOCK" in result.stdout
 
 
+@pytest.mark.posix_only
 @pytest.mark.parametrize("agent", AGENTS)
 @pytest.mark.parametrize("failure", [1, 2, 127])
 def test_any_failure_allows_with_exit_0_and_a_warning(tmp_path, agent, failure):
@@ -81,6 +84,7 @@ def test_any_failure_allows_with_exit_0_and_a_warning(tmp_path, agent, failure):
         json.loads(result.stdout)
 
 
+@pytest.mark.posix_only
 def test_missing_agentprint_allows_with_exit_0(tmp_path):
     script = tmp_path / "agentprint-hook"
     script.write_text(install.launcher_script([str(tmp_path / "gone" / "agentprint")]))

@@ -23,6 +23,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from .. import platform
 from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
 from .base import (
@@ -77,7 +78,7 @@ def _user_dirs(home: Path) -> list[Path]:
     return [
         home / "Library" / "Application Support" / "Code" / "User",
         home / ".config" / "Code" / "User",
-        home / "AppData" / "Roaming" / "Code" / "User",
+        platform.roaming_appdata(home) / "Code" / "User",
     ]
 
 

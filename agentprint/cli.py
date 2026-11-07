@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import time
-from collections.abc import Collection, Iterator
+from collections.abc import Collection, Iterator, Sequence
 from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path
@@ -15,7 +15,7 @@ import typer
 from rich.console import Console
 from typer.core import TyperCommand, TyperGroup
 
-from . import __version__
+from . import __version__, platform
 from .advice import Moment
 from .checks import PACKAGE_WANT, check_package
 from .integrations import ALL_INTEGRATIONS
@@ -245,16 +245,17 @@ def _emit(
     labels: Collection[str] = (),
     out: Console | None = None,
     header: str | None = None,
+    not_checked: Sequence[str] = (),
 ) -> None:
     if fmt is Format.json:
-        typer.echo(to_json(findings, moment))
+        typer.echo(to_json(findings, moment, not_checked))
     elif fmt is Format.sarif:
         typer.echo(to_sarif(findings, package=package, labels=labels))
     elif fmt is Format.agent:
-        typer.echo(to_agent(findings, fail_on, moment))
+        typer.echo(to_agent(findings, fail_on, moment, not_checked=not_checked))
     else:
         out = out or themed_console(dict(os.environ))
-        print_table(findings, out, fail_on=fail_on, header=header)
+        print_table(findings, out, fail_on=fail_on, header=header, not_checked=not_checked)
 
 
 def _roster_size(home: Path | None) -> int:
@@ -311,7 +312,15 @@ def run_scan_command(
         else:
             where = f"{'~' if home is None else _short(str(home))} + {path}"
             header = f"agentprint scan  {where} · roster {_roster_size(home)} · {secs:.2f}s"
-    _emit(findings, fmt, fail_on, Moment.scan, out=out, header=header)
+    _emit(
+        findings,
+        fmt,
+        fail_on,
+        Moment.scan,
+        out=out,
+        header=header,
+        not_checked=platform.scan_notes(),
+    )
     return _write_badge(badge_dir, "scan", fail_on, findings) or exit_code(findings, fail_on)
 
 
@@ -532,13 +541,18 @@ def run_fix_command(
             except PackError as exc:  # changes made, but the preflight can't run again
                 typer.secho(f"error: could not check again: {exc}", err=True, fg="red")
                 status = 2
+    gaps = () if pack else platform.scan_notes()  # a package check reads no permissions
     if fmt is FixFormat.json:
-        typer.echo(to_json_fix(the_plan, outcome, after, fail_on, pack=pack))
+        typer.echo(to_json_fix(the_plan, outcome, after, fail_on, pack=pack, not_checked=gaps))
     elif fmt is FixFormat.agent:
-        typer.echo(to_agent_fix(the_plan, outcome, after, fail_on, dry_run=dry_run))
+        typer.echo(
+            to_agent_fix(the_plan, outcome, after, fail_on, dry_run=dry_run, not_checked=gaps)
+        )
     else:
         assert out is not None
-        fixview.render_outcome(outcome, after, out, fail_on, plan=the_plan, note=note)
+        fixview.render_outcome(
+            outcome, after, out, fail_on, plan=the_plan, note=note, not_checked=gaps
+        )
     return status or exit_code(after, fail_on)
 
 
@@ -634,6 +648,7 @@ def guard(
     """
     from .hook import run_hook  # imported here so other commands stay fast to start
 
+    platform.use_utf8_streams()  # a Windows console is cp1252 unless told otherwise
     reply = run_hook(agent, sys.stdin.read(), os.environ, fail_on, strict)
     if reply.stdout:
         typer.echo(reply.stdout)

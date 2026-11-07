@@ -351,6 +351,7 @@ def _fixed_env(home: Path) -> Iterator[None]:
         {
             "PATH": saved.get("PATH", os.defpath),
             "HOME": str(home),
+            "USERPROFILE": str(home),  # what Path.home() reads on Windows
             "GIT_CEILING_DIRECTORIES": str(home.parent),
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": os.devnull,

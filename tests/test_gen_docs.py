@@ -16,6 +16,7 @@ from agentprint.integrations import ALL_INTEGRATIONS
 from agentprint.roster import SHORT_NAMES
 from agentprint.secrets import find_secrets
 from tests import fakes
+from tests.conftest import home_vars, set_home
 from tools import gen_docs
 
 SITE = gen_docs.ROOT / "site"
@@ -26,6 +27,9 @@ def _text(fragment: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", fragment))
 
 
+# The committed fragments are POSIX renderings (permission fixes and the AP008 sweep cannot be
+# reproduced on NTFS); Windows checks the engine-vs-fragment tests below instead.
+@pytest.mark.posix_only
 def test_generated_files_are_current():
     stale = [p for p, text in gen_docs.outputs().items() if p.read_text() != text]
     assert stale == []  # run: uv run python -m tools.gen_docs
@@ -115,7 +119,7 @@ def test_fragments_ignore_ambient_env(monkeypatch, tmp_path):
         "TERM": "dumb",
         "COLUMNS": "40",
         "FORCE_COLOR": "0",
-        "HOME": str(tmp_path),  # not the real home, and not the demo world's
+        **home_vars(str(tmp_path)),  # not the real home, and not the demo world's
         "GEMINI_CLI_HOME": str(tmp_path / "gemini"),
         "CODEX_HOME": str(tmp_path / "codex"),
         "CLAUDE_CONFIG_DIR": str(tmp_path / "claude"),
@@ -179,12 +183,13 @@ def test_scan_and_fix_tell_one_story():
 def _person_at_a_terminal(monkeypatch, home: Path, project: Path) -> None:
     for name in ("GEMINI_CLI_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("HOME", str(home))
+    set_home(monkeypatch, str(home))
     monkeypatch.chdir(project)
     monkeypatch.setattr(cli, "is_interactive", lambda *a: True)
     monkeypatch.setattr(cli, "is_agent", lambda env: False)
 
 
+@pytest.mark.posix_only  # POSIX rendering; Windows adds the AP008 'not checked' note
 def test_fix_fragment_is_what_agentprint_fix_prints(tmp_path, monkeypatch):
     """The landing's fix block, line for line, is the real command run in ~/code/my-app by a
     person who answers y."""
@@ -197,6 +202,7 @@ def test_fix_fragment_is_what_agentprint_fix_prints(tmp_path, monkeypatch):
     assert result.output == _text(gen_docs.terminal_fragments()["fix"])
 
 
+@pytest.mark.posix_only  # POSIX rendering; Windows adds the AP008 'not checked' note
 def test_scan_fragment_is_what_agentprint_scan_prints(tmp_path, monkeypatch):
     """Below its header (time and roster are fixed on the landing), the scan block is the real
     sweep of the same world."""

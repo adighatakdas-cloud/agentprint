@@ -61,8 +61,9 @@ use what the agent module understood. When two checks see the same key (an API k
 MCP server entry is both AP002 and AP005), the more precise one claims it and the other drops
 it, so you get one finding.
 
-**`secrets.py`.** Key patterns (Anthropic, OpenAI, GitHub, AWS, Stripe, Slack, Google, and a
-generic name-plus-random-value rule with an entropy test) and `redact()`.
+**`secrets.py`.** Key patterns (Anthropic, OpenAI, GitHub, AWS, Stripe, Slack, Google, newer
+formats, four of them matched only next to the provider's name, and a generic
+name-plus-random-value rule with an entropy test) and `redact()`.
 
 **`pack.py` (what a package ships).** Asks the package manager itself: `npm pack --dry-run
 --ignore-scripts` (no package code runs) or `uv build` for Python projects, or reads an

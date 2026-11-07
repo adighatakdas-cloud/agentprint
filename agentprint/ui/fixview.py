@@ -13,6 +13,8 @@ never see this layout: they get fixreport.to_agent_fix.
 from __future__ import annotations
 
 import os
+import re
+from collections.abc import Sequence
 from pathlib import Path
 
 from rich.console import Console
@@ -62,6 +64,11 @@ def _what(row: Row) -> Text:
     return Text(clean(first.shown))
 
 
+def _slashes(rest: str) -> str:
+    """The part of a path after ~, with forward slashes on Windows (doubled ones are JSON's)."""
+    return rest.replace("\\\\", "/").replace("\\", "/") if os.sep == "\\" else rest
+
+
 def _prose(text: str) -> Text:
     """A "needs you" sentence: quoted paths under the home folder shown from ~, masked key
     stubs in amber (as the results show them). Shell commands are never touched: agentprint
@@ -69,7 +76,13 @@ def _prose(text: str) -> Text:
     home = str(Path.home())
     text = clean(text, None)
     if home not in ("", "/"):
-        text = text.replace(f'"{home}/', '"~/').replace(f'"{home}"', '"~"')
+        # Display paths are JSON-quoted, so on Windows a backslash arrives doubled: match both.
+        homes = "|".join(re.escape(v) for v in {home, home.replace("\\", "\\\\")})
+        text = re.sub(
+            f'"(?:{homes})' + r'(?=[/\\"])([/\\][^"]*)?',
+            lambda m: '"~' + _slashes(m.group(1) or ""),
+            text,
+        )
     out = Text()
     end = 0
     for stub in STUB.finditer(text):
@@ -177,6 +190,7 @@ def render_outcome(
     *,
     plan: Plan | None = None,
     note: str | None = None,
+    not_checked: Sequence[str] = (),
 ) -> None:
     """After the plan (and the y/N question): what was fixed and what was not, what still
     blocks, then the verdict of the re-check (BLOCK or CLEAR, from ui.results). `outcome` None:
@@ -211,6 +225,10 @@ def render_outcome(
                 # "fix masked it", and this key is still in its file.
                 for line in hang(DETAIL_INDENT, _prose(f.detail), width):
                     console.print(line)
+    for gap in not_checked:
+        blocks.next()
+        for line in hang(Text("not checked  ", style="ap.dim"), clean(gap), width):
+            console.print(line)
     blocks.next()
     for line in verdict_lines(after_findings, fail_on, width):
         console.print(line)
