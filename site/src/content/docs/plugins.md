@@ -59,7 +59,7 @@ copilot plugin marketplace add adighatakdas-cloud/agentprint
 copilot plugin install agentprint@agentprint
 ```
 
-Or in one step, straight from the folder: `copilot plugin install adighatakdas-cloud/agentprint:plugins/agentprint/copilot`.
+Or in one step, straight from the folder: `copilot plugin install adighatakdas-cloud/agentprint:plugins/agentprint/copilot`. Use one of these two forms, not the bare `copilot plugin install adighatakdas-cloud/agentprint`: that would read the repository's root as the plugin, and the hooks file there is Gemini CLI's.
 
 ### Gemini CLI
 

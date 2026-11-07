@@ -22,7 +22,7 @@ copilot plugin marketplace add {{owner}}/agentprint
 copilot plugin install {{name}}@{{name}}
 ```
 
-Or in one step, straight from the folder: `copilot plugin install {{owner}}/agentprint:plugins/agentprint/copilot`.
+Or in one step, straight from the folder: `copilot plugin install {{owner}}/agentprint:plugins/agentprint/copilot`. Use one of these two forms, not the bare `copilot plugin install {{owner}}/agentprint`: that would read the repository's root as the plugin, and the hooks file there is Gemini CLI's.
 
 ### Gemini CLI
 
