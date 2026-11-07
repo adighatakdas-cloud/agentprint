@@ -9,13 +9,27 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from pathlib import Path
 
+from .commands import detect
 from .guard import Verdict, evaluate, strict_block, strict_requested
 from .integrations import ALL_INTEGRATIONS
 from .integrations.base import BLOCK_EXIT, HookReply
 from .report import FailOn
 
 __all__ = ["HookReply", "run_hook"]
+
+NO_FOLDER = "the agent did not say which folder the command runs in"
+
+
+def _folder_unknown(command: str, cwd: Path, strict: bool) -> Verdict | None:
+    """The payload named no folder: a publish or push "could not be checked" (blocked in strict
+    mode); any other command passes as usual."""
+    if not detect(command, cwd):
+        return None
+    if strict:
+        return strict_block(f"agentprint could not check this command: {NO_FOLDER}.")
+    return Verdict(False, warning=f"agentprint could not check this command ({NO_FOLDER}).")
 
 
 def run_hook(
@@ -42,7 +56,12 @@ def run_hook(
         )
     try:
         call = integration.parse_hook(payload, env)
-        verdict = None if call is None else evaluate(call.command, call.cwd, fail_on, strict)
+        if call is None:
+            verdict = None
+        elif not call.cwd_known:
+            verdict = _folder_unknown(call.command, call.cwd, strict)
+        else:
+            verdict = evaluate(call.command, call.cwd, fail_on, strict)
         return integration.reply(verdict)
     except Exception as exc:  # noqa: BLE001 - never block work because of an agentprint bug
         if strict:
