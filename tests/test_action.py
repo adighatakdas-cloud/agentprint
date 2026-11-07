@@ -119,6 +119,10 @@ def test_no_token_in_urls_or_logs():
     script = PUBLISH_SCRIPT.read_text()
     assert "::add-mask::$token" in script
     assert "http.extraheader" in script
+    # the credential travels in git's environment, never as an argument visible to `ps`
+    assert "GIT_CONFIG_VALUE_0=" in script
+    assert not re.search(r"-c\s+\"?http\.extraheader|-c\s+\"?\$\{?auth", script)
+    assert "auth=(" not in script
     assert script.startswith("#!/usr/bin/env bash") and "set -euo pipefail" in script
 
 

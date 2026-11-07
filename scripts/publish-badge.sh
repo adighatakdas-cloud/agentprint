@@ -37,12 +37,14 @@ if [ "$mode" = "dry-run" ]; then
   exit 0
 fi
 
-# Only the pushing path gets credentials; the header is masked in the log.
-auth=()
+# Only the pushing path gets credentials. The header goes to git through its environment (not
+# argv, so `ps` can't show it) for this one command, and is masked in the log.
 if [ -n "$token" ]; then
   header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')"
   echo "::add-mask::${header#AUTHORIZATION: basic }"
-  auth=(-c "http.extraheader=$header")
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="$header" \
+    git push --quiet --force "$remote" "HEAD:refs/heads/$branch"
+else
+  git push --quiet --force "$remote" "HEAD:refs/heads/$branch"
 fi
-git ${auth[@]+"${auth[@]}"} push --quiet --force "$remote" "HEAD:refs/heads/$branch"
 echo "agentprint: published the badge to $branch"
