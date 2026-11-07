@@ -41,7 +41,24 @@ class SecretMatch:
     obfuscation: str | None = None
 
 
+# A key ends where its characters stop: the next character may not continue it. A lookahead, not
+# `\\b`, because `_` and `-` are key characters here and a JSON-escaped `\\n` after a key must
+# still end it. Short prefixes (`hf_`, `r8_`) are checked for a word before them after the prefix,
+# so the pattern still starts with a fixed text and the engine can skip ahead to it.
+_END = r"(?![A-Za-z0-9_\-])"
+
+
+def _before(prefix: str) -> str:
+    """`prefix`, not glued to a word before it (a lookbehind placed after it)."""
+    return rf"{prefix}(?<![A-Za-z0-9_\-]{prefix})"
+
+
+# Named context for the formats too common to match bare: the word, then a value within 80
+# characters on the same line.
+_NEAR = r"[^\n]{0,80}?"
+
 # Specific rules come first; the generic rule only reports text no specific rule claimed.
+# Publishing tokens (npm, PyPI) lead the newer formats: a leak there is a supply-chain event.
 RULES: tuple[SecretRule, ...] = (
     SecretRule(
         "anthropic",
@@ -63,8 +80,138 @@ RULES: tuple[SecretRule, ...] = (
     ),
     SecretRule("aws", "AWS access key ID", re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}")),
     SecretRule("stripe", "Stripe live key", re.compile(r"(?:sk|rk)_live_[A-Za-z0-9]{24,99}")),
-    SecretRule("slack", "Slack token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,72}")),
+    SecretRule(
+        "slack",
+        "Slack token",
+        re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,72}|xapp-\d-[A-Z0-9]+-\d+-[a-z0-9]+"),
+    ),
     SecretRule("google", "Google API key", re.compile(r"AIza[0-9A-Za-z_\-]{35}")),
+    SecretRule(
+        "google-oauth",
+        "Google OAuth client secret",
+        re.compile(rf"GOCSPX-[A-Za-z0-9_\-]{{28}}{_END}"),
+    ),
+    SecretRule("npm", "npm access token", re.compile(rf"{_before('npm_')}[A-Za-z0-9]{{36}}{_END}")),
+    SecretRule(
+        "pypi",
+        "PyPI upload token",
+        re.compile(r"pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_\-]{50,1000}"),
+    ),
+    SecretRule(
+        "gitlab",
+        "GitLab token",
+        re.compile(
+            rf"glpat-[A-Za-z0-9_\-]{{27,300}}\.[0-9a-z]{{9}}{_END}|glpat-[A-Za-z0-9_\-]{{20}}{_END}"
+        ),
+    ),
+    # Docker's token lengths are not documented by Docker: the looser shape, then a look-alike test.
+    SecretRule(
+        "dockerhub",
+        "Docker Hub access token",
+        re.compile(rf"dckr_(?:pat|oat)_[A-Za-z0-9_\-]{{27,48}}{_END}"),
+    ),
+    SecretRule(
+        "huggingface",
+        "Hugging Face token",
+        re.compile(
+            rf"{_before('hf_')}(?=[0-9]*[A-Za-z])[A-Za-z0-9]{{34}}{_END}"
+            rf"|api_org_[A-Za-z]{{34}}{_END}"
+        ),
+    ),
+    SecretRule("groq", "Groq API key", re.compile(rf"{_before('gsk_')}[A-Za-z0-9]{{40,64}}{_END}")),
+    SecretRule("openrouter", "OpenRouter API key", re.compile(rf"sk-or-v1-[0-9a-f]{{64}}{_END}")),
+    SecretRule("xai", "xAI API key", re.compile(rf"xai-[A-Za-z0-9_]{{80}}{_END}")),
+    SecretRule("perplexity", "Perplexity API key", re.compile(rf"pplx-[A-Za-z0-9]{{48}}{_END}")),
+    SecretRule(
+        "replicate",
+        "Replicate API token",
+        re.compile(rf"{_before('r8_')}[A-Za-z0-9_\-]{{37}}{_END}"),
+    ),
+    SecretRule(
+        "supabase-pat",
+        "Supabase access token",
+        re.compile(rf"{_before('sbp_')}[a-f0-9]{{40}}{_END}"),
+    ),
+    # sb_publishable_ keys are meant to be public and are not matched.
+    SecretRule(
+        "supabase-secret",
+        "Supabase secret key",
+        re.compile(r"sb_secret_[A-Za-z0-9_\-]{20,}"),
+    ),
+    SecretRule(
+        "cloudflare",
+        "Cloudflare API token",
+        re.compile(rf"cf[ua]t_[A-Za-z0-9]{{40}}[a-f0-9]{{8}}{_END}"),
+    ),
+    SecretRule(
+        "digitalocean",
+        "DigitalOcean token",
+        re.compile(rf"do[por]_v1_[a-f0-9]{{64}}{_END}"),
+    ),
+    SecretRule("linear", "Linear API key", re.compile(rf"lin_api_[A-Za-z0-9]{{40}}{_END}")),
+    SecretRule(
+        "notion", "Notion API token", re.compile(rf"ntn_[0-9]{{11}}[A-Za-z0-9]{{35}}{_END}")
+    ),
+    SecretRule(
+        "shopify",
+        "Shopify access token",
+        re.compile(rf"shp(?:at|ca|pa|ss)_[a-fA-F0-9]{{32}}{_END}"),
+    ),
+    SecretRule(
+        "atlassian",
+        "Atlassian API token",
+        re.compile(r"ATATT3[A-Za-z0-9_\-=]{186}(?![A-Za-z0-9_\-=])"),
+    ),
+    SecretRule(
+        "postman", "Postman API key", re.compile(rf"PMAK-[a-f0-9]{{24}}-[a-f0-9]{{34}}{_END}")
+    ),
+    SecretRule(
+        "sendgrid",
+        "SendGrid API key",
+        re.compile(rf"SG\.[A-Za-z0-9_\-]{{22}}\.[A-Za-z0-9_\-]{{43}}{_END}"),
+    ),
+    SecretRule(
+        "doppler",
+        "Doppler token",
+        re.compile(
+            r"dp\.(?:pt|ct|sa|scim|audit|st(?:\.[a-z0-9_\-]{2,35})?)\.[A-Za-z0-9]{40,44}" + _END
+        ),
+    ),
+    SecretRule(
+        "onepassword",
+        "1Password service account token",
+        re.compile(r"ops_eyJ[A-Za-z0-9+/]{250,}+={0,3}"),
+    ),
+    # Context-only formats: too common as plain text, so a match needs the provider's name
+    # on the same line, before the value.
+    SecretRule(
+        "deepseek",
+        "DeepSeek API key",
+        re.compile(rf"(?i:deepseek)[\w .\-]{{0,30}}[:=\"'\\ ]{{1,6}}(sk-[a-f0-9]{{32}}){_END}"),
+        group=1,
+    ),
+    SecretRule(
+        "twilio",
+        "Twilio API key SID",
+        re.compile(rf"(?i:twilio){_NEAR}(?<![A-Za-z0-9])(SK[0-9a-f]{{32}})(?![A-Za-z0-9])"),
+        group=1,
+    ),
+    SecretRule(
+        "discord",
+        "Discord bot token",
+        re.compile(
+            rf"(?i:discord){_NEAR}(?<![A-Za-z0-9_.\-])"
+            rf"([MNO][A-Za-z0-9_\-]{{23,25}}\.[A-Za-z0-9_\-]{{6}}\.[A-Za-z0-9_\-]{{27,38}})"
+            r"(?![A-Za-z0-9_.\-])"
+        ),
+        group=1,
+    ),
+    SecretRule(
+        "telegram",
+        "Telegram bot token",
+        re.compile(rf"(?i:telegr){_NEAR}(?<![0-9])([0-9]{{8,10}}:AA[A-Za-z0-9_\-]{{33}}){_END}"),
+        group=1,
+    ),
     # Generic rules: a secret-ish name, a real separator, then a random-looking value.
     # Possessive quantifiers (*+) and bounded spacing keep matching linear on hostile input.
     SecretRule(
