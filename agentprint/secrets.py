@@ -406,11 +406,11 @@ Join = tuple[int, int, str]  # text[start:end] is dropped from the view; the tri
 # Invisible format characters: soft hyphen, Mongolian vowel separator, zero-width space,
 # non-joiner and joiner, left-to-right and right-to-left marks, bidi embeddings and isolates,
 # word joiner and invisible operators, byte-order mark (zero-width no-break space).
-_INVISIBLE_CHARS = (
+INVISIBLE_CHARS = (
     "\u00ad\u180e\u200b\u200c\u200d\u200e\u200f\u202a\u202b\u202c\u202d\u202e"
     "\u2060\u2061\u2062\u2063\u2064\u2066\u2067\u2068\u2069\ufeff"
 )
-_INVISIBLE = re.compile(f"[{_INVISIBLE_CHARS}]+")
+_INVISIBLE = re.compile(f"[{INVISIBLE_CHARS}]+")
 
 # Quoted literals, each on one line, joined by +, . or .. or simply written next to each other.
 # A joint may break the line around an operator, or before an indented literal (Python's
@@ -468,7 +468,7 @@ def _invisible(text: str) -> Iterator[Join]:
     if text.isascii():
         return
     joins: list[Join] = []
-    for ch in _INVISIBLE_CHARS:
+    for ch in INVISIBLE_CHARS:
         at = text.find(ch)
         for _ in range(MAX_JOINS):
             if at < 0:
@@ -729,7 +729,10 @@ def _base64_tokens(text: str) -> Iterator[tuple[int, int]]:
             yield start, end + pad
 
 
-def _in_base64(text: str, budget: Budget) -> Iterator[SecretMatch]:
+def base64_texts(text: str, budget: Budget) -> Iterator[tuple[int, int, str]]:
+    """(start, end, decoded) for each base64 token of `text` that decodes to text, within the
+    limits of the hidden-key search: MAX_RUNS tokens looked at, budget.blobs of them decoded,
+    each to at most MAX_BLOB_CHARS characters of base64 (AP010 reads the same blobs)."""
     for start, end in _base64_tokens(text):
         if budget.blobs <= 0:
             return
@@ -738,8 +741,12 @@ def _in_base64(text: str, budget: Budget) -> Iterator[SecretMatch]:
             continue
         budget.blobs -= 1
         decoded = _decode(head)
-        if decoded is None:
-            continue
+        if decoded is not None:
+            yield start, end, decoded
+
+
+def _in_base64(text: str, budget: Budget) -> Iterator[SecretMatch]:
+    for start, end, decoded in base64_texts(text, budget):
         for found in find_secrets(decoded):
             yield SecretMatch(found.rule_id, found.name, found.value, start, end, "base64")
 
