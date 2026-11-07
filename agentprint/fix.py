@@ -19,9 +19,12 @@ applier); a print with no planner is left to the human with its existing advice.
 from __future__ import annotations
 
 import contextlib
+import copy
 import hashlib
 import json
 import os
+import re
+import shlex
 import stat
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -31,9 +34,12 @@ from typing import Any
 
 from . import sqlite_text, structured
 from .advice import Moment, advise, split_location
+from .checks.ap005_mcp_inline_secret import _MARKER as MCP_MARKER
+from .checks.ap007_local_not_ignored import git_state
+from .checks.base import safe_snippet
 from .files import MAX_BYTES
 from .models import Finding
-from .safewrite import atomic_write, private_dir
+from .safewrite import atomic_write, private_dir, real
 from .sanitize import quote
 from .secrets import find_secrets, redact
 
@@ -88,6 +94,18 @@ class Change:
     # planned, checked again right before writing. The key itself is never kept.
     offsets: tuple[tuple[int, int], ...] = ()
     digests: tuple[bytes, ...] = field(default=(), repr=False)
+    # env: the JSON path of the value as a JSON list (["mcpServers", "github", "env", "TOKEN"]),
+    # the variable name, and (mtime_ns, size) of the file when planned. offsets/digests hold the
+    # value's string token, quotes included.
+    json_path: str = ""
+    var: str = ""
+    version: tuple[int, int] | None = None
+    # ignore: the line to add, and the ignore file to add it to (also `path`, so every line for
+    # one file is applied in one go).
+    line_text: str = ""
+    target: Path | None = None
+    # lock: the file's mode when planned.
+    old_mode: int | None = None
 
 
 @dataclass(frozen=True)
@@ -261,7 +279,15 @@ def _history_spans(path: Path, data: bytes, spans: list[_Span]) -> list[_Span]:
     return accepted
 
 
+def _in_prompt_history(path: tuple[Any, ...]) -> bool:
+    """Claude Code keeps pasted prompts in ~/.claude.json under projects.<path>.history[*]
+    (display, pastedContents): text the user typed, not configuration."""
+    return len(path) >= 3 and path[0] == "projects" and path[2] == "history"
+
+
 def _is_allowlist(path: tuple[Any, ...]) -> bool:
+    if _in_prompt_history(path):
+        return True
     if not path or not isinstance(path[-1], str):
         return False
     if path[-1] in ALLOWLIST_KEYS:
@@ -305,7 +331,12 @@ def _edited_entries(before: Any, after: Any, path: tuple[Any, ...]) -> list[tupl
                 return None
             found += inner
         return found
-    return [] if before == after else None
+    if before == after:
+        return []
+    # A changed string inside prompt history is an edited entry; elsewhere it is a config value.
+    if isinstance(before, str) and _in_prompt_history(path):
+        return [path]
+    return None
 
 
 def _only_allowlists_change(before: Any, after: Any) -> bool:
@@ -413,6 +444,222 @@ def _plan_masks(findings: list[Finding], pack: bool) -> tuple[list[Change], list
 
 
 PLANNERS: dict[str, Planner] = {"AP001": _plan_masks, "AP002": _plan_masks}
+
+
+# ---- env references: AP005 (Claude Code MCP entries) -----------------------------------------
+
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+_ENV_FILES = (".claude.json", ".mcp.json")  # the Claude Code files that expand ${VAR}
+
+
+def _env_slots(doc: Any, name: str) -> Iterable[tuple[tuple[str, ...], str, str, str]]:
+    """Every string under mcpServers.<server>.env.<NAME> the way the Claude Code module reads
+    them (the top level, and for ~/.claude.json each project's own servers):
+    (JSON path, server name, variable name, value)."""
+    if not isinstance(doc, dict):
+        return
+    holders: list[tuple[tuple[str, ...], Any]] = [((), doc)]
+    projects = doc.get("projects") if name == ".claude.json" else None
+    if isinstance(projects, dict):
+        holders += [(("projects", k), v) for k, v in projects.items() if isinstance(k, str)]
+    for prefix, holder in holders:
+        servers = holder.get("mcpServers") if isinstance(holder, dict) else None
+        for server, entry in servers.items() if isinstance(servers, dict) else ():
+            env = entry.get("env") if isinstance(entry, dict) else None
+            for var, value in env.items() if isinstance(env, dict) else ():
+                if isinstance(server, str) and isinstance(value, str) and _ENV_NAME.fullmatch(var):
+                    yield (*prefix, "mcpServers", server, "env", var), server, var, value
+
+
+def _plain_json_string(value: str) -> bool:
+    """True if the value is written in a JSON file exactly as itself between two quotes."""
+    return value.isascii() and value.isprintable() and '"' not in value and "\\" not in value
+
+
+def _with_value(doc: Any, path: tuple[str, ...], value: str) -> Any:
+    out = copy.deepcopy(doc)
+    node = out
+    for step in path[:-1]:
+        node = node[step]
+    node[path[-1]] = value
+    return out
+
+
+def _occurrences(data: bytes, needle: bytes) -> Iterable[int]:
+    start = data.find(needle)
+    while start != -1:
+        yield start
+        start = data.find(needle, start + 1)
+
+
+def _plan_env_file(path: Path, findings: list[Finding]) -> tuple[list[Change], list[Manual]]:
+    """Replace every inline key under an env block of one Claude Code file with "${NAME}"."""
+    changes: list[Change] = []
+    var_of: dict[str, str] = {}  # finding detail -> variable that now holds the key
+    data = _read(path)
+    try:
+        version = (path.stat().st_mtime_ns, path.stat().st_size)
+        text_ok = data is not None and len(data) == version[1] and data.decode("utf-8") is not None
+    except (OSError, UnicodeDecodeError):
+        text_ok = False
+    before = structured.parse(data, str(path)) if text_ok and data is not None else None
+    if data is not None and before is not None and len(data) <= structured.MAX_BYTES:
+        used: set[int] = set()
+        slots = list(_env_slots(before, path.name))[:MAX_SETTINGS_TRIES]
+        for jpath, server, var, value in slots:
+            found = find_secrets(value)
+            if len(found) != 1 or found[0].value != value or not _plain_json_string(value):
+                continue
+            needle = b'"' + value.encode() + b'"'
+            for start in _occurrences(data, needle):
+                if start in used:
+                    continue
+                new = data[:start] + f'"${{{var}}}"'.encode() + data[start + len(needle) :]
+                if structured.parse(new, str(path)) != _with_value(before, jpath, "${" + var + "}"):
+                    continue
+                used.add(start)
+                where = f"env.{var} of MCP server {safe_snippet(server, 60)!r}"
+                changes.append(
+                    Change(
+                        kind="env",
+                        path=path,
+                        line=data.count(b"\n", 0, start) + 1,
+                        check_id="AP005",
+                        shown=f'{where}: key replaced by "${{{var}}}"',
+                        offsets=((start, start + len(needle)),),
+                        digests=(_digest(needle),),
+                        json_path=json.dumps(list(jpath)),
+                        var=var,
+                        version=version,
+                    )
+                )
+                field_text = safe_snippet(f"env.{var}", 60)
+                detail = f"{found[0].name}: {redact(value)}{MCP_MARKER}"
+                detail += f"{safe_snippet(server, 60)!r} ({field_text})"
+                var_of[detail] = var
+                break
+    manual: list[Manual] = []
+    for finding in findings:
+        var = var_of.get(finding.detail)
+        if var is None:
+            manual += _leave_to_human([finding], False)[1]
+            continue
+        rotate = advise(finding, Moment.scan).ask_human
+        manual += [Manual(finding.check_id, text) for text in rotate]
+        manual.append(
+            Manual(
+                finding.check_id,
+                f"After rotating, set {var} in the shell that starts Claude Code to the new key: "
+                f"the MCP config now reads it from there ({quote(str(path))}).",
+            )
+        )
+    return changes, manual
+
+
+def _plan_env(findings: list[Finding], pack: bool) -> tuple[list[Change], list[Manual]]:
+    """AP005: Claude Code env entries become "${NAME}" references; every other entry (headers,
+    args, URL, other agents) stays with the human and its per-agent advice."""
+    changes: list[Change] = []
+    manual: list[Manual] = []
+    by_file: dict[str, list[Finding]] = {}
+    for finding in findings:
+        by_file.setdefault(finding.location, []).append(finding)
+    for location, group in by_file.items():
+        path = Path(location)
+        ours = [f for f in group if f.agent == "claude-code"] if path.name in _ENV_FILES else []
+        rest = [f for f in group if f not in ours]
+        if ours:
+            more_changes, more_manual = _plan_env_file(path, ours)
+            changes += more_changes
+            manual += more_manual
+        manual += _leave_to_human(rest, pack)[1]
+    return changes, manual
+
+
+# ---- ignore lines: AP007 ---------------------------------------------------------------------
+
+
+def _ignore_line(rel: str) -> str | None:
+    """A .gitignore line that names exactly this file from the repo root, or None if the name
+    can't be written as one line."""
+    if "\n" in rel or "\r" in rel:
+        return None
+    line = re.sub(r"([\\*?\[\]])", r"\\\1", rel)
+    trailing = len(line) - len(line.rstrip(" "))
+    if trailing:
+        line = line[:-trailing] + "\\ " * trailing
+    return "/" + line
+
+
+def _plan_ignore(findings: list[Finding], pack: bool) -> tuple[list[Change], list[Manual]]:
+    """AP007: add the file to the repo's .gitignore. A file already committed is the human's:
+    untracking it is a change to the repo's history."""
+    changes: dict[tuple[Path, str], Change] = {}
+    manual: list[Manual] = []
+    for finding in findings:
+        state = git_state(Path(finding.location))
+        line = _ignore_line(state[1]) if state else None
+        if state is None or line is None:
+            manual += _leave_to_human([finding], pack)[1]
+            continue
+        top, rel, status = state
+        if status == "tracked":
+            manual.append(
+                Manual(
+                    finding.check_id,
+                    f"{quote(rel)} is committed to git, so everyone who clones the repo has it. "
+                    f"In {quote(str(top))} run: git rm --cached -- {shlex.quote(rel)} ; then add "
+                    f"the line {quote(line)} to .gitignore and commit both. It stays in git "
+                    "history: ask the human to rotate any key it ever held.",
+                )
+            )
+            continue
+        target = top / ".gitignore"
+        changes.setdefault(
+            (target, line),
+            Change(
+                kind="ignore",
+                path=target,
+                line=None,
+                check_id=finding.check_id,
+                shown=f"add {safe_snippet(line, 200)} to {safe_snippet(str(target), 200)}",
+                line_text=line,
+                target=target,
+            ),
+        )
+    return list(changes.values()), manual
+
+
+# ---- file modes: AP008 -----------------------------------------------------------------------
+
+
+def _plan_locks(findings: list[Finding], pack: bool) -> tuple[list[Change], list[Manual]]:
+    """AP008: chmod go-rwx on exactly the files the check found (it hands them over on the
+    finding; fix does not work them out again)."""
+    changes: dict[Path, Change] = {}
+    manual: list[Manual] = []
+    for finding in findings:
+        if not finding.paths:
+            manual += _leave_to_human([finding], pack)[1]
+            continue
+        for path in finding.paths:
+            try:
+                mode = stat.S_IMODE(os.stat(path).st_mode)
+            except OSError:
+                continue  # gone since the scan: nothing to lock
+            if path not in changes and mode & 0o077:
+                changes[path] = Change(
+                    kind="lock",
+                    path=path,
+                    line=None,
+                    check_id=finding.check_id,
+                    shown=f"mode {mode:04o} to {mode & ~0o077:04o}",
+                    old_mode=mode,
+                )
+    return list(changes.values()), manual
+
+
+PLANNERS.update({"AP005": _plan_env, "AP007": _plan_ignore, "AP008": _plan_locks})
 
 
 # ---- applying --------------------------------------------------------------------------------
@@ -553,7 +800,148 @@ def _apply_masks(changes: list[Change], journal: Journal) -> list[Result]:
         os.close(fd)
 
 
-APPLIERS: dict[str, Applier] = {"mask": _apply_masks}
+def _stat_version(path: Path) -> tuple[int, int] | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return st.st_mtime_ns, st.st_size
+
+
+def _apply_env(changes: list[Change], journal: Journal) -> list[Result]:
+    """Replace the planned values with "${NAME}". Refuses if the file's mtime or size moved or
+    a value is no longer there; checks that the new file parses and differs from the old one only
+    at those values; then replaces the file atomically (same mode). No backup: it held a key."""
+    path = changes[0].path
+    name = str(path)
+    bad = "agentprint could not make this change safely; left as is"
+    version = _stat_version(path)
+    if version is None:
+        return [Result(c, GONE) for c in changes]
+    if version != changes[0].version:
+        return [Result(c, CHANGED) for c in changes]
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        return [Result(c, _cannot_write(exc)) for c in changes]
+    if len(data) != version[1] or any(
+        _digest(data[s:e]) != d
+        for c in changes
+        for (s, e), d in zip(c.offsets, c.digests, strict=True)
+    ):
+        return [Result(c, CHANGED) for c in changes]
+    before = structured.parse(data, name)
+    expected, new = before, data
+    try:
+        for c in sorted(changes, key=lambda c: c.offsets[0][0], reverse=True):
+            (start, end), reference = c.offsets[0], "${" + c.var + "}"
+            new = new[:start] + json.dumps(reference).encode() + new[end:]
+            expected = _with_value(expected, tuple(json.loads(c.json_path)), reference)
+        text = new.decode("utf-8")
+    except (KeyError, TypeError, ValueError, IndexError):
+        return [Result(c, bad) for c in changes]
+    if before is None or structured.parse(new, name) != expected:
+        return [Result(c, bad) for c in changes]
+    if _stat_version(path) != version:  # one last look before replacing the file
+        return [Result(c, CHANGED) for c in changes]
+    try:
+        atomic_write(path, text)
+    except OSError as exc:
+        return [Result(c, _cannot_write(exc)) for c in changes]
+    return [Result(c) for c in changes]
+
+
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _apply_ignore(changes: list[Change], journal: Journal) -> list[Result]:
+    """Add the planned lines to one ignore file: a new file if there is none; otherwise the old
+    one is first copied to ~/.agentprint/fix/backups/<stamp>/ (0600, folders 0700). Lines that are
+    already there are not added twice."""
+    path = changes[0].path
+    target = real(path)
+    try:
+        exists = os.path.lexists(target)
+        if exists and (
+            not stat.S_ISREG(target.stat().st_mode) or target.stat().st_size > MAX_BYTES
+        ):
+            return [Result(c, "the ignore file is not a plain file; left as is") for c in changes]
+        version = _stat_version(target)
+        old = target.read_bytes() if exists else b""
+        present = {line.rstrip(b"\r") for line in old.split(b"\n")}
+        eol = b"\r\n" if b"\r\n" in old else b"\n"
+        new = old + (eol if old and not old.endswith(b"\n") else b"")
+        results: list[Result] = []
+        added: list[Result] = []
+        for change in changes:
+            line = change.line_text.encode("utf-8")
+            if line in present:
+                results.append(Result(change, "the line is already in the ignore file"))
+                continue
+            present.add(line)
+            new += line + eol
+            added.append(Result(change))
+        if not added:
+            return results
+        text = new.decode("utf-8")
+        undo: dict[str, Any] = {"target": str(target), "after": _sha(new)}
+        journal.open()
+        if exists:
+            backup = journal.folder / "backups" / journal.stamp / Path(*target.resolve().parts[1:])
+            backup.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            private_dir(journal.folder / "backups")
+            fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(old)
+            undo["op"], undo["backup"] = "restore", str(backup)
+        else:
+            undo["op"] = "delete"
+        if _stat_version(target) != version:
+            return [Result(c, CHANGED) for c in changes]
+        atomic_write(target, text, 0o644)
+    except UnicodeDecodeError:
+        return [Result(c, "the ignore file is not UTF-8 text; left as is") for c in changes]
+    except OSError as exc:
+        return [Result(c, _cannot_write(exc)) for c in changes]
+    for result in added:
+        result.undo = undo
+    return results + added
+
+
+def _apply_lock(changes: list[Change], journal: Journal) -> list[Result]:
+    """chmod go-rwx on a file (the owner's bits, execute included, are kept) and journal the
+    mode it had right now."""
+    results = []
+    for change in changes:
+        try:
+            st = os.stat(change.path)
+            if not stat.S_ISREG(st.st_mode):
+                results.append(Result(change, CHANGED))
+                continue
+            if hasattr(os, "getuid") and st.st_uid != os.getuid():
+                results.append(Result(change, "the file belongs to another user; left as is"))
+                continue
+            old = stat.S_IMODE(st.st_mode)
+            new = old & ~0o077
+            if new == old:
+                results.append(Result(change, "the file is already private"))
+                continue
+            os.chmod(change.path, new)
+            results.append(Result(change, None, {"mode": old, "now": new}))
+        except FileNotFoundError:
+            results.append(Result(change, GONE))
+        except OSError as exc:
+            results.append(Result(change, _cannot_write(exc)))
+    return results
+
+
+APPLIERS: dict[str, Applier] = {
+    "mask": _apply_masks,
+    "env": _apply_env,
+    "ignore": _apply_ignore,
+    "lock": _apply_lock,
+}
 
 
 def apply(p: Plan, home: Path) -> Outcome:
@@ -587,3 +975,81 @@ def apply(p: Plan, home: Path) -> Outcome:
         if applied:
             structured.forget()  # masked files keep their size: don't serve the old parse
     return Outcome(applied, skipped, journal.path)
+
+
+# ---- undo ------------------------------------------------------------------------------------
+
+_JOURNAL_NAME = re.compile(r"\d{8}T\d{6}Z\.json")
+_KEY_GONE = {
+    "mask": "a masked key in {path} can't be put back: the key is gone, by design",
+    "env": "the key that was in {path} ({shown}) can't be put back: the key is gone, by design",
+}
+
+
+def _undo_entry(entry: dict[str, Any], folder: Path, done: set[tuple[str, str]]) -> str | None:
+    """Revert one journal entry. Returns None when it was reverted, else why it was not."""
+    kind, path = str(entry.get("kind")), str(entry.get("path"))
+    undo = entry.get("undo")
+    if not isinstance(undo, dict):
+        text = _KEY_GONE.get(kind, "this {kind} change can't be undone")
+        return text.format(path=quote(path), shown=quote(str(entry.get("shown"))), kind=kind)
+    if kind == "lock":
+        target = Path(path)
+        mode = stat.S_IMODE(os.stat(target).st_mode)
+        if mode != undo["now"]:
+            return f"the mode of {quote(path)} was changed again since fix; left as it is now"
+        os.chmod(target, undo["mode"])
+        return None
+    if kind == "ignore":
+        target = Path(undo["target"])
+        if (undo["op"], str(target)) in done:
+            return None  # one restore covers every line fix added to this file
+        if _sha(target.read_bytes()) != undo["after"]:
+            return f"{quote(str(target))} was edited since fix; remove the added line by hand"
+        if undo["op"] == "delete":
+            target.unlink()
+        else:
+            backup = Path(undo["backup"]).resolve()
+            if (folder / "backups").resolve() not in backup.parents:
+                return "the journal names a backup outside its own folder; left as is"
+            atomic_write(target, backup.read_bytes().decode("utf-8"))
+        done.add((undo["op"], str(target)))
+        return None
+    return f"this {kind} change can't be undone"
+
+
+def undo(home: Path) -> tuple[list[str], list[str]]:
+    """Revert what the newest fix journal can: file modes and ignore files. Returns (restored,
+    not restorable), both plain sentences. Masked keys and env references are gone for good.
+    Older journals are left alone. With no journal there is nothing to do, and it says so."""
+    folder = home / JOURNAL_DIR
+    names = sorted(p for p in folder.glob("*.json") if _JOURNAL_NAME.fullmatch(p.name))
+    if not names:
+        return [], [f"There is nothing to undo: no fix journal in {quote(str(folder))}."]
+    path = names[-1]
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        entries = [e for e in data["changes"] if isinstance(e, dict)]
+    except (OSError, ValueError, KeyError, TypeError):
+        return [], [f"The newest fix journal ({path.name}) can't be read, so nothing was undone."]
+    restored: list[str] = []
+    cannot: list[str] = []
+    done: set[tuple[str, str]] = set()
+    for entry in entries:
+        if entry.get("undone"):
+            continue
+        what = {"lock": "mode of", "ignore": "ignore file"}.get(str(entry.get("kind")), "")
+        where = quote(str(entry.get("path")))
+        try:
+            reason = _undo_entry(entry, folder, done)
+        except (OSError, KeyError, TypeError, ValueError) as exc:
+            reason = f"{where} could not be put back ({type(exc).__name__}); left as is"
+        if reason is None:
+            entry["undone"] = True
+            restored.append(f"restored the {what} {where}".replace("the  ", "the "))
+        else:
+            cannot.append(reason)
+    if restored:
+        with contextlib.suppress(OSError):
+            atomic_write(path, json.dumps(data, indent=2) + "\n", 0o600)
+    return restored, cannot

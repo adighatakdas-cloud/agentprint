@@ -20,3 +20,8 @@ ALL = {
     "slack": SLACK,
     "google": GOOGLE,
 }
+
+
+def mask_for_test(value: str) -> str:
+    """What `agentprint fix` leaves of a key: first 4 characters, then `*` to the same length."""
+    return value[:4] + "*" * (len(value) - 4)
