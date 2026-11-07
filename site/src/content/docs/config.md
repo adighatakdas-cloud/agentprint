@@ -53,7 +53,7 @@ The project root is the folder you check: the path you give `scan` or `fix`, the
 | `ignore` | A list of rules. Each has a `check` (an id such as `AP003`), a `path`, or both, and a `reason`. A finding a rule matches is known. A rule with neither `check` nor `path` is skipped, because it would hide everything. |
 | `baseline` | The baseline file, from the project root. Default: `.agentprint-baseline.json`. |
 
-An ignore `path` is a glob over the file's path from the project root, with forward slashes. `*` and `?` stay inside one folder, `**` crosses folders, and a path that ends in `/` means everything under that folder. `.mcp.json` matches only the file at the root; `**/.mcp.json` matches it in any folder. Inside a package, the path is the file's name in the package. An npm tarball puts everything under `package/`, so start package rules with `**/`.
+An ignore `path` is a glob over the file's path from the project root, with forward slashes. `*` and `?` stay inside one folder or file name. `**` as a whole folder name (`**/x`, `x/**`) crosses folders; inside a name it is just `*`. A path that ends in `/` means everything under that folder. A path longer than 512 characters or with more than 16 wildcards is skipped with a warning. `.mcp.json` matches only the file at the root; `**/.mcp.json` matches it in any folder. Inside a package, the path is the file's name in the package. An npm tarball puts everything under `package/`, so start package rules with `**/`.
 
 Ignore rules only match the project's own files. They never hide a finding in your home folder, so a repository you clone cannot silence a sweep of your own agent files. The same goes for the project's baseline (below).
 

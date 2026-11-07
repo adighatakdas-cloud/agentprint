@@ -182,10 +182,45 @@ def test_warnings_hold_no_control_characters(tmp_path):
         ("docs/[x].md", "docs/x.md", False),
         ("a.b", "aXb", False),  # dots are literal
         ("src\\*.ts", "src/a.ts", True),  # a Windows-style slash means a folder too
+        ("a**b", "a/b", False),  # ** inside a name is *: it stays in the folder
+        ("a**b", "aXYb", True),
+        ("src/**/*.ts", "src/c.ts", True),
+        ("src/**/*.ts", "src/a/b/c.ts", True),
+        ("src/**/*.ts", "lib/src/c.ts", False),
+        ("**", "a/b/c", True),
+        ("x/***/y", "x/1/2/y", True),  # *** as a folder name is **
+        ("*", "*", True),
+        ("a*", "a*b", True),
+        ("?.md", "ab.md", False),
+        ("", "a", False),
     ],
 )
 def test_ignore_paths_are_globs_from_the_project_root(glob, path, hit):
-    assert (glob_pattern(glob).fullmatch(path) is not None) is hit
+    assert glob_pattern(glob).matches(path) is hit
+
+
+def test_a_hostile_glob_matches_in_linear_time():
+    """The reviewer's probe: "**a" * n + "zz" took 11 s at n = 9 as a regex."""
+    deep = "package/.claude/agents/team/review/notes/settings.local.json"
+    started = time.perf_counter()
+    for glob, path in [
+        ("**a" * 5 + "zz", "a" * 40),  # 16 wildcards at most
+        ("**/" * 16 + "zz", deep),
+        ("*a" * 16 + "zz", "a" * 500),
+        ("a*" * 8 + "/" + "**/" * 8 + "b", "/".join(["a" * 60] * 60)),
+    ]:
+        assert not glob_pattern(glob).matches(path)
+    assert time.perf_counter() - started < 0.1
+
+
+@pytest.mark.parametrize(
+    ("glob", "words"),
+    [("*" * 2 + "/" + "a*" * 17, "more than 16 wildcards"), ("a" * 513, "longer than 512")],
+)
+def test_globs_that_are_too_long_or_too_wild_warn(tmp_path, glob, words):
+    _write(tmp_path / ".agentprint.toml", f'[[ignore]]\npath = "{glob}"\n')
+    config = load(tmp_path)
+    assert config.ignore == () and words in config.warnings[0]
 
 
 @contextmanager

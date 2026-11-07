@@ -15,8 +15,9 @@ and the defaults.
     reason = "throwaway dev container"
 
 Ignore paths are globs over the path from the project root, with forward slashes: `*` and `?`
-stay inside one folder, `**` crosses folders, a trailing `/` means everything under it. In a
-package they match the file's name inside the package. They never match a file outside the
+stay inside one folder name, `**` as a whole folder name crosses folders, a trailing `/` means
+everything under it. At most 512 characters and 16 wildcards. In a package they match the
+file's name inside the package. They never match a file outside the
 project (your home folder's agent files are yours, not the project's).
 """
 
@@ -56,12 +57,12 @@ class Ignore:
     check: str | None  # "AP003"; None = any check
     path: str | None  # glob from the project root; None = any file in the project
     reason: str
-    pattern: re.Pattern[str] | None = field(default=None, compare=False, repr=False)
+    pattern: Glob | None = field(default=None, compare=False, repr=False)
 
     def matches(self, check_id: str, path: str) -> bool:
         if self.check is not None and self.check != check_id:
             return False
-        return self.pattern is None or self.pattern.fullmatch(path) is not None
+        return self.pattern is None or self.pattern.matches(path)
 
 
 @dataclass(frozen=True)
@@ -75,29 +76,74 @@ class Config:
     warnings: tuple[str, ...] = ()
 
 
-def glob_pattern(glob: str) -> re.Pattern[str]:
-    """A path glob as a regex over a POSIX path: * and ? stay in one folder, ** crosses them."""
+MAX_GLOB_CHARS = 512
+MAX_WILDCARDS = 16
+
+
+@dataclass(frozen=True)
+class Glob:
+    """A path glob, folder by folder: `**` as a whole folder name crosses folders (at the end:
+    one or more), `*` and `?` stay inside one name. Matching is linear in the path and the glob,
+    with no regex backtracking, so a hostile config can't stall a hook."""
+
+    parts: tuple[str, ...]
+
+    def matches(self, path: str) -> bool:
+        names = path.split("/")
+        reach = [True] + [False] * len(names)  # reach[j]: the glob so far matches names[:j]
+        for i, part in enumerate(self.parts):
+            if part == "**":
+                trailing, seen, new = i == len(self.parts) - 1, False, []
+                for j in range(len(names) + 1):
+                    if not trailing:
+                        seen = seen or reach[j]
+                    new.append(seen)
+                    if trailing:
+                        seen = seen or reach[j]
+                reach = new
+            else:
+                reach = [False] + [reach[j] and _name(part, n) for j, n in enumerate(names)]
+        return reach[-1]
+
+
+def _name(pattern: str, name: str) -> bool:
+    """`*` and `?` against one folder or file name: two pointers, at most len(pattern) *
+    len(name) steps."""
+    p = n = 0
+    star, mark = -1, 0
+    while n < len(name):
+        if p < len(pattern) and pattern[p] == "*":  # always a wildcard, even against a "*"
+            star, mark, p = p, n, p + 1
+        elif p < len(pattern) and pattern[p] in ("?", name[n]):
+            p, n = p + 1, n + 1
+        elif star >= 0:
+            mark += 1
+            p, n = star + 1, mark
+        else:
+            return False
+    return pattern[p:].strip("*") == ""
+
+
+def glob_pattern(glob: str) -> Glob:
+    """A path glob from the project root. Raises ValueError when it is longer than 512
+    characters or has more than 16 wildcards."""
     glob = glob.strip().replace("\\", "/").lstrip("/")
+    if len(glob) > MAX_GLOB_CHARS:
+        raise ValueError(f"longer than {MAX_GLOB_CHARS} characters")
     if glob.endswith("/"):
         glob += "**"
-    out, i = [], 0
-    while i < len(glob):
-        if glob.startswith("**/", i):
-            out.append("(?:.*/)?")
-            i += 3
-        elif glob.startswith("**", i):
-            out.append(".*")
-            i += 2
-        elif glob[i] == "*":
-            out.append("[^/]*")
-            i += 1
-        elif glob[i] == "?":
-            out.append("[^/]")
-            i += 1
-        else:
-            out.append(re.escape(glob[i]))
-            i += 1
-    return re.compile("".join(out), re.S)
+    parts: list[str] = []
+    for part in glob.split("/"):
+        if not part:
+            continue
+        part = "**" if set(part) == {"*"} and len(part) > 1 else re.sub(r"\*+", "*", part)
+        if part == "**" and parts and parts[-1] == "**":
+            continue  # **/**: one is enough
+        parts.append(part)
+    wildcards = sum(1 if p == "**" else p.count("*") + p.count("?") for p in parts)
+    if wildcards > MAX_WILDCARDS:
+        raise ValueError(f"more than {MAX_WILDCARDS} wildcards")
+    return Glob(tuple(parts))
 
 
 def read_regular(path: Path, limit: int, *, links: bool = True) -> bytes:
@@ -266,7 +312,11 @@ def _ignores(raw: object, name: str, unknown: list[str], warnings: list[str]) ->
                 f"{where} has neither check nor path (it would hide everything); skipped"
             )
             continue
-        pattern = glob_pattern(path) if path is not None else None
+        try:
+            pattern = glob_pattern(path) if path is not None else None
+        except ValueError as exc:
+            warnings.append(f"{where}: path is {exc}; skipped")
+            continue
         reason = clean(reason or NO_REASON, 200)
         rules.append(Ignore(check, path, reason, pattern))
     return rules
