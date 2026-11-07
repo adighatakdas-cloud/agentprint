@@ -23,6 +23,7 @@ _INTERPRETER = re.compile(
     r"|powershell)$"
 )
 _SHEBANG = re.compile(r"#!\s*(\S+)(.*)")
+_SPECIAL = re.compile(r"[#'\"\\<]")  # what _scan has to look at: comments, quotes, heredocs
 _BY_EXTENSION = {
     ".py": "python3",
     ".js": "node",
@@ -97,6 +98,8 @@ def shell_text(text: str) -> tuple[str, list[str]]:
 
 def _scan(line: str, quote: str) -> tuple[str, str, list[tuple[bool, str]]]:
     """One line without its comment; the quote still open after it; here-documents it opens."""
+    if not quote and not _SPECIAL.search(line):
+        return line.rstrip(), "", []  # nothing to take out: most lines
     out: list[str] = []
     heredocs: list[tuple[bool, str]] = []
     arithmetic = 0  # open `((`: a `<<` inside $(( 1 << 2 )) is a shift, not a here-document
@@ -248,16 +251,33 @@ def _logical_lines(text: str) -> list[str]:
     return out
 
 
-def make_steps(
-    mf: Makefile, goals: list[str], overrides: dict[str, str]
-) -> tuple[list[str], list[str]]:
-    """The shell commands `make <goals>` runs, prerequisites first, and the goals with no rule.
+@dataclass
+class MakePlan:
+    """What `make <goals>` runs, prerequisites first: each step's text before make fills in its
+    variables (`text()` does that), the goals with no rule, and prerequisites with no rule."""
 
-    Each recipe line runs in its own shell (one shell per recipe with `.ONESHELL:`). Variables
+    raw: list[str]
+    missing: list[str]
+    absent: list[str]
+    variables: dict[str, str]
+    memo: dict[str, str] = field(default_factory=dict)
+
+    def text(self, step: str, limit: int = 0) -> str:
+        """One step with variables filled in and `@`/`-`/`+` taken off each line. A value that
+        grows past `limit` characters (64 KB when 0) stays unknown."""
+        lines = [
+            _RECIPE_PREFIX.sub("", expand_make(line, self.variables, self.memo, limit=limit))
+            for line in step.split("\n")
+        ]
+        return "\n".join(line for line in lines if line.strip())
+
+
+def make_plan(mf: Makefile, goals: list[str], overrides: dict[str, str]) -> MakePlan:
+    """Each recipe line runs in its own shell (one shell per recipe with `.ONESHELL:`). Variables
     set in the makefile are filled in; `$(MAKE)` becomes `make`; anything else only make knows
     becomes `${NAME}`, which the command reader treats as known only at run time."""
     variables = {**mf.variables, **overrides}
-    memo: dict[str, str] = {}
+    plan = MakePlan([], [], [], variables)
     goals = goals or ([mf.default] if mf.default else [])
     order: list[str] = []
     seen: set[str] = set()
@@ -267,34 +287,51 @@ def make_steps(
         if ready:
             order.append(target)
             continue
-        if target in seen or target not in mf.rules:
+        if target in seen:
             continue
         seen.add(target)
+        if target not in mf.rules:
+            plan.absent.append(target)
+            continue
         stack.append((target, True))
-        prereqs = expand_make(" ".join(mf.rules[target][0]), variables, memo).split()
+        prereqs = expand_make(" ".join(mf.rules[target][0]), variables, plan.memo).split()
         stack += [(p, False) for p in reversed(prereqs)]
-    steps: list[str] = []
     for target in order:
-        recipe = [expand_make(line, variables, memo) for line in mf.rules[target][1]]
-        lines = [_RECIPE_PREFIX.sub("", line) for line in recipe]
-        lines = [line for line in lines if line.strip()]
+        lines = [line for line in mf.rules[target][1] if line.strip()]
         if mf.oneshell and lines:
-            steps.append("\n".join(lines))
+            plan.raw.append("\n".join(lines))
         else:
-            steps += lines
-    return steps, [goal for goal in goals if goal not in mf.rules]
+            plan.raw += lines
+    plan.missing = [goal for goal in goals if goal not in mf.rules]
+    plan.absent = [name for name in plan.absent if name not in plan.missing]
+    return plan
+
+
+def make_steps(
+    mf: Makefile, goals: list[str], overrides: dict[str, str]
+) -> tuple[list[str], list[str]]:
+    """The shell commands `make <goals>` runs, prerequisites first, and the goals with no rule."""
+    plan = make_plan(mf, goals, overrides)
+    steps = [plan.text(step) for step in plan.raw]
+    return [step for step in steps if step.strip()], plan.missing
 
 
 def expand_make(
-    text: str, variables: dict[str, str], memo: dict[str, str] | None = None, depth: int = 0
+    text: str,
+    variables: dict[str, str],
+    memo: dict[str, str] | None = None,
+    depth: int = 0,
+    limit: int = 0,
 ) -> str:
     """`text` with make variables filled in. Each variable is expanded once (`memo`); one that
-    refers to itself, nests too deeply or grows past 64 KB is left as `${NAME}`."""
+    refers to itself, nests too deeply or grows past 64 KB is left as `${NAME}`, and so is the
+    whole text when it grows past `limit` characters (64 KB when 0)."""
     memo = {} if memo is None else memo
+    limit = limit or _MAX_EXPANSION
     out: list[str] = []
     size = 0
     i = 0
-    while i < len(text) and size <= _MAX_EXPANSION:
+    while i < len(text) and size <= limit:
         char = text[i]
         if char != "$" or i + 1 >= len(text):
             piece, i = char, i + 1
@@ -310,7 +347,7 @@ def expand_make(
             piece, i = "$" + text[i + 1], i + 2
         out.append(piece)
         size += len(piece)
-    if size > _MAX_EXPANSION:
+    if size > limit:
         return "${MAKE_VALUE}"
     return "".join(out)
 
@@ -536,9 +573,20 @@ def taskfile_text(text: str, names: list[str]) -> str:
     if re.search(r"(?:^|\s)[&*][\w-]", text) or re.search(r"[\[{]{32}", text):
         return text  # anchors, aliases, deep nesting: not worth a slow or huge parse
     try:
-        return _taskfile_part(yaml.load(text, Loader=_YAML_LOADER), names) or text
-    except (yaml.YAMLError, RecursionError, ValueError, TypeError):  # deep nesting, odd values
+        return _taskfile_part(_load_yaml(text), names) or text
+    except Exception:  # noqa: BLE001 - narrowing is a nicety: any doubt, read the whole file
         return text
+
+
+def _load_yaml(text: str) -> object:
+    """libyaml when it is there, else (or when it fails) PyYAML's own safe loader. Under some
+    import orders libyaml's errors and nodes are not the `yaml` module's classes."""
+    try:
+        return yaml.load(text, Loader=_YAML_LOADER)
+    except Exception:  # noqa: BLE001
+        if _YAML_LOADER is yaml.SafeLoader:
+            raise
+        return yaml.load(text, Loader=yaml.SafeLoader)
 
 
 def _taskfile_part(data: object, names: list[str]) -> str:
