@@ -168,6 +168,8 @@ _RUNS_A_FILE = re.compile(
     r"|(?:sh|bash|zsh|dash|ksh|fish|python[0-9.]*|node|tsx|ruby|perl)[ \t]+[^-\s])"
 )
 
+_ANSI_C_QUOTE = re.compile(r"\$'(?:[^'\\]|\\.)*'")  # $'it\'s': shlex can't read the \'
+
 
 def detect(command: str, cwd: Path, _depth: int = 0) -> list[Risky]:
     """Every publish or push in `command`, in order, with the directory each runs in."""
@@ -186,8 +188,8 @@ def _detect(command: str, cwd: Path, depth: int) -> list[Risky]:
     seen: set[tuple[Action, str]] = set()  # also counts dry runs, so the backstop skips them
     try:
         found = _parse(command, cwd, depth, seen)
-    except ValueError:  # unbalanced quotes and similar
-        found = []
+    except ValueError:  # unbalanced quotes and similar: read a script line by line instead
+        found = _parse_lines(command, cwd, depth, seen) if "\n" in command.strip() else []
     for inner in [*_BACKTICK.findall(command), *_DOLLAR_PAREN.findall(command)]:
         found += detect(inner, cwd, depth + 1)
     known = seen | {(r.action, r.tool) for r in found}
@@ -218,13 +220,32 @@ def _backstop(command: str, cwd: Path) -> list[Risky]:
 
 
 def _parse(command: str, cwd: Path, depth: int, seen: set) -> list[Risky]:
-    text = _FD_DUP.sub(" ", command.replace("\n", " ; "))
+    found: list[Risky] = []
+    _parse_into(command, _Where(cwd), depth, seen, found)
+    return found
+
+
+def _parse_lines(command: str, cwd: Path, depth: int, seen: set) -> list[Risky]:
+    """A script one line at a time, so one line shlex can't read hides only itself (the
+    backstop still scans it). A `cd` carries on to the next line, as in the script."""
+    found: list[Risky] = []
+    where = _Where(cwd)
+    for line in command.split("\n"):
+        try:
+            where = _parse_into(line, where, depth, seen, found)
+        except ValueError:
+            continue
+    return found
+
+
+def _parse_into(command: str, where: _Where, depth: int, seen: set, found: list[Risky]) -> _Where:
+    """Add what `command` publishes to `found`; returns where the shell is after it."""
+    text = _FD_DUP.sub(" ", _ANSI_C_QUOTE.sub("''", command).replace("\n", " ; "))
     text = _AMP_REDIRECT.sub(" > ", text)
     lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|()")
     lexer.whitespace_split = True
     tokens = list(lexer)
-    found: list[Risky] = []
-    state = _Where(cwd)
+    state = where
     stack: list[_Where] = []
     segment: list[str] = []
     for token in [*tokens, ";"]:
@@ -239,7 +260,7 @@ def _parse(command: str, cwd: Path, depth: int, seen: set) -> list[Risky]:
             for _ in range(token.count(")")):
                 if stack:
                     state = stack.pop()
-    return found
+    return state
 
 
 @dataclass(frozen=True)

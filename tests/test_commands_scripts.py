@@ -772,3 +772,15 @@ def test_a_folder_that_can_be_listed_but_not_entered_has_nothing_to_read(tmp_pat
         assert detect("just release", folder) == []
     finally:
         folder.chmod(0o755)
+
+
+@pytest.mark.parametrize("after", ["make release", "./publish.sh", "npm version patch"])
+def test_a_line_shlex_cannot_read_hides_only_itself(tmp_path, after):
+    write(tmp_path, "Makefile", "release:\n\tnpm publish\n")
+    write(tmp_path, "publish.sh", "npm publish\n", 0o755)
+    write(tmp_path, "package.json", json.dumps({"scripts": {"postversion": "npm publish"}}))
+    bad = "#!/bin/bash\necho $'it\\'s ok'\necho \"unclosed\n"
+    write(tmp_path, "release.sh", bad + after + "\n", 0o755)
+    assert tools("./release.sh", tmp_path) == [(P, "npm")]
+    write(tmp_path, "release.sh", 'cd sub\necho "unclosed\nnpm publish\n', 0o755)
+    assert found("./release.sh", tmp_path) == [(P, "npm", tmp_path / "sub", "")]  # cd carries on
