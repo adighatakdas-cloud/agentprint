@@ -34,21 +34,23 @@ from pathlib import Path
 from typing import Any
 
 from . import sqlite_text, structured
-from .advice import Moment, advise, agent_path, split_location
-from .advice import _ignore_line as folder_line
+from .advice import NO_LEAK, Advice, Moment, advise, agent_path, split_location
+from .agents import ALL_AGENTS, by_name
 from .checks.ap005_mcp_inline_secret import _MARKER as MCP_MARKER
 from .checks.ap007_local_not_ignored import git_state
 from .checks.base import safe_snippet
 from .files import MAX_BYTES
 from .models import Finding
 from .safewrite import atomic_write, private_dir, real
-from .sanitize import quote
+from .sanitize import clean, quote
 from .secrets import find_secrets, redact
 
 JOURNAL_DIR = Path(".agentprint") / "fix"  # under the home folder
 STAMP = "%Y%m%dT%H%M%SZ"  # UTC; also names the run's backup folder
 CHANGED = "the file changed while fixing; run agentprint fix again"
 GONE = "the file is no longer there; run agentprint fix again"
+
+Version = tuple[int, int]  # a file's (mtime_ns, size)
 
 # Key names whose entries are pasted commands or tool patterns, not config values: masking a key
 # inside one changes no behaviour. An entry counts when it is a string in a list under one of
@@ -101,7 +103,7 @@ class Change:
     # value's string token, quotes included.
     json_path: str = ""
     var: str = ""
-    version: tuple[int, int] | None = None
+    version: Version | None = None
     # ignore: the line to add, and the ignore file to add it to (also `path`, so every line for
     # one file is applied in one go).
     line_text: str = ""
@@ -115,10 +117,15 @@ class Change:
 
 @dataclass(frozen=True)
 class Manual:
-    """One "needs you" item: something only the human can do, already sanitised for display."""
+    """One "needs you" item: something only the human can do, already sanitised for display.
+
+    `text` is worded for the AI agent that ran fix (the agent and JSON views); `person` is the
+    same item for a person reading the plan (the human view), or "" when `text` reads well to
+    both. Two items with the same check id and text are one item, whatever their `person`."""
 
     check_id: str
     text: str
+    person: str = field(default="", compare=False)
 
 
 @dataclass
@@ -183,19 +190,47 @@ def _moment(pack: bool) -> Moment:
     return Moment.publish if pack else Moment.scan
 
 
+def _joined(advice: Advice) -> str:
+    return " ".join([*advice.fix_steps, *advice.ask_human])
+
+
 def _advice(finding: Finding, pack: bool) -> Manual:
-    """The existing advice for a print, as one "needs you" item."""
-    advice = advise(finding, _moment(pack))
-    return Manual(finding.check_id, " ".join([*advice.fix_steps, *advice.ask_human]))
+    """The existing advice for a print, as one "needs you" item (for the agent, and the same
+    steps worded for a person)."""
+    moment = _moment(pack)
+    return Manual(
+        finding.check_id,
+        _joined(advise(finding, moment)),
+        _joined(advise(finding, moment, person=True)),
+    )
+
+
+def _ask_human(finding: Finding, pack: bool) -> list[Manual]:
+    """The print's ask_human items (rotating its key), each one "needs you" item."""
+    moment = _moment(pack)
+    agent = advise(finding, moment).ask_human
+    person = advise(finding, moment, person=True).ask_human
+    return [Manual(finding.check_id, a, p) for a, p in zip(agent, person, strict=True)]
 
 
 def _leave_to_human(findings: list[Finding], pack: bool) -> tuple[list[Change], list[Manual]]:
-    """Prints agentprint never changes itself (AP003, AP004, ...): where, what, and the advice."""
+    """Prints agentprint never changes itself (AP003, AP004, ...): where, what, and the advice.
+    The agent reads the scanned detail as a quoted value; a person reads it as a sentence, the
+    way `agentprint scan` shows it."""
     manual = []
     for finding in findings:
         line = f" line {finding.line}" if finding.line else ""
-        where = f"{finding.title} in {quote(finding.location)}{line} ({quote(finding.detail)})"
-        manual.append(Manual(finding.check_id, f"{where}: {_advice(finding, pack).text}"))
+        where = f"{finding.title} in {quote(finding.location)}{line}"
+        advice = _advice(finding, pack)
+        detail = clean(finding.detail)
+        end = "" if detail.endswith((".", "!", "?")) else "."
+        manual.append(
+            Manual(
+                finding.check_id,
+                f"{where} ({quote(finding.detail)}): {advice.text}",
+                f"{where}: {detail}{end} {advice.person}",
+            )
+        )
     return [], manual
 
 
@@ -401,18 +436,56 @@ def _mask_changes(
 
 
 def _chat_database(finding: Finding) -> Manual:
-    rotate = advise(finding, Moment.scan).ask_human
+    rotate = _ask_human(finding, False)
     text = (
         f"Delete the chat that holds this key in {finding.agent}: it is stored in the chat "
         f"database {quote(finding.location)}, which agentprint does not edit."
     )
-    return Manual(finding.check_id, " ".join([text, *rotate]))
+    return Manual(
+        finding.check_id,
+        " ".join([text, *(m.text for m in rotate)]),
+        " ".join([text, *(m.person for m in rotate)]),
+    )
+
+
+def _pure_history(finding: Finding, path: Path) -> bool:
+    """True if the agent module says this history file is only a record (a transcript, chat
+    log, paste cache or prompt history) that the agent never reads back."""
+    agent = by_name(finding.agent)
+    check = getattr(agent, "pure_history", None)
+    try:
+        return bool(check is not None and check(path))
+    except Exception:  # an agent module bug must never let fix mask a file it can't place
+        return False
+
+
+def _read_back(finding: Finding, pack: bool) -> Manual:
+    """AP001 in a file the agent reads back as instructions or config (a skill, rule, memory or
+    scheduled job). The key is in use there, so masking it would break what uses it before the
+    human has a new one: it stays with the human."""
+    line = f" line {finding.line}" if finding.line else ""
+    first = (
+        f"Move the key out of {quote(finding.location)}{line}: {finding.agent} reads that file "
+        "back as instructions or config (a skill, rule, memory or scheduled job). agentprint "
+        "leaves the key there, since masking it would break what uses it. Load it from an "
+        "environment variable or the agent's own key store instead."
+    )
+    rotate = _ask_human(finding, pack)
+    return Manual(
+        finding.check_id,
+        " ".join([f"{first} {NO_LEAK}", *(m.text for m in rotate)]),
+        " ".join([first, *(m.person for m in rotate)]),
+    )
 
 
 def _plan_masks(findings: list[Finding], pack: bool) -> tuple[list[Change], list[Manual]]:
     """AP001 and AP002: mask every key that can be masked safely. A masked key is still
     exposed, so each print keeps a "needs you" item: rotate, plus the existing advice for a key
-    that is still in its file."""
+    that is still in its file.
+
+    AP001 masks only pure history, as its agent module names it (transcripts, chat logs, paste
+    caches, prompt history). A key in a file the agent reads back (skills, rules, memories,
+    scheduled jobs) is in use: that print is the human's."""
     changes: list[Change] = []
     manual: list[Manual] = []
     by_file: dict[str, list[Finding]] = {}
@@ -427,6 +500,9 @@ def _plan_masks(findings: list[Finding], pack: bool) -> tuple[list[Change], list
             manual += [
                 _chat_database(f) if f.check_id == "AP001" else _advice(f, pack) for f in group
             ]
+            continue
+        if group[0].check_id == "AP001" and not _pure_history(group[0], path):
+            manual += [_read_back(f, pack) for f in group]
             continue
         data = _read(path)
         if data is None:
@@ -447,8 +523,7 @@ def _plan_masks(findings: list[Finding], pack: bool) -> tuple[list[Change], list
             # Several keys can share a stub (same rule, first 4 characters and length).
             same = [key for key, rule in keys.items() if f"{rule}: {redact(key)}" == finding.detail]
             if same and all(key in masked for key in same):
-                ask = advise(finding, _moment(pack)).ask_human
-                manual += [Manual(finding.check_id, text) for text in ask]
+                manual += _ask_human(finding, pack)
             else:
                 manual.append(_advice(finding, pack))
     return changes, manual
@@ -555,8 +630,7 @@ def _plan_env_file(path: Path, findings: list[Finding]) -> tuple[list[Change], l
         if var is None:
             manual += _leave_to_human([finding], False)[1]
             continue
-        rotate = advise(finding, Moment.scan).ask_human
-        manual += [Manual(finding.check_id, text) for text in rotate]
+        manual += _ask_human(finding, False)
         manual.append(
             Manual(
                 finding.check_id,
@@ -615,13 +689,16 @@ def _plan_ignore(findings: list[Finding], pack: bool) -> tuple[list[Change], lis
             continue
         top, rel, status = state
         if status == "tracked":
+            steps = (
+                f"{quote(rel)} is committed to git, so everyone who clones the repo has it. "
+                f"In {quote(str(top))} run: git rm --cached -- {shlex.quote(rel)} ; then add "
+                f"the line {quote(line)} to .gitignore and commit both. It stays in git history:"
+            )
             manual.append(
                 Manual(
                     finding.check_id,
-                    f"{quote(rel)} is committed to git, so everyone who clones the repo has it. "
-                    f"In {quote(str(top))} run: git rm --cached -- {shlex.quote(rel)} ; then add "
-                    f"the line {quote(line)} to .gitignore and commit both. It stays in git "
-                    "history: ask the human to rotate any key it ever held.",
+                    f"{steps} ask the human to rotate any key it ever held.",
+                    f"{steps} rotate any key it ever held.",
                 )
             )
             continue
@@ -710,17 +787,45 @@ def _in_files_list(root: Path, member: str) -> bool:
     return False
 
 
+# Folders that also hold files a team commits and ships on purpose (workflows, shared agent
+# config, commands, skills): an ignore line never names one of them whole.
+SHARED_FOLDERS = frozenset(
+    {".agents", ".claude", ".codex", ".copilot", ".cursor", ".gemini", ".github", ".vscode"}
+)
+
+
+def package_line(member: str) -> str | None:
+    """The ignore line that keeps one agent file out of a package (and out of git), from the
+    project root: the file itself (/.claude/settings.local.json), or the folder a package rule
+    names when the rule is about a whole folder of agent data (/.codex/sessions/). Never a bare
+    shared folder such as .claude/ or .github/, which would also drop files the team commits
+    and ships on purpose. None if the name can't be written as one line."""
+    for agent in ALL_AGENTS:
+        for rule in agent.package_rules:
+            match = rule.pattern.search(member)
+            if match is None:
+                continue
+            folder = member[: match.end()].strip("/")
+            whole_folder = match.end() < len(member) and member[match.end() - 1] == "/"
+            if whole_folder and folder and folder not in SHARED_FOLDERS:
+                line = _ignore_line(folder)
+                return None if line is None else line + "/"
+            return _ignore_line(member)
+    return _ignore_line(member)
+
+
 def _plan_package(findings: list[Finding], root: Path | None) -> tuple[list[Change], list[Manual]]:
-    """AP006: keep the agent file out of an npm package (.npmignore) and out of git (.gitignore).
-    A "files" list is the human's; so is every package that is not a project folder with npm."""
+    """AP006: keep the agent file out of an npm package (.npmignore) and out of git (.gitignore),
+    with a line naming just that file (or the agent-data folder its package rule names). A
+    "files" list is the human's; so is every package that is not a project folder with npm."""
     changes: dict[tuple[Path, str], Change] = {}
     manual: list[Manual] = []
     for finding in findings:
         member = _npm_source(finding, root)
-        if member is None or root is None:
+        line = package_line(member) if member is not None else None
+        if member is None or root is None or line is None:
             manual.append(_advice(finding, True))
             continue
-        line = folder_line(agent_path(member))
         if _in_files_list(root, member):
             manual.append(
                 Manual(
@@ -793,13 +898,25 @@ class Journal:
 
     Each entry: kind, path, line, check id, masked stub (`shown`) and `undo` (what --undo needs;
     null when the change can't be undone, such as a masked key). Never holds a key. The file
-    is created at the first recorded change; a stamp already taken moves on by a second."""
+    is created at the first recorded change; a stamp already taken moves on by a second.
+    `close()` removes it again if no change was recorded: an empty newest journal would hide
+    the run before it from --undo.
+
+    It also remembers this run's own in-place writes (`wrote`), so a later change to the same
+    file can tell agentprint's own edit from someone else's."""
 
     def __init__(self, home: Path, now: datetime | None = None) -> None:
         self.folder = home / JOURNAL_DIR
         self.started = now or datetime.now(UTC)
         self.path: Path | None = None
         self.entries: list[dict[str, Any]] = []
+        self.saved = 0  # how many entries the file on disk holds
+        self.written: dict[Path, tuple[Version, Version]] = {}
+
+    @property
+    def backups(self) -> Path:
+        """This run's folder of ignore-file copies."""
+        return self.folder / "backups" / self.stamp
 
     @property
     def stamp(self) -> str:
@@ -834,6 +951,30 @@ class Journal:
         assert self.path is not None
         data = {"version": 1, "stamp": self.stamp, "changes": self.entries}
         atomic_write(self.path, json.dumps(data, indent=2) + "\n", 0o600)
+        self.saved = len(self.entries)
+
+    def wrote(self, path: Path, before: Version, after: Version) -> None:
+        """This run rewrote bytes of `path` in place: it was at `before`, it is at `after`."""
+        self.written[path] = (before, after)
+
+    def as_planned(self, path: Path, planned: Version | None, now: Version) -> bool:
+        """True if the file is still as planned, or as this run's own writes left a file that
+        was as planned when they began (masks keep a file's size; the caller still checks the
+        bytes it changes)."""
+        return now == planned or (planned is not None and self.written.get(path) == (planned, now))
+
+    def close(self) -> None:
+        """A run that recorded no change leaves no journal, and no empty backup folders."""
+        if self.path is None or self.saved:
+            return
+        with contextlib.suppress(OSError):
+            self.path.unlink()
+        self.path = None
+        # Only empty folders go: a backup is deleted as soon as its write does not happen.
+        folders = [Path(top) for top, _, _ in os.walk(self.backups, topdown=False)]
+        for folder in [*folders, self.backups.parent]:
+            with contextlib.suppress(OSError):
+                folder.rmdir()
 
 
 @dataclass
@@ -904,7 +1045,8 @@ def _apply_masks(changes: list[Change], journal: Journal) -> list[Result]:
     except OSError as exc:
         return [Result(c, _cannot_write(exc)) for c in changes]
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
             return [Result(c, CHANGED) for c in changes]
         if not all(_holds(fd, c) for c in changes):
             return [Result(c, CHANGED) for c in changes]
@@ -916,6 +1058,9 @@ def _apply_masks(changes: list[Change], journal: Journal) -> list[Result]:
                 results.append(Result(change, _cannot_write(exc)))
         with contextlib.suppress(OSError):
             os.fsync(fd)
+        if any(r.reason is None for r in results):  # an env change to this file may follow
+            after = os.fstat(fd)
+            journal.wrote(path, (st.st_mtime_ns, st.st_size), (after.st_mtime_ns, after.st_size))
         return results
     except OSError as exc:
         return [Result(c, _cannot_write(exc)) for c in changes]
@@ -923,7 +1068,7 @@ def _apply_masks(changes: list[Change], journal: Journal) -> list[Result]:
         os.close(fd)
 
 
-def _stat_version(path: Path) -> tuple[int, int] | None:
+def _stat_version(path: Path) -> Version | None:
     try:
         st = os.stat(path)
     except OSError:
@@ -941,7 +1086,7 @@ def _apply_env(changes: list[Change], journal: Journal) -> list[Result]:
     version = _stat_version(path)
     if version is None:
         return [Result(c, GONE) for c in changes]
-    if version != changes[0].version:
+    if not journal.as_planned(path, changes[0].version, version):  # masks may have come first
         return [Result(c, CHANGED) for c in changes]
     try:
         data = path.read_bytes()
@@ -1020,21 +1165,30 @@ def _apply_ignore(changes: list[Change], journal: Journal) -> list[Result]:
         if not added:
             return results
         text = new.decode("utf-8")
-        undo: dict[str, Any] = {"target": str(target), "after": _sha(new)}
-        journal.open()
-        if exists:
-            backup = journal.folder / "backups" / journal.stamp / Path(*target.resolve().parts[1:])
-            backup.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            private_dir(journal.folder / "backups")
-            fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(old)
-            undo["op"], undo["backup"] = "restore", str(backup)
-        else:
-            undo["op"] = "delete"
+        undo: dict[str, Any] = {"target": str(target), "after": _sha(new), "op": "delete"}
         if _stat_version(target) != version:
             return [Result(c, CHANGED) for c in changes]
-        atomic_write(target, text, 0o644)
+        backup: Path | None = None
+        written = False
+        try:
+            if exists:
+                journal.open()  # claims the run's stamp, which names its backup folder
+                copy = journal.backups / Path(*target.resolve().parts[1:])
+                copy.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                private_dir(journal.folder / "backups")
+                fd = os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                backup = copy  # created here: removed again if the write does not happen
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(old)
+                undo["op"], undo["backup"] = "restore", str(backup)
+            if _stat_version(target) != version:  # one last look before writing
+                return [Result(c, CHANGED) for c in changes]
+            atomic_write(target, text, 0o644)
+            written = True
+        finally:
+            if backup is not None and not written:  # nothing to restore: no copy left behind
+                with contextlib.suppress(OSError):
+                    backup.unlink()
     except UnicodeDecodeError:
         return [Result(c, "the ignore file is not UTF-8 text; left as is") for c in changes]
     except OSError as exc:
@@ -1088,9 +1242,16 @@ def apply(p: Plan, home: Path) -> Outcome:
     groups: dict[tuple[str, Path], list[Change]] = {}
     for change in p.changes:
         groups.setdefault((change.kind, change.path), []).append(change)
+    # Masks keep a file's byte offsets, an env rewrite does not: in a file that gets both, the
+    # masks go first and the env change accepts the file as they left it.
+    order = list(groups)
+    for key in [k for k in order if k[0] == "env" and ("mask", k[1]) in groups]:
+        order.remove(key)
+        order.insert(order.index(("mask", key[1])) + 1, key)
     stop: str | None = None  # set when the journal can't be written: nothing more is changed
     try:
-        for (kind, _path), changes in groups.items():
+        for kind, path in order:
+            changes = groups[(kind, path)]
             applier = APPLIERS.get(kind)
             if stop or applier is None:
                 reason = stop or f"agentprint can't make a {kind!r} change"
@@ -1109,6 +1270,7 @@ def apply(p: Plan, home: Path) -> Outcome:
     finally:
         if applied:
             structured.forget()  # masked files keep their size: don't serve the old parse
+        journal.close()
     return Outcome(applied, skipped, journal.path)
 
 

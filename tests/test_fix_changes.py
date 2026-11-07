@@ -119,6 +119,61 @@ def test_rewrite_refuses_if_file_changed(tmp_path):
     assert fakes.GITHUB in path.read_text()
 
 
+# ---- one file, two kinds of change: masks, then an env reference (review I2) ------------------
+
+
+def _claude_json_mask_and_env(home: Path) -> Path:
+    """~/.claude.json with a key in an MCP env block (env) and, after it in the file, another
+    in an allowedTools entry (mask): an env rewrite first would move the masked key's bytes."""
+    doc = {
+        "theme": "dark",
+        "mcpServers": {"github": {"command": "gh-mcp", "env": {"GITHUB_TOKEN": fakes.GITHUB}}},
+        "projects": {"/work/app": {"allowedTools": [f"Bash(curl -u {fakes.STRIPE}: x.test)"]}},
+    }
+    return _write(home / ".claude.json", json.dumps(doc, indent=2) + "\n", 0o600)
+
+
+@pytest.mark.parametrize("order", ["as planned", "env first"])
+def test_mask_and_env_in_one_file_both_apply(tmp_path, order):
+    home = tmp_path / "home"
+    path = _claude_json_mask_and_env(home)
+    p = fix.plan(scan(home, None))
+    assert [(c.kind, c.path) for c in p.changes] == [("mask", path), ("env", path)]
+    if order == "env first":  # apply() still masks first: a mask keeps the byte offsets
+        p = fix.Plan(list(reversed(p.changes)), p.manual, p.findings)
+
+    outcome = fix.apply(p, home)
+
+    assert outcome.skipped == []
+    assert sorted(c.kind for c in outcome.applied) == ["env", "mask"]
+    after = json.loads(path.read_text())
+    assert after["mcpServers"]["github"]["env"]["GITHUB_TOKEN"] == "${GITHUB_TOKEN}"
+    masked = fakes.mask_for_test(fakes.STRIPE)
+    assert after["projects"]["/work/app"]["allowedTools"] == [f"Bash(curl -u {masked}: x.test)"]
+    assert after["theme"] == "dark"
+    assert not [f for f in scan(home, None) if f.check_id in ("AP002", "AP005")]
+
+
+def test_env_still_refuses_a_change_someone_else_made_after_the_masks(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    path = _claude_json_mask_and_env(home)
+    p = fix.plan(scan(home, None))
+    masks = fix.APPLIERS["mask"]
+
+    def mask_then_claude_code_saves(changes, journal):
+        results = masks(changes, journal)
+        with changes[0].path.open("a") as fh:
+            fh.write("\n")
+        return results
+
+    monkeypatch.setitem(fix.APPLIERS, "mask", mask_then_claude_code_saves)
+    outcome = fix.apply(p, home)
+
+    assert [c.kind for c in outcome.applied] == ["mask"]
+    assert [(c.kind, why) for c, why in outcome.skipped] == [("env", fix.CHANGED)]
+    assert fakes.GITHUB in path.read_text()
+
+
 # ---- F3: prompt history inside ~/.claude.json ----------------------------------------------
 
 
@@ -299,6 +354,43 @@ def test_undo_leaves_a_gitignore_edited_since(repo, tmp_path):
     restored, cannot = fix.undo(home)
     assert restored == [] and len(cannot) == 1
     assert "mine" in gi.read_text()
+
+
+@needs_git
+@posix_only
+def test_a_run_that_changed_nothing_leaves_undo_to_the_run_before(repo, tmp_path):
+    """Review I3: a run whose only write failed used to leave an empty newest journal (and a
+    backup), and --undo then found nothing to put back."""
+    home, gi = tmp_path / "home", repo / ".gitignore"
+    gi.write_text("node_modules/\n")
+    first = fix.apply(fix.plan(scan(None, repo)), home)
+    assert len(first.applied) == 1 and first.journal is not None
+
+    other = tmp_path / "other"
+    other.mkdir()
+    _git(other, "init", "-q")
+    _write(other / ".claude" / "settings.local.json", "{}\n")
+    _write(other / ".gitignore", "dist/\n")
+    p = fix.plan(scan(None, other))
+    assert [c.kind for c in p.changes] == ["ignore"]
+    other.chmod(0o555)  # the ignore file can't be replaced
+    try:
+        second = fix.apply(p, home)
+    finally:
+        other.chmod(0o755)
+
+    assert second.applied == [] and second.journal is None
+    [(_, reason)] = second.skipped
+    assert "could not write" in reason
+    assert (other / ".gitignore").read_text() == "dist/\n"
+    folder = home / ".agentprint" / "fix"
+    assert [f.name for f in folder.glob("*.json")] == [first.journal.name]
+    assert [d.name for d in (folder / "backups").iterdir()] == [first.journal.stem]
+
+    restored, cannot = fix.undo(home)
+
+    assert len(restored) == 1 and cannot == []
+    assert gi.read_text() == "node_modules/\n"
 
 
 def test_undo_without_journal_is_a_clear_no_op(tmp_path):

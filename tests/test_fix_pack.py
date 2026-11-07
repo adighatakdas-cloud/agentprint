@@ -44,8 +44,12 @@ def test_npm_package_gets_npmignore_from_gitignore(tmp_path):
     p, outcome = _fix(root, tmp_path / "home")
     assert not outcome.skipped
     npmignore = (root / ".npmignore").read_text()
-    assert npmignore.splitlines() == ["node_modules/", ".claude/"]
-    assert ".claude/" in (root / ".gitignore").read_text().splitlines()
+    # The file itself, from the project root: never the whole .claude/ folder (C1).
+    assert npmignore.splitlines() == ["node_modules/", "/.claude/settings.local.json"]
+    assert (root / ".gitignore").read_text().splitlines() == [
+        "node_modules/",
+        "/.claude/settings.local.json",
+    ]
     assert (tmp_path / "home/.agentprint/fix").is_dir()
 
 
@@ -55,10 +59,10 @@ def test_existing_npmignore_appended_once(tmp_path):
     root = _project(tmp_path)
     (root / ".npmignore").write_text("test/\n")
     _fix(root, tmp_path / "home")
-    assert (root / ".npmignore").read_text() == "test/\n.claude/\n"
+    assert (root / ".npmignore").read_text() == "test/\n/.claude/settings.local.json\n"
     # a second pass finds nothing left to do
     assert not [c for c in fix.plan(_findings(root), pack=True, root=root).changes]
-    assert (root / ".npmignore").read_text() == "test/\n.claude/\n"
+    assert (root / ".npmignore").read_text() == "test/\n/.claude/settings.local.json\n"
 
 
 @pytest.mark.integration
@@ -126,8 +130,58 @@ def test_created_npmignore_undone_only_if_untouched(tmp_path):
     home = tmp_path / "home"
     p = fix.plan(check_listing(listing), pack=True, root=root)
     fix.apply(p, home)
-    assert (root / ".npmignore").read_text() == "dist/\n.claude/\n"
+    assert (root / ".npmignore").read_text() == "dist/\n/.claude/settings.local.json\n"
     restored, cannot = fix.undo(home)
     assert not (root / ".npmignore").exists()
     assert (root / ".gitignore").read_text() == "dist/\n"
     assert restored
+
+
+# ---- the ignore line names the file, never a shared folder (review C1) -------------------------
+
+
+@pytest.mark.parametrize(
+    ("member", "line"),
+    [
+        (".claude/settings.local.json", "/.claude/settings.local.json"),
+        (".claude/projects/x/s1.jsonl", "/.claude/projects/x/s1.jsonl"),
+        ("sub/.claude/settings.local.json", "/sub/.claude/settings.local.json"),
+        (".github/copilot/settings.local.json", "/.github/copilot/settings.local.json"),
+        (".github/mcp.json", "/.github/mcp.json"),
+        (".agents/mcp_config.json", "/.agents/mcp_config.json"),
+        (".cursor/mcp.json", "/.cursor/mcp.json"),
+        (".gemini/oauth_creds.json", "/.gemini/oauth_creds.json"),
+        (".copilot/session-store.db", "/.copilot/session-store.db"),
+        # A rule about a whole folder of agent data: that folder, and nothing above it.
+        (".codex/sessions/2026/11/r.jsonl", "/.codex/sessions/"),
+        (".cursor/projects/p/agent-transcripts/t.jsonl", "/.cursor/projects/"),
+        (".gemini/tmp/abc/logs.json", "/.gemini/tmp/"),
+        (".gemini/antigravity/brain/c1/task.md", "/.gemini/antigravity/"),
+        (".copilot/logs/a.log", "/.copilot/logs/"),
+        ("pkg/.hermes/sessions/s.json", "/pkg/.hermes/"),
+        ("weird [name]/.codex/sessions/r.jsonl", "/weird \\[name\\]/.codex/sessions/"),
+    ],
+)
+def test_package_line_names_the_file_or_the_folder_its_rule_names(member, line):
+    assert fix.package_line(member) == line
+    assert line.strip("/") not in fix.SHARED_FOLDERS
+
+
+def test_package_line_refuses_a_name_that_is_not_one_line():
+    assert fix.package_line(".claude/settings.local.json\n.claude") is None
+
+
+def test_a_shared_folder_is_never_planned_as_an_ignore_line(tmp_path):
+    root = tmp_path / "my-app"
+    root.mkdir()
+    (root / "package.json").write_text('{"name": "my-app", "version": "1.0.0"}')
+    members = [".claude/settings.local.json", ".github/copilot/settings.local.json"]
+    for member in members:
+        (root / member).parent.mkdir(parents=True, exist_ok=True)
+        (root / member).write_text("{}")
+    listing = PackageListing("my-app-1.0.0.tgz", members, {m: b"{}" for m in members})
+    p = fix.plan(check_listing(listing), pack=True, root=root)
+    lines = {(c.path.name, c.line_text) for c in p.changes}
+    assert lines == {
+        (name, f"/{member}") for name in (".npmignore", ".gitignore") for member in members
+    }

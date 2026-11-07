@@ -14,6 +14,8 @@ from pathlib import Path
 import pytest
 
 from agentprint import fix
+from agentprint.advice import NO_LEAK
+from agentprint.agents import ALL_AGENTS
 from agentprint.scanner import scan
 from agentprint.secrets import redact
 from tests import fakes
@@ -287,3 +289,109 @@ def test_each_agents_allowlist_is_masked(tmp_path, agent):
     key = next(k for k in fakes.ALL.values() if k in text)
     assert path.read_bytes() == _masked(text.encode(), key)
     assert [f for f in scan(home, None) if f.check_id == "AP002"] == []
+
+
+# ---- only pure history is masked (ruling F6) ---------------------------------------------------
+
+# Files an agent reads back as instructions or config: a key there is in use, so masking it would
+# break what uses it before the human has a new one. Each stays unchanged, under "Needs you".
+READ_BACK = {
+    "claude-code memory": Path(".claude") / "projects" / "-work-app" / "memory" / "MEMORY.md",
+    "hermes skill": Path(".hermes") / "skills" / "deploy" / "SKILL.md",
+    "hermes cron job": Path(".hermes") / "cron" / "jobs.json",
+    "hermes memory": Path(".hermes") / "memories" / "MEMORY.md",
+    "hermes soul": Path(".hermes") / "SOUL.md",
+    "hermes profile cron job": Path(".hermes") / "profiles" / "work" / "cron" / "jobs.json",
+    "windsurf rules": Path(".codeium") / "windsurf" / "memories" / "global_rules.md",
+    "windsurf memory": Path(".codeium") / "windsurf" / "memories" / "m1.md",
+    "antigravity knowledge": Path(".gemini") / "antigravity" / "knowledge" / "deploy" / "k.md",
+    "antigravity task list": Path(".gemini") / "antigravity" / "brain" / "c1" / "task.md",
+}
+# Pure history: transcripts, chat logs, paste caches, prompt history.
+RECORDS = {
+    "claude-code prompt history": Path(".claude") / "history.jsonl",
+    "claude-code paste cache": Path(".claude") / "paste-cache" / "p1.txt",
+    "claude-code transcript": Path(".claude") / "projects" / "-work-app" / "s1.jsonl",
+    "claude-code subagent": Path(".claude")
+    / "projects"
+    / "-work-app"
+    / "s1"
+    / "subagents"
+    / "a.jsonl",
+    "codex session": Path(".codex") / "sessions" / "2026" / "11" / "rollout.jsonl",
+    "hermes session": Path(".hermes") / "sessions" / "s1.jsonl",
+    "hermes log": Path(".hermes") / "logs" / "agent.log",
+    "antigravity transcript": (
+        Path(".gemini") / "antigravity" / "brain" / "c1" / ".system_generated" / "logs" / "t.jsonl"
+    ),
+    "gemini chat": Path(".gemini") / "tmp" / "abc123" / "chats" / "session.json",
+}
+
+
+@pytest.mark.parametrize("name", sorted(READ_BACK))
+def test_a_file_the_agent_reads_back_is_never_masked(tmp_path, name):
+    home = tmp_path / "home"
+    original = f"Deploy with the token {fakes.GITHUB} every night.\n".encode()
+    path = _write(home / READ_BACK[name], original)
+    findings = _ap001(home)
+    assert {f.location for f in findings} == {str(path)}
+    p = fix.plan(findings)
+    assert p.changes == []
+    assert p.manual and all(m.check_id == "AP001" for m in p.manual)
+    for item in p.manual:
+        assert "reads that file back as instructions or config" in item.text
+        assert "Rotate the GitHub token" in item.text and NO_LEAK in item.text
+        assert "reads that file back" in item.person and "Rotate the GitHub token" in item.person
+        assert NO_LEAK not in item.person and "The agent cannot" not in item.person
+        assert fakes.GITHUB not in item.text + item.person
+    outcome = fix.apply(p, home)
+    assert outcome.applied == [] and outcome.journal is None
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("name", sorted(RECORDS))
+def test_pure_history_is_masked(tmp_path, name):
+    home = tmp_path / "home"
+    original = _line("hi") + _line(f"my key {fakes.GITHUB}")
+    path = _write(home / RECORDS[name], original)
+    p, outcome = _fix(home)
+    assert [c.path for c in p.changes] == [path]
+    assert outcome.skipped == []
+    assert path.read_bytes() == _masked(original, fakes.GITHUB)
+    assert _ap001(home) == []
+
+
+def test_every_agent_says_which_history_is_a_record():
+    for agent in ALL_AGENTS:
+        assert callable(getattr(agent, "pure_history", None)), agent.name
+
+
+def test_history_no_agent_module_vouches_for_is_left_to_the_human(tmp_path):
+    original = _line(f"key {fakes.ANTHROPIC}")
+    home, path = _history(tmp_path, original)
+    [finding] = _ap001(home)
+    p = fix.plan([dataclasses.replace(finding, agent="an-agent-agentprint-does-not-know")])
+    assert p.changes == []
+    assert fix.apply(p, home).applied == []
+    assert path.read_bytes() == original
+
+
+# ---- review focus 3: a file gone between the plan and the fix -----------------------------------
+
+
+def test_a_file_gone_since_the_plan_is_skipped_and_the_rest_are_fixed(tmp_path):
+    original = _line(f"key {fakes.OPENAI}")
+    home, history = _history(tmp_path, original)
+    paste = _write(home / ".claude" / "paste-cache" / "p1.txt", f"{fakes.GITHUB}\n".encode())
+    p = fix.plan(scan(home, None))
+    assert {c.path for c in p.changes} == {history, paste}
+    paste.unlink()  # the agent cleaned its paste cache meanwhile
+
+    outcome = fix.apply(p, home)
+
+    assert [c.path for c in outcome.applied] == [history]
+    assert [(c.path, reason) for c, reason in outcome.skipped] == [(paste, fix.GONE)]
+    assert history.read_bytes() == _masked(original, fakes.OPENAI)
+    assert not paste.exists()
+    [entry] = json.loads(outcome.journal.read_text())["changes"]
+    assert entry["path"] == str(history)

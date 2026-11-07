@@ -156,7 +156,8 @@ def render_plan(plan: Plan, console: Console, *, header: str | None = None) -> N
         _print_list(console, [(r.kind, _place(r.path, r.line), _what(r)) for r in planned])
     if plan.manual:
         blocks.next().print(Text("Needs you", style="ap.dim"))
-        _numbered(console, [(m.check_id, m.text) for m in plan.manual])
+        # Each item as worded for a person (the agent view keeps the agent wording).
+        _numbered(console, [(m.check_id, m.person or m.text) for m in plan.manual])
     if planned:
         blocks.next()
         for sentence in keep_note(planned):
