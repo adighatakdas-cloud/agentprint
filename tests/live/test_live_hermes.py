@@ -10,7 +10,16 @@ https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks
 import pytest
 
 from tests.live import harness
-from tests.live.runner import AgentCLI, assert_blocked, assert_ran, run, uninstall_leaves_nothing
+from tests.live.runner import (
+    AgentCLI,
+    assert_blocked,
+    assert_help_not_menu,
+    assert_ran,
+    assert_scan_output,
+    run,
+    shell_probe,
+    uninstall_leaves_nothing,
+)
 
 pytestmark = pytest.mark.live
 
@@ -65,3 +74,27 @@ def test_clean_action_runs(tmp_path, action):
     # never writes or edits it (`hermes hooks revoke` is how a user forgets an approval).
     left = uninstall_leaves_nothing(HERMES, outcome.home)
     assert left in ([], [".hermes/shell-hooks-allowlist.json"])
+
+
+# What Hermes's shell shows the commands it runs, started from a color terminal with color
+# forced on (harness.color_terminal; harness.PROBE prints names only).
+SHELL = {
+    "markers": ["HERMES_SESSION_ID"],
+    "color": ["FORCE_COLOR", "GITHUB_ACTIONS"],
+    "stdin_tty": False,
+    "stdout_tty": False,
+}
+
+
+def test_the_shell_shows_the_agent_marker(tmp_path):
+    assert shell_probe(run(HERMES, tmp_path, "probe", leaky=False)) == SHELL
+
+
+def test_scan_output_is_plain_text_for_the_model(tmp_path):
+    outcome = run(HERMES, tmp_path, "scan", leaky=False)
+    assert_scan_output(outcome, agent_format=bool(SHELL["markers"]))
+
+
+def test_bare_agentprint_does_not_hang(tmp_path):
+    outcome = run(HERMES, tmp_path, "bare", leaky=False)
+    assert_help_not_menu(outcome)

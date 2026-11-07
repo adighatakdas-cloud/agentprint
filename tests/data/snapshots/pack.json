@@ -1,0 +1,28 @@
+{
+  "tool": "agentprint",
+  "version": "<VERSION>",
+  "summary": {
+    "critical": 0,
+    "high": 1,
+    "medium": 0,
+    "low": 0
+  },
+  "findings": [
+    {
+      "check_id": "AP006",
+      "severity": "high",
+      "title": "Agent file would ship in package",
+      "agent": "claude-code",
+      "location": "p.tgz!package/.claude/settings.local.json",
+      "line": null,
+      "detail": "Personal permission allowlist; often holds pasted commands with keys.",
+      "fix": "Keep it out of the package (.npmignore or the package.json \"files\" list; your Python build tool's exclude list) and add it to .gitignore.",
+      "count": 1,
+      "fix_steps": [
+        "Add the line \".claude/\" to .npmignore in the package folder. If .npmignore does not exist yet, first copy .gitignore to .npmignore: npm stops reading .gitignore once .npmignore exists. If package.json has a \"files\" list, make sure no entry in it includes this path.",
+        "Add the line \".claude/settings.local.json\" to .gitignore so it is never committed either."
+      ],
+      "ask_human": []
+    }
+  ]
+}

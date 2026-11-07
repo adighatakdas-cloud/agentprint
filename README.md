@@ -5,7 +5,7 @@
 [![CI](https://github.com/adighatakdas-cloud/agentprint/actions/workflows/ci.yml/badge.svg)](https://github.com/adighatakdas-cloud/agentprint/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/adighatakdas-cloud/agentprint/blob/main/LICENSE)
 
-![agentprint finds keys and risky settings left by an AI agent, blocks a package that would leak a key, and previews what install changes](https://raw.githubusercontent.com/adighatakdas-cloud/agentprint/main/docs/demo.gif)
+![agentprint's welcome screen and menu, a scan that finds keys and risky settings left by AI agents and ends on BLOCK, and the BLOCK verdict with fix steps an AI agent gets for a package that would leak a key](https://raw.githubusercontent.com/adighatakdas-cloud/agentprint/main/docs/demo.gif)
 
 AI coding agents (Claude Code, Codex, Cursor, Gemini CLI and others) write files as they work:
 chat history, settings, permission lists. Keys you paste end up in those files, and those files

@@ -11,12 +11,15 @@ module's docstring.
 
 ## 1. Sort `pack` findings most severe first
 
-`agentprint scan` lists findings most severe first; `agentprint pack` lists them in the order
-the files were found, so a `high` row can sit above a `critical` one.
+`agentprint scan` returns findings most severe first; `agentprint pack` returns them in the
+order the files were found. A person's view groups them by severity and the agent format sorts
+them, but in `pack --format json` and `--format sarif` a `high` finding can sit above a
+`critical` one.
 
-- **Where:** `pack()` in `agentprint/cli.py`; `scan()` in `agentprint/scanner.py` shows the
-  sort to reuse.
-- **Done when:** the table, JSON and SARIF output of `pack` are sorted like `scan`, with a test.
+- **Where:** `run_pack_command()` in `agentprint/cli.py`; `scan()` in `agentprint/scanner.py`
+  shows the sort to reuse.
+- **Done when:** the JSON and SARIF output of `pack` are sorted like `scan`, with a test (the
+  output snapshots in `tests/data/snapshots/` change on purpose).
 
 ## 2. Understand heredocs when spotting a publish
 

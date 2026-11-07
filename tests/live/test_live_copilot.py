@@ -4,12 +4,25 @@ Custom endpoint: BYOK via COPILOT_PROVIDER_BASE_URL / COPILOT_PROVIDER_API_KEY /
 (OpenAI Chat Completions). "GitHub authentication is not required when using a custom
 provider" (`copilot help providers`); COPILOT_OFFLINE keeps it from contacting GitHub at all.
 https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-byok-models
+Path check: Copilot asks before a command touches a path outside the project and the temp
+folder, and with no one to ask it refuses. agentprint runs from this checkout's virtualenv, so
+`--allow-all-paths` ("disable file path verification") lets the model run it, as it would run
+an agentprint on the person's PATH.
 """
 
 import pytest
 
 from tests.live import harness
-from tests.live.runner import AgentCLI, assert_blocked, assert_ran, run, uninstall_leaves_nothing
+from tests.live.runner import (
+    AgentCLI,
+    assert_blocked,
+    assert_help_not_menu,
+    assert_ran,
+    assert_scan_output,
+    run,
+    shell_probe,
+    uninstall_leaves_nothing,
+)
 
 pytestmark = pytest.mark.live
 
@@ -21,6 +34,7 @@ COPILOT = AgentCLI(
         "-p",
         prompt,
         "--allow-all-tools",
+        "--allow-all-paths",
         "--no-ask-user",
         "--no-auto-update",
     ],  # fmt: skip
@@ -47,3 +61,27 @@ def test_clean_action_runs(tmp_path, action):
     outcome = run(COPILOT, tmp_path, action, leaky=False)
     assert_ran(outcome, action)
     assert uninstall_leaves_nothing(COPILOT, outcome.home) == []
+
+
+# What Copilot CLI's shell shows the commands it runs, started from a color terminal with color
+# forced on (harness.color_terminal; harness.PROBE prints names only).
+SHELL = {
+    "markers": ["COPILOT_CLI"],
+    "color": ["FORCE_COLOR", "GITHUB_ACTIONS"],
+    "stdin_tty": False,
+    "stdout_tty": False,
+}
+
+
+def test_the_shell_shows_the_agent_marker(tmp_path):
+    assert shell_probe(run(COPILOT, tmp_path, "probe", leaky=False)) == SHELL
+
+
+def test_scan_output_is_plain_text_for_the_model(tmp_path):
+    outcome = run(COPILOT, tmp_path, "scan", leaky=False)
+    assert_scan_output(outcome, agent_format=bool(SHELL["markers"]))
+
+
+def test_bare_agentprint_does_not_hang(tmp_path):
+    outcome = run(COPILOT, tmp_path, "bare", leaky=False)
+    assert_help_not_menu(outcome)

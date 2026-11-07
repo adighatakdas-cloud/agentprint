@@ -75,9 +75,18 @@ def test_build_script_refuses_a_folder_it_did_not_make(tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["notes.txt"]
 
 
-def test_tape_shows_scan_install_then_pack():
+def test_tape_shows_scan_then_pack():
     # ends on the BLOCK verdict an AI agent gets: the strongest last frame
-    assert [c.split()[1] for c in COMMANDS] == ["scan", "install", "pack"]
+    assert [c.split()[1] for c in COMMANDS] == ["scan", "pack"]
+
+
+def test_tape_records_a_first_run_not_an_agent_run():
+    from agentprint.ui.detect import AGENT_MARKERS
+
+    tape = TAPE.read_text(encoding="utf-8")
+    for name in (*AGENT_MARKERS, "CI", "GITHUB_ACTIONS"):
+        assert re.search(rf"\bunset\b[^`\n]*\b{name}\b", tape), name
+    assert ".agentprint" in tape  # the welcome must not count as already seen
 
 
 def _snapshot(root: Path) -> dict[str, bytes]:
@@ -116,7 +125,7 @@ def test_tape_command_runs_and_redacts(command, demo, monkeypatch):
         assert result.exit_code == 1
         for check in ("AP001", "AP002", "AP003", "AP005"):
             assert check in result.output
-        assert "Secrets are shown redacted" in result.output
+        assert "keys masked" in result.output
     elif verb == "pack":
         assert result.exit_code == 1
         assert result.output.startswith("agentprint: BLOCK")
@@ -126,3 +135,23 @@ def test_tape_command_runs_and_redacts(command, demo, monkeypatch):
         assert result.exit_code == 0, result.output
         assert "dry run" in result.output and "Claude Code" in result.output
     assert _snapshot(home) == before  # nothing in the fake home was changed
+
+
+def test_tape_menu_keys_land_on_roster():
+    """Step 2 moves down the menu to Roster and picks it: in step with menu.ITEMS."""
+    from agentprint.ui import menu
+
+    lines = [line.strip() for line in TAPE.read_text(encoding="utf-8").splitlines()]
+    bare = [i for i, line in enumerate(lines) if line == 'Type "agentprint"']
+    assert len(bare) == 2  # the welcome, then the menu
+    keys: list[str] = []
+    for line in lines[bare[1] + 1 :]:
+        word, _, count = line.partition(" ")
+        if word in ("Up", "Down", "Enter"):
+            keys += [word] * (int(count) if count.strip().isdigit() else 1)
+        if keys.count("Enter") == 2:  # the first runs agentprint, the second picks the row
+            break
+    moves = keys[1:-1]
+    row = sum(1 if key == "Down" else -1 for key in moves) % len(menu.ITEMS)
+    assert keys[0] == keys[-1] == "Enter" and moves
+    assert menu.ITEMS[row][1] == "Roster"
