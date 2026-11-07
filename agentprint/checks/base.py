@@ -7,10 +7,11 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Protocol
 
+from .. import secrets
 from ..agents import by_name
 from ..files import iter_lines
 from ..models import AgentConfig, Artifact, Finding, Kind, Severity
-from ..secrets import find_secrets, redact
+from ..secrets import Budget, SecretMatch, find_hidden, find_secrets, find_secrets_deep, redact
 
 
 class Check(Protocol):
@@ -31,9 +32,18 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
 
 
 def safe_snippet(text: str, limit: int = 120) -> str:
-    """Text taken from a scanned file, made safe to show: secrets redacted, control and ANSI
-    characters removed, whitespace collapsed, length capped."""
-    for match in sorted(find_secrets(text), key=lambda m: m.start, reverse=True):
+    """Text taken from a scanned file, made safe to show: secrets redacted (hidden ones too,
+    with all the text they were hidden in), control and ANSI characters removed, whitespace
+    collapsed, length capped."""
+    spans: list[SecretMatch] = []
+    for match in find_secrets_deep(text):  # in text order; a hidden one may overlap a plain one
+        if spans and match.start < spans[-1].end:
+            if match.end > spans[-1].end:
+                last = spans[-1]
+                spans[-1] = SecretMatch(last.rule_id, last.name, last.value, last.start, match.end)
+            continue
+        spans.append(match)
+    for match in reversed(spans):
         text = text[: match.start] + redact(match.value) + text[match.end :]
     text = " ".join(_CONTROL.sub(" ", text).split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
@@ -71,19 +81,64 @@ class SecretCheck:
 
     def _scan(self, artifact: Artifact) -> list[Finding]:
         seen: dict[str, Finding] = {}  # one finding per distinct key per file
+        hidden: list[tuple[SecretMatch, int | None]] = []
+        chunk: list[tuple[int, str]] = []  # the file's text, a chunk at a time, for the deep pass
+        size = 0
+        budget = Budget()
         for number, line in iter_lines(artifact.path):
             for match in find_secrets(line):
                 if match.value in seen:
                     seen[match.value].count += 1
                     continue
-                seen[match.value] = Finding(
-                    check_id=self.id,
-                    severity=self.severity,
-                    title=self.title,
-                    agent=artifact.agent,
-                    location=str(artifact.path),
-                    line=number or None,  # 0 = text from a database row
-                    detail=f"{match.name}: {redact(match.value)}",
-                    fix=self.fix,
-                )
+                seen[match.value] = self._finding(artifact, number or None, match)
+            chunk.append((number, line if line.endswith("\n") else line + "\n"))
+            size += len(line)
+            if size >= secrets.DEEP_CHUNK_CHARS:
+                hidden += _hidden_in_chunk(chunk, seen, budget)
+                chunk = _overlap(chunk)
+                size = sum(len(text) for _, text in chunk)
+        if chunk:
+            hidden += _hidden_in_chunk(chunk, seen, budget)
+        for match, number in hidden:  # after every plain key of the file is known
+            if match.value not in seen:
+                seen[match.value] = self._finding(artifact, number, match)
         return list(seen.values())
+
+    def _finding(self, artifact: Artifact, line: int | None, match: SecretMatch) -> Finding:
+        return Finding(
+            check_id=self.id,
+            severity=self.severity,
+            title=self.title,
+            agent=artifact.agent,
+            location=str(artifact.path),
+            line=line,  # None: text from a database row
+            detail=f"{match.name}: {redact(match.value)}{secrets.hidden_note(match)}",
+            fix=self.fix,
+        )
+
+
+def _hidden_in_chunk(
+    chunk: list[tuple[int, str]], known: Iterable[str], budget: Budget
+) -> list[tuple[SecretMatch, int | None]]:
+    """Hidden keys in a chunk of lines, each with the line its first character is on."""
+    text = "".join(line for _, line in chunk)
+    found = []
+    line, counted = 0, 0
+    for match in find_hidden(text, set(known), budget):  # in text order
+        line += text.count("\n", counted, match.start)
+        counted = match.start
+        found.append((match, chunk[line][0] or None))
+    return found
+
+
+def _overlap(chunk: list[tuple[int, str]]) -> list[tuple[int, str]]:
+    """The last lines of a chunk, read again with the next one so that a key folded over the
+    boundary is whole in it."""
+    room = min(64 * 1024, secrets.DEEP_CHUNK_CHARS // 4)
+    kept: list[tuple[int, str]] = []
+    for number, line in reversed(chunk):
+        room -= len(line)
+        if room < 0:
+            break
+        kept.append((number, line))
+    return kept[::-1]
