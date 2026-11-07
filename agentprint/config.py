@@ -22,7 +22,9 @@ project (your home folder's agent files are yours, not the project's).
 
 from __future__ import annotations
 
+import os
 import re
+import stat
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -98,12 +100,40 @@ def glob_pattern(glob: str) -> re.Pattern[str]:
     return re.compile("".join(out), re.S)
 
 
-def _read_toml(path: Path) -> dict:
-    """The TOML file as a dict. Raises OSError or ValueError (tomllib's error is one)."""
-    with path.open("rb") as fh:
-        data = fh.read(MAX_CONFIG_BYTES + 1)
-    if len(data) > MAX_CONFIG_BYTES:
-        raise ValueError("larger than 1 MiB")
+def read_regular(path: Path, limit: int, *, links: bool = True) -> bytes:
+    """A regular file's bytes, at most `limit` of them. Never blocks: a FIFO, a terminal or a
+    device is refused before it is opened, and the file is opened non-blocking and checked
+    again, so a planted /dev/stdin can't hold a hook until it times out (and lets a key
+    through). `links` False also refuses a symbolic link. Raises FileNotFoundError when there
+    is no file, and OSError or ValueError when it can't be used."""
+    if not links and path.is_symlink():
+        raise ValueError("it is a symbolic link, which agentprint does not follow here")
+    if not stat.S_ISREG(path.stat().st_mode):
+        raise ValueError("not a regular file")
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+    if not links:
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):  # swapped in after the first look
+            raise ValueError("not a regular file")
+        chunks, size = [], 0
+        while size <= limit:
+            chunk = os.read(fd, min(1024 * 1024, limit + 1 - size))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+    finally:
+        os.close(fd)
+    if size > limit:
+        mib = limit // (1024 * 1024)
+        raise ValueError(f"larger than {mib} MiB" if mib else f"larger than {limit} bytes")
+    return b"".join(chunks)
+
+
+def _read_toml(data: bytes) -> dict:
+    """The TOML text as a dict. Raises ValueError (tomllib's error is one)."""
     return tomllib.loads(data.decode("utf-8"))
 
 
@@ -124,15 +154,18 @@ def _find(root: Path, sources: Sources) -> tuple[Path | None, dict | None, list[
         if given is None and not path.is_file():
             continue
         name = clean(str(path))
-        if in_pyproject and given is None:
-            try:  # a pyproject.toml that never names agentprint is not ours to judge
-                if b"agentprint" not in path.read_bytes()[: MAX_CONFIG_BYTES + 1]:
-                    continue
-            except OSError:
-                continue
         try:
-            data = _read_toml(path)
-        except (OSError, ValueError, UnicodeDecodeError) as exc:
+            raw = read_regular(path, MAX_CONFIG_BYTES)
+        except (OSError, ValueError) as exc:
+            if in_pyproject and given is None:
+                continue  # not a config file of ours, just the project's metadata
+            why = clean(_why(exc))
+            return path, None, [f"could not read config {name}: {why}; using the defaults"]
+        if in_pyproject and given is None and b"agentprint" not in raw:
+            continue  # a pyproject.toml that never names agentprint is not ours to judge
+        try:
+            data = _read_toml(raw)
+        except (ValueError, UnicodeDecodeError) as exc:
             why = clean(_why(exc))
             return path, None, [f"could not read config {name}: {why}; using the defaults"]
         if not in_pyproject:

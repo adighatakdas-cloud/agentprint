@@ -1,8 +1,14 @@
 """Project config: where it is read from, what it holds, and that it never stops a run."""
 
+import os
+import signal
+import time
+from contextlib import contextmanager
+from pathlib import Path
+
 import pytest
 
-from agentprint.config import DEFAULT_BASELINE, Sources, glob_pattern, load
+from agentprint.config import DEFAULT_BASELINE, Sources, glob_pattern, load, read_regular
 from agentprint.report import FailOn
 
 FULL = """
@@ -180,3 +186,48 @@ def test_warnings_hold_no_control_characters(tmp_path):
 )
 def test_ignore_paths_are_globs_from_the_project_root(glob, path, hit):
     assert (glob_pattern(glob).fullmatch(path) is not None) is hit
+
+
+@contextmanager
+def _within_seconds(limit: int):
+    """Fail instead of hanging forever if a read ever blocks again."""
+
+    def stop(*_):
+        raise AssertionError(f"still reading after {limit} s: a read blocked")
+
+    old = signal.signal(signal.SIGALRM, stop)
+    signal.alarm(limit)
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+    assert time.perf_counter() - started < limit
+
+
+@pytest.mark.posix_only  # FIFOs and /dev/null
+def test_a_fifo_or_a_device_is_never_read_as_a_config(tmp_path):
+    os.mkfifo(tmp_path / "pipe")
+    with _within_seconds(5):
+        config = load(tmp_path, Sources(config=tmp_path / "pipe"))
+        assert "not a regular file" in config.warnings[0]
+        assert "not a regular file" in load(tmp_path, Sources(config=Path(os.devnull))).warnings[0]
+        (tmp_path / ".agentprint.toml").symlink_to(tmp_path / "pipe")
+        (tmp_path / "pyproject.toml").symlink_to(os.devnull)
+        assert load(tmp_path).warnings == ()  # neither is a file: nothing to read, no hang
+
+
+def test_read_regular_is_capped_and_can_refuse_links(tmp_path):
+    big = tmp_path / "big"
+    big.write_bytes(b"x" * 11)
+    assert read_regular(big, 11) == b"x" * 11
+    with pytest.raises(ValueError, match="larger than 10 bytes"):
+        read_regular(big, 10)
+    with pytest.raises(FileNotFoundError):
+        read_regular(tmp_path / "missing", 10)
+    if os.name != "nt":
+        (tmp_path / "link").symlink_to(big)
+        assert read_regular(tmp_path / "link", 11) == b"x" * 11
+        with pytest.raises(ValueError, match="symbolic link"):
+            read_regular(tmp_path / "link", 11, links=False)

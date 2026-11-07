@@ -615,6 +615,43 @@ def test_a_config_bug_never_stops_the_guard(tmp_path, monkeypatch):
     assert evaluate("npm publish demo-1.0.0.tgz", tmp_path).block  # the defaults: all counts
 
 
+@pytest.mark.posix_only  # FIFOs, symlinks and /dev/null
+def test_a_planted_fifo_or_device_baseline_never_hangs_the_guard(tmp_path):
+    """The reviewer's probe: a committed baseline that is (or links to) a FIFO, /dev/stdin or a
+    terminal must not hold the hook until it times out and fails open with a key on board."""
+    import os
+    import signal
+
+    def hung(*_):
+        raise AssertionError("the guard blocked reading the baseline")
+
+    _tgz(tmp_path / "demo-1.0.0.tgz", {"package/.claude/settings.local.json": LEAKY})
+    os.mkfifo(tmp_path / "pipe")
+    old = signal.signal(signal.SIGALRM, hung)
+    signal.alarm(5)
+    try:
+        for plant in ("link", "fifo"):
+            baseline_file = tmp_path / ".agentprint-baseline.json"
+            if plant == "link":
+                baseline_file.symlink_to(tmp_path / "pipe")
+            else:
+                os.replace(tmp_path / "pipe", baseline_file)
+            verdict = evaluate("npm publish demo-1.0.0.tgz", tmp_path)
+            assert verdict is not None and verdict.block, plant
+            words = "symbolic link" if plant == "link" else "not a regular file"
+            assert words in verdict.reason + (verdict.warning or ""), plant
+            if plant == "link":
+                baseline_file.unlink()
+        assert call("check_package", path=str(tmp_path / "demo-1.0.0.tgz")).startswith(
+            "agentprint: BLOCK"
+        )
+        shown = scan(tmp_path, "--baseline", os.devnull, "-f", "json")
+        assert "not a regular file" in shown.stderr
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+
+
 def test_mcp_scan_honours_the_project_config(project):
     assert baseline(project).exit_code == 0
     text = call("scan_secrets", path=str(project))

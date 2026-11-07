@@ -31,7 +31,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import __version__
-from .config import Config, Sources
+from .config import Config, Sources, read_regular
 from .config import load as load_config
 from .models import Finding
 from .report import FailOn, exit_code
@@ -98,8 +98,8 @@ def load(root: Path, sources: Sources | None = None, home: Path | None = None) -
     config = load_config(root, sources)
     warnings = list(config.warnings)
     entries: dict[str, Entry] = {}
-    if config.baseline is not None:
-        entries, more = read(config.baseline)
+    if config.baseline is not None:  # the default or the config's: never through a link
+        entries, more = read(config.baseline, links=sources.baseline is not None)
         warnings += more
     named = sources.baseline
     trusted = named is not None and not _within(named, root)
@@ -122,19 +122,19 @@ def defaults(root: Path) -> Project:
     return Project(Config(root), {})
 
 
-def read(path: Path) -> tuple[dict[str, Entry], list[str]]:
-    """The entries of a baseline file. No file: none, and no warning."""
+def read(path: Path, links: bool = True) -> tuple[dict[str, Entry], list[str]]:
+    """The entries of a baseline file: a regular file, read without ever blocking, at most 8
+    MiB, and with `links` False never through a symbolic link. No file: none, no warning."""
     name = clean(str(path))
     unusable = f"could not read baseline {name}"
     try:
-        with path.open("rb") as fh:
-            raw = fh.read(MAX_BASELINE_BYTES + 1)
+        raw = read_regular(path, MAX_BASELINE_BYTES, links=links)
     except FileNotFoundError:
         return {}, []
     except OSError as exc:
         return {}, [f"{unusable}: {clean(exc.strerror or type(exc).__name__)}"]
-    if len(raw) > MAX_BASELINE_BYTES:
-        return {}, [f"{unusable}: larger than 8 MiB"]
+    except ValueError as exc:
+        return {}, [f"{unusable}: {clean(str(exc))}"]
     try:
         data = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as exc:
