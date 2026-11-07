@@ -20,6 +20,14 @@ from functools import lru_cache
 from itertools import islice
 
 
+def _fold(text: str) -> str:
+    """`text` with case folded the way the rules' `(?i)` names match it. Besides upper and lower
+    case, Python's regex engine matches the long s, the Kelvin sign and the dotless i and dotted
+    capital I as s, k and i. casefold() turns the first two into s and k; the two i forms are
+    replaced first (casefold keeps the dotless i and adds a combining dot to the capital)."""
+    return text.replace("\u0130", "i").replace("\u0131", "i").casefold()
+
+
 @dataclass(frozen=True)
 class SecretRule:
     id: str
@@ -27,8 +35,9 @@ class SecretRule:
     pattern: re.Pattern[str]
     group: int = 0
     min_entropy: float = 0.0
-    # Lowercase words, at least one of which must be in the text for the rule to be tried at all.
-    # For rules that start with a case-insensitive name, which the regex engine cannot skip to.
+    # Words, at least one of which must be in the text (case folded by _fold) for the rule to be
+    # tried at all. For rules that start with a case-insensitive name, which the regex engine
+    # cannot skip to. Folded the same way when RULES is built.
     needs: tuple[str, ...] = ()
     # Exact text, at least one of which must be in the text (the rule's own literal start).
     starts: tuple[str, ...] = ()
@@ -274,7 +283,12 @@ _STARTS: dict[str, tuple[str, ...]] = {
     "onepassword": ("ops_eyJ",),
 }
 RULES: tuple[SecretRule, ...] = tuple(
-    replace(rule, starts=_STARTS[rule.id]) if rule.id in _STARTS else rule for rule in _RULES
+    replace(
+        rule,
+        starts=_STARTS.get(rule.id, rule.starts),
+        needs=tuple(_fold(word) for word in rule.needs),
+    )
+    for rule in _RULES
 )
 
 
@@ -302,11 +316,11 @@ def _matches(
     end_at = len(text) if endpos is None else endpos
     found: list[tuple[SecretMatch, int, int]] = []
     window = text[pos:end_at] if pos or end_at != len(text) else text
-    lower = window.lower() if any(r.needs for r in rules) else ""
+    folded = _fold(window) if any(r.needs for r in rules) else ""
     starts: list[int] = []  # value spans claimed by earlier rules, in text order (never overlap)
     ends: list[int] = []
     for rule in rules:
-        if rule.needs and not any(word in lower for word in rule.needs):
+        if rule.needs and not any(word in folded for word in rule.needs):
             continue
         if rule.starts and not any(word in window for word in rule.starts):
             continue
@@ -576,8 +590,9 @@ def _windows(text: str, joins: list[Join]) -> Iterator[tuple[int, int, list[Join
         yield start, end, group
 
 
-# Every generic match holds one of these words; a view without any skips the (slow) generic rules.
-_GENERIC_WORDS = ("key", "secret", "token", "passw", "bearer")
+# Every generic match holds one of these words (folded); a view without any skips the (slow)
+# generic rules.
+_GENERIC_WORDS = tuple(word for rule in RULES if rule.id == "generic" for word in rule.needs)
 _SPECIFIC_RULES = tuple(rule for rule in RULES if rule.id != "generic")
 
 
@@ -651,8 +666,8 @@ def _in_view(view: _View, plain_wins: bool) -> Iterator[SecretMatch]:
     plain key: a view joins pieces with no separator, so a rule with a loose length (anthropic,
     openai, generic, ...) would read a plain key plus the next word as one longer key, and the
     plain key is what is reported. Redaction keeps them, to hide every character either way."""
-    lower = view.text.lower()
-    rules = RULES if any(word in lower for word in _GENERIC_WORDS) else _SPECIFIC_RULES
+    folded = _fold(view.text)
+    rules = RULES if any(word in folded for word in _GENERIC_WORDS) else _SPECIFIC_RULES
     cuts = view.cuts
     for match, full_start, full_end in _matches(view.text, rules):
         k = bisect_right(cuts, full_start)
