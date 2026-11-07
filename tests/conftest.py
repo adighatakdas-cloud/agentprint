@@ -5,13 +5,21 @@ on macOS; every value is synthetic and every key comes from tests.fakes.
 """
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
 import pytest
+from hypothesis import settings as hypothesis_settings
 
 from agentprint.ui.detect import AGENT_MARKERS
 from tests import fakes
+
+# In CI the property tests search the same examples every run, so main cannot go red on a
+# one-off counterexample. Local runs keep the random search.
+hypothesis_settings.register_profile("ci", derandomize=True, deadline=None)
+if os.environ.get("CI"):
+    hypothesis_settings.load_profile("ci")
 
 # tools/ (research scripts) is not shipped in the source package; skip its tests there.
 if not (Path(__file__).resolve().parent.parent / "tools").is_dir():

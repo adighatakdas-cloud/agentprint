@@ -5,9 +5,11 @@ import contextlib
 import io
 import json
 import tarfile
+import time
 import zipfile
 from pathlib import Path
 
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -22,7 +24,7 @@ from tests import fakes
 DETECTORS = [find_secrets]
 
 KEYS = sorted(fakes.ALL.values())
-INVISIBLE = "​‌‍⁠﻿‮­\x00\x1b\r\t"
+INVISIBLE = "\u200b\u200c\u200d\u2060\ufeff\u202e\u00ad\x00\x1b\r\t"
 TEXT = st.text(
     alphabet=st.one_of(st.characters(blacklist_categories=("Cs",)), st.sampled_from(INVISIBLE)),
     max_size=200,
@@ -30,7 +32,7 @@ TEXT = st.text(
 ALMOST_KEYS = st.sampled_from(KEYS).flatmap(
     lambda k: st.integers(0, len(k)).map(lambda n: k[:n])  # truncated keys
 )
-FILL = st.text(alphabet="abcXYZ019_-= ", max_size=40)
+FILL = st.text(alphabet="abcXYZ019_-= \u00e9\u6f22\U0001f600", max_size=40)
 
 
 # ---- redact ----------------------------------------------------------------------------------
@@ -39,8 +41,8 @@ FILL = st.text(alphabet="abcXYZ019_-= ", max_size=40)
 @given(st.text(max_size=300))
 def test_redact_never_shows_more_than_four_characters(value):
     out = redact(value)
-    assert out == f"{value[:4]}…(len {len(value)})"
-    shown = out[: out.rindex("…")]
+    assert out == f"{value[:4]}\u2026(len {len(value)})"
+    shown = out[: out.rindex("\u2026")]
     assert len(shown) <= 4 and value.startswith(shown)
 
 
@@ -52,7 +54,7 @@ def test_redact_of_a_key_leaks_no_tail(key):
 # ---- find_secrets ----------------------------------------------------------------------------
 
 
-@settings(max_examples=150, deadline=None)
+@settings(max_examples=150, deadline=2000)
 @given(
     st.lists(
         st.one_of(
@@ -75,6 +77,21 @@ def test_detectors_return_sorted_disjoint_in_bounds_spans(parts):
             assert text[m.start : m.end] == m.value
             assert m.start >= end_before  # sorted and not overlapping
             end_before = m.end
+
+
+PATHOLOGICAL = [c * 500 for c in "-_a9"] + [
+    "a-9_" * 125,
+    ("-" * 499 + "a") * 2000,
+    "sk-ant-api03-" + "a" * 100000,
+]
+
+
+@pytest.mark.parametrize("detect", DETECTORS)
+@pytest.mark.parametrize("text", PATHOLOGICAL)
+def test_detectors_are_fast_on_pathological_text(detect, text):
+    start = time.perf_counter()
+    detect(text)
+    assert time.perf_counter() - start < 1.0
 
 
 @given(st.sampled_from(KEYS), FILL, FILL)
