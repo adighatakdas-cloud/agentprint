@@ -12,7 +12,6 @@ settings are flagged; shared-by-design config, rules and instruction files (AGEN
 Paths from each agent's docs, checked 2026-11-05 (none of these agents is installed on the
 verification Mac except Warp, whose database name was checked by name only):
 aider  https://aider.chat/docs/config/aider_conf.html, github.com/Aider-AI/aider aider/args.py
-cline  https://docs.cline.bot/getting-started/config.md, github.com/cline/cline storage-context.ts
 kilo   https://kilo.ai/docs/code-with-ai/agents/session-history, https://kilo.ai/docs/automate/mcp
 qwen   github.com/QwenLM/qwen-code docs/users/configuration/settings.md, features/memory.md
 crush  github.com/charmbracelet/crush README and schema.json (data_directory ".crush")
@@ -100,16 +99,6 @@ SCAN_ONLY_AGENTS: tuple[ScanOnlyAgent, ...] = (
             (".aider.llm.history", Kind.HISTORY, True),
             (".aider.conf.yml", Kind.SETTINGS, True),
         ),
-    ),
-    _agent(
-        "cline",
-        [
-            (
-                r"(^|/)\.cline/data/|(^|/)saoudrizwan\.claude-dev/(tasks|state|checkpoints)/",
-                H,
-                "Cline data: secrets.json (plain-text keys), sessions and task history.",
-            ),
-        ],
     ),
     _agent(
         "kilo",

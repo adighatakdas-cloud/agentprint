@@ -12,6 +12,7 @@ from typing import Any, Protocol
 
 from ..files import walk_files
 from ..models import AgentConfig, Artifact, HookCommand, Kind, McpServer, PackageRule
+from ..structured import load
 
 
 @dataclass(frozen=True)
@@ -223,3 +224,82 @@ def mcp_servers(servers: Any, secret_fix: str) -> tuple[McpServer, ...]:
                 fields.append((key, f"{key} = {entry[key]}"))
         found.append(McpServer(str(name), tuple(fields), secret_fix))
     return tuple(found)
+
+
+# --- MCP config files: one reader for every agent's format -----------------------------------
+
+# What some agents call a server's command, env block and URL (Goose: cmd, envs, uri).
+_MCP_ALIASES = {"cmd": "command", "envs": "env", "uri": "url"}
+
+
+def _entry(entry: Any) -> Any:
+    """An MCP server entry with the alias field names renamed to the common ones."""
+    if not isinstance(entry, dict) or not any(alias in entry for alias in _MCP_ALIASES):
+        return entry
+    renamed = dict(entry)
+    for alias, name in _MCP_ALIASES.items():
+        if alias in renamed and name not in renamed:
+            renamed[name] = renamed.pop(alias)
+    return renamed
+
+
+def _server_map(value: Any) -> dict[str, Any]:
+    """{name: entry} from either shape agents write: a map of named entries, or a list of
+    entries that each carry their own "name" (Continue's config.yaml)."""
+    if isinstance(value, dict):
+        return {str(name): _entry(entry) for name, entry in value.items()}
+    if isinstance(value, list):
+        return {
+            entry["name"]: _entry(entry)
+            for entry in value
+            if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+        }
+    return {}
+
+
+def read_mcp_servers(data: Any, secret_fix: str, *keys: str) -> tuple[McpServer, ...]:
+    """MCP servers in a parsed config file, under any of the top-level `keys`: mcpServers,
+    servers (VS Code), mcp (Kilo, Crush), context_servers (Zed), the flat key "amp.mcpServers"
+    (Amp) or extensions (Goose), as a map of named entries or a list of entries with a name."""
+    if not isinstance(data, dict):
+        return ()
+    found: list[McpServer] = []
+    for key in keys:
+        found += mcp_servers(_server_map(data.get(key)), secret_fix)
+    return tuple(found)
+
+
+def read_mcp_file(path: Path, secret_fix: str, *keys: str) -> AgentConfig:
+    """read_mcp_servers for one JSON, JSONC or YAML file; never raises."""
+    return AgentConfig(mcp_servers=read_mcp_servers(load(path), secret_fix, *keys))
+
+
+@dataclass(frozen=True)
+class AgentDoc:
+    """How the docs' agents table and `agentprint status` describe an agent that a sweep reads
+    in full but `agentprint install` can't arm yet (tools/gen_docs.py draws the table)."""
+
+    label: str
+    reads: str  # what a sweep reads (Markdown)
+    keys: str  # its own key stores: only who can read them is checked (AP008)
+    fix: str  # what `agentprint fix` does for it
+    checked: str  # which docs the paths come from, and when they were read
+    unverified: str = ""  # paths probed but not confirmed by the agent's docs
+
+
+def glob(base: Path, pattern: str) -> list[Path]:
+    """Sorted matches of a glob under base; nothing when base can't be read."""
+    try:
+        return sorted(base.glob(pattern))
+    except OSError:
+        return []
+
+
+def app_dirs(home: Path, *name: str) -> list[Path]:
+    """An app's own folder on macOS, Linux and Windows: ~/Library/Application Support/<name>,
+    ~/.config/<name> and %APPDATA%/<name> (VS Code, and Electron apps such as Claude Desktop)."""
+    return [
+        home.joinpath("Library", "Application Support", *name),
+        home.joinpath(".config", *name),
+        home.joinpath("AppData", "Roaming", *name),
+    ]
