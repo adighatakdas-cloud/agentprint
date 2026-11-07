@@ -243,3 +243,14 @@ def test_paths_under_home_show_from_tilde_with_forward_slashes(monkeypatch):
     assert report._short("c:\\users\\ana") == "~"
     assert report._short("C:\\Users\\anabel\\x") == "C:\\Users\\anabel\\x"  # not inside home
     assert report._short("D:\\work\\app") == "D:\\work\\app"
+
+
+def test_fix_prose_shortens_json_quoted_windows_paths_under_home(monkeypatch):
+    from agentprint.ui import fixview
+
+    monkeypatch.setattr(fixview.Path, "home", staticmethod(lambda: "C:\\Users\\ana"))
+    monkeypatch.setattr(fixview.os, "sep", "\\")
+    shown = fixview._prose(
+        'In "C:\\\\Users\\\\ana\\\\.claude\\\\x.json" line 4 and "C:\\\\Users\\\\anabel\\\\y"'
+    )
+    assert shown.plain == 'In "~/.claude/x.json" line 4 and "C:\\\\Users\\\\anabel\\\\y"'

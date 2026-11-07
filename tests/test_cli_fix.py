@@ -231,9 +231,8 @@ def test_human_needs_you_is_written_for_a_person(world, monkeypatch):
         assert phrase not in result.output, phrase
     words = _person_words(result.output)
     assert "https://platform.openai.com/api-keys. Treat the old key as public." in words
-    settings = os.sep.join(["", "fake-home", ".claude", "settings.json"])  # \ on Windows
     assert (
-        f'{settings}" line 4: permissions.allow grants "Bash(*)": the '
+        '/fake-home/.claude/settings.json" line 4: permissions.allow grants "Bash(*)": the '
         "agent acts without asking. Delete this entry"
     ) in words
     agent = _fix(world, "--dry-run", "--format", "agent").output  # the agent's words stay

@@ -27,6 +27,9 @@ def _text(fragment: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", fragment))
 
 
+# The committed fragments are POSIX renderings (permission fixes and the AP008 sweep cannot be
+# reproduced on NTFS); Windows checks the engine-vs-fragment tests below instead.
+@pytest.mark.posix_only
 def test_generated_files_are_current():
     stale = [p for p, text in gen_docs.outputs().items() if p.read_text() != text]
     assert stale == []  # run: uv run python -m tools.gen_docs
