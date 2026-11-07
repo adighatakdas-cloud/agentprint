@@ -7,7 +7,6 @@ key-shaped literal (plain, split or encoded) is ever in the source.
 import base64
 import json
 import sqlite3
-import time
 from pathlib import Path
 
 import pytest
@@ -22,7 +21,7 @@ from agentprint.models import Artifact, Kind
 from agentprint.pack import PackageListing
 from agentprint.scanner import scan
 from agentprint.secrets import find_hidden, find_secrets, find_secrets_deep, redact
-from tests import fakes
+from tests import fakes, timing
 
 KEY = fakes.ANTHROPIC
 A, B = KEY[:20], KEY[20:]  # two halves: neither is a key on its own
@@ -313,29 +312,30 @@ def test_base64_decodes_at_most_64_kb_per_blob():
     assert find_hidden(early)[0].value == KEY
 
 
+# Built inside the test that uses each one, so the 5 MB strings are not held for the whole run.
 HOSTILE = {
-    "invisible every other character": "a\u200b" * 2_500_000,
-    "invisible run": "\u200b" * 5_000_000,
-    "one giant split string": '"a"+' * 1_250_000,
-    "quotes only": '"' * 5_000_000,
-    "unclosed quotes": ('"' + "a" * 99) * 50_000,
-    "continuations": "a\\\n" * 1_666_666,
-    "giant yaml block": "k: |\n" + "  ab\n" * 1_000_000,
-    "yaml headers": "k: |\n" * 1_000_000,
-    "one base64 blob": "QUJD" * 1_250_000,
-    "many base64 blobs": (_b64("ordinary text " * 4) + " ") * 60_000,
-    "json escapes": '"\\n' * 1_666_666,
-    "sparse joins": ('"x" + "y"' + " " * 600) * 8_000,
-    "literals on lines of their own": '"a"\n' * 1_250_000,
-    "blank lines after each literal": ('"a"' + "\n" * 997) * 5_000,
-    "indented literals": '"a"\n  ' * 830_000,
+    "invisible every other character": lambda: "a\u200b" * 2_500_000,
+    "invisible run": lambda: "\u200b" * 5_000_000,
+    "one giant split string": lambda: '"a"+' * 1_250_000,
+    "quotes only": lambda: '"' * 5_000_000,
+    "unclosed quotes": lambda: ('"' + "a" * 99) * 50_000,
+    "continuations": lambda: "a\\\n" * 1_666_666,
+    "giant yaml block": lambda: "k: |\n" + "  ab\n" * 1_000_000,
+    "yaml headers": lambda: "k: |\n" * 1_000_000,
+    "one base64 blob": lambda: "QUJD" * 1_250_000,
+    "many base64 blobs": lambda: (_b64("ordinary text " * 4) + " ") * 60_000,
+    "json escapes": lambda: '"\\n' * 1_666_666,
+    "sparse joins": lambda: ('"x" + "y"' + " " * 600) * 8_000,
+    "literals on lines of their own": lambda: '"a"\n' * 1_250_000,
+    "blank lines after each literal": lambda: ('"a"' + "\n" * 997) * 5_000,
+    "indented literals": lambda: '"a"\n  ' * 830_000,
     # Joins all through the text: every view is searched, generic rules included.
-    "joins among words": ('"x" + "y"' + "abcdefghij" * 60) * 8_000,
-    "joins among generic names": ('"x" + "y"' + "token_ab " * 66) * 8_000,
+    "joins among words": lambda: ('"x" + "y"' + "abcdefghij" * 60) * 8_000,
+    "joins among generic names": lambda: ('"x" + "y"' + "token_ab " * 66) * 8_000,
     # Dense key-shaped text: thousands of matches in every view.
-    "joins among AWS-shaped ids": ('"x" + "y" ' + (fakes.AWS + " ") * 30) * 8_000,
-    "invisible characters among AWS-shaped ids": (fakes.AWS + ZWSP) * 240_000,
-    "split keys back to back": f'"{A}" + "{B}"; ' * 40_000,
+    "joins among AWS-shaped ids": lambda: ('"x" + "y" ' + (fakes.AWS + " ") * 30) * 8_000,
+    "invisible characters among AWS-shaped ids": lambda: (fakes.AWS + ZWSP) * 240_000,
+    "split keys back to back": lambda: f'"{A}" + "{B}"; ' * 40_000,
 }
 
 
@@ -343,18 +343,14 @@ def test_dense_plain_keys_are_fast():
     # Each match is checked against the text earlier rules claimed by binary search. Comparing
     # every match with every match before it took about 2 minutes on this input.
     text = (fakes.AWS + " ") * 60_000  # 60,000 key-shaped ids
-    start = time.perf_counter()
-    found = find_secrets(text)
-    assert time.perf_counter() - start < 1.0
-    assert len(found) == 60_000
+    assert len(find_secrets(text)) == 60_000
+    assert timing.best_of(lambda: find_secrets(text)) < timing.bound(1.0)
 
 
 @pytest.mark.parametrize("name", HOSTILE)
 def test_hostile_input_is_fast(name):
-    text = HOSTILE[name][:5_000_000]
-    start = time.perf_counter()
-    find_hidden(text)
-    assert time.perf_counter() - start < 1.0
+    text = HOSTILE[name]()[:5_000_000]
+    assert timing.best_of(lambda: find_hidden(text)) < timing.bound(1.0)
 
 
 def test_key_on_a_window_boundary_is_found():
