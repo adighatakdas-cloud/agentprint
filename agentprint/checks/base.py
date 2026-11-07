@@ -14,10 +14,15 @@ from ..secrets import find_secrets, redact
 
 
 class Check(Protocol):
-    id: str
-    severity: Severity
-    title: str
-    fix: str  # general advice; each finding carries the exact fix for its case
+    # Read-only members: implementations only need to be readable.
+    @property
+    def id(self) -> str: ...
+    @property
+    def severity(self) -> Severity: ...
+    @property
+    def title(self) -> str: ...
+    @property
+    def fix(self) -> str: ...  # general advice; each finding carries the exact fix for its case
 
     def run(self, artifacts: Iterable[Artifact]) -> list[Finding]: ...
 

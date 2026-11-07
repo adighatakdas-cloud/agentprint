@@ -598,6 +598,7 @@ def _plan_env_file(path: Path, findings: list[Finding]) -> tuple[list[Change], l
     changes: list[Change] = []
     var_of: dict[str, str] = {}  # finding detail -> variable that now holds the key
     data = _read(path)
+    version = (0, 0)
     try:
         version = (path.stat().st_mtime_ns, path.stat().st_size)
         text_ok = data is not None and len(data) == version[1] and data.decode("utf-8") is not None

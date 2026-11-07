@@ -81,7 +81,7 @@ class CheckDoc:
 
 def _note(path: Path) -> tuple[dict[str, str], str]:
     """Split a check note into its frontmatter (flat `key: value` lines) and its body."""
-    _, front, body = path.read_text().split("---\n", 2)
+    _, front, body = path.read_text(encoding="utf-8").split("---\n", 2)
     meta = {}
     for line in front.splitlines():
         key, _, value = line.partition(":")
@@ -269,7 +269,7 @@ def _sweep_and_fix() -> tuple[str, str]:
 
 
 def _agent() -> str:
-    text = (SNAPSHOTS / "pack.agent.txt").read_text()
+    text = (SNAPSHOTS / "pack.agent.txt").read_text(encoding="utf-8")
     return f'<span style="color: #D5DEE8">{html.escape(text)}</span>'
 
 
@@ -305,24 +305,24 @@ def outputs() -> dict[Path, str]:
     for name, fragment in terminal_fragments().items():
         files[SITE / "src" / "data" / "terminal" / f"{name}.html"] = fragment
     readme = ROOT / "README.md"
-    files[readme] = replace_block(readme.read_text(), readme_checks_block(docs))
+    files[readme] = replace_block(readme.read_text(encoding="utf-8"), readme_checks_block(docs))
     return files
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="gen_docs", description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(prog="gen_docs", description=(__doc__ or "").splitlines()[0])
     parser.add_argument("--check", action="store_true", help="report stale files, write nothing")
     args = parser.parse_args(argv)
     stale = 0
     for path, text in outputs().items():
-        if path.exists() and path.read_text() == text:
+        if path.exists() and path.read_text(encoding="utf-8") == text:
             continue
         if args.check:
             print(path)
             stale += 1
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text)
+            path.write_text(text, encoding="utf-8", newline="\n")
     return 1 if stale else 0
 
 

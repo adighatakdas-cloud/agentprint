@@ -294,7 +294,8 @@ def _snippet(edits: list[Edit]) -> str:
     if all(isinstance(e, JsonEdit | YamlEdit) for e in edits):
         sample: dict = {}
         for edit in edits:
-            edit.add(sample)
+            if isinstance(edit, JsonEdit | YamlEdit):
+                edit.add(sample)
         return _render(json.loads(json.dumps(sample, default=str)), edits)  # plain types
     parts = []
     for edit in edits:
@@ -626,6 +627,7 @@ def _uninstall_file(
     if restored is None:
         _real(path).unlink()
     elif how == "restored":
+        assert entry is not None  # "restored" only happens when a backup was found in entry
         _real(path).write_bytes(Path(entry["backup"]).read_bytes())  # exact original bytes
     else:
         _atomic_write(path, restored)

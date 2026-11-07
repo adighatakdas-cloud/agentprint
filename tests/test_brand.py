@@ -1,3 +1,4 @@
+import re
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -28,7 +29,7 @@ def _rect_cells(svg: str, fill: str) -> int:
 
 
 def test_generated_files_are_current():
-    stale = [p for p, text in gen_brand.outputs().items() if p.read_text() != text]
+    stale = [p for p, text in gen_brand.outputs().items() if p.read_text(encoding="utf-8") != text]
     assert stale == []  # run: uv run python -m tools.gen_brand
 
 
@@ -125,3 +126,57 @@ def test_check_flags_stale_file(tmp_path, monkeypatch, capsys):
     assert stale.read_text() == "old"
     assert gen_brand.main([]) == 0
     assert stale.read_text() == "new"
+
+
+def test_share_image_is_1280_by_640_on_the_ground_colour():
+    root = ET.fromstring(gen_brand.share_svg())
+    assert root.get("viewBox") == "0 0 1280 640"
+    assert root.get("width") == "1280" and root.get("height") == "640"
+    ground = [r for r in root.findall(f"{SVG_NS}rect") if r.get("width") == "1280"]
+    assert ground and ground[0].get("fill") == gen_brand.GROUND
+
+
+def test_share_image_shows_the_full_mascot_large():
+    svg = gen_brand.share_svg()
+    root = ET.fromstring(svg)
+    groups = [g for g in root.iter(f"{SVG_NS}g") if g.get("data-pixel")]
+    assert len(groups) == 1
+    pixel = float(groups[0].get("data-pixel"))
+    assert max(len(r) for r in FULL) * pixel >= 160
+    pal = gen_brand.PALETTE["dark"]
+    assert _rect_cells(svg, pal["body"]) == sum(c == "A" for r in FULL for c in r)
+    assert _rect_cells(svg, pal["frame"]) == sum(c == "R" for r in FULL for c in r)
+
+
+def test_share_image_text_is_outlined_and_says_the_story():
+    svg = gen_brand.share_svg()
+    assert "<text" not in svg and "font-family" not in svg
+    # tagline, strip words and URL are drawn as paths: each has its own named group
+    for label in (
+        "The security check your AI coding agent runs for you.",
+        "BLOCK",
+        "agentprint fix",
+        "CLEAR",
+        "adighatakdas-cloud.github.io/agentprint",
+    ):
+        assert f'aria-label="{label}"' in svg, label
+    assert "<title>" in svg
+
+
+def test_share_image_uses_brand_colours_and_no_green():
+    svg = gen_brand.share_svg().lower()
+    used = set(re.findall(r"#[0-9a-f]{6}", svg))
+    allowed = {
+        c.lower() for c in ("#050B14", "#FFB020", "#FF3B4E", "#5CC8FF", "#E8EEF5", "#8DA2B5")
+    }
+    allowed |= {c.lower() for c in gen_brand.PALETTE["dark"].values()}
+    assert used <= allowed, used - allowed
+    for color in ("#FF3B4E", "#FFB020", "#5CC8FF"):  # BLOCK, fix, CLEAR
+        assert color.lower() in used
+
+
+def test_share_png_tool_documents_itself_as_a_maintainer_tool():
+    from tools import render_share_png
+
+    assert "not run in CI" in (render_share_png.__doc__ or "")
+    assert render_share_png.PNG.name == "social-preview.png"

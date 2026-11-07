@@ -52,7 +52,20 @@ addopts = "-m 'not integration and not live'"
 dev = [
     "fonttools>=4.68.0",
     "jsonschema>=4.26.0",
+    "pyright==1.1.414",
     "pytest>=9.1.1",
+    "pytest-cov==7.1.0",
     "pyyaml>=6.0.3",
     "ruff>=0.16.10",
 ]
+
+[tool.pyright]
+include = ["agentprint", "tools"]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+venvPath = "."
+venv = ".venv"
+pythonPlatform = "All"  # so Windows-only code (msvcrt) is checked on any machine
+
+[tool.coverage.run]
+source = ["agentprint"]

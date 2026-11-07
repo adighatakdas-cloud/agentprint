@@ -33,3 +33,5 @@ npm/LICENSE
 # Docs site
 node_modules/
 site/.astro/
+coverage.json
+site/public/coverage.json

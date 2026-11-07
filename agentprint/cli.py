@@ -9,7 +9,7 @@ from collections.abc import Collection, Iterator
 from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, TypeVar
+from typing import Annotated, Any, TypeVar, cast
 
 import typer
 from rich.console import Console
@@ -54,7 +54,7 @@ def _print_help(ctx: typer.Context, plain: bool = False) -> None:
     """Print the help once. Typer's rich help prints itself and get_help() returns ""; plain
     help is returned as text."""
     if plain:
-        _plain(ctx.command)
+        _plain(cast("TyperGroup | TyperCommand", ctx.command))  # click's type; typer's at runtime
     text = ctx.get_help()
     if text:
         typer.echo(text)
@@ -111,7 +111,9 @@ def main(
     # `agentprint --plain scan` works like `agentprint scan --plain`: the commands read it here.
     ctx.ensure_object(dict)["plain"] = plain
     if plain:
-        _plain(ctx.command)  # and the commands' help is plain too
+        _plain(
+            cast("TyperGroup | TyperCommand", ctx.command)
+        )  # and the commands' help is plain too
     if ctx.invoked_subcommand is not None:
         return
     if not is_interactive(os.environ, sys.stdin, sys.stdout):
@@ -139,7 +141,8 @@ def _bare(ctx: typer.Context, plain: bool) -> int:
             _show_welcome(home, env, plain)
             return 0
         # The menu draws itself in place, so even --plain needs a terminal console (no color).
-        out = themed_console(env, **({"no_color": True} if plain else {}))
+        console_options: dict[str, Any] = {"no_color": True} if plain else {}
+        out = themed_console(env, **console_options)
         keys, numbered = menu.key_reader(sys.stdin)
         with keys as read_key:
             action = menu.choose(

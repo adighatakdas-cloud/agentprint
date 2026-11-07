@@ -4,13 +4,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   test:
-    runs-on: ubuntu-latest  # add macos-latest when the repo goes public (private macOS minutes cost 10x)
+    runs-on: ubuntu-latest  # macOS runs in test-other-os once the repo is public
     strategy:
       matrix:
         python: ["3.11", "3.13"]
@@ -23,10 +24,14 @@ jobs:
         with:
           node-version: "22"
           package-manager-cache: false
-      - run: uv sync --locked --python ${{ matrix.python }}
+      - run: uv sync --locked --python "$PYTHON"
+        env:
+          PYTHON: ${{ matrix.python }}
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      - run: uv run pytest -m "integration or not integration"  # unit + integration
+      - run: uv run pyright
+      - name: tests with a coverage floor (measured 95.09%, floor is that minus 1, rounded down)
+        run: uv run pytest -m "integration or not integration" --cov=agentprint --cov-report=term --cov-fail-under=94
       - name: agentprint checks its own package
         run: uv run agentprint pack . --fail-on high
       - name: npm wrapper tests
@@ -34,3 +39,23 @@ jobs:
         run: npm test
       - name: agentprint checks the npm wrapper package
         run: uv run agentprint pack npm --fail-on high
+
+  # Private macOS minutes cost 10x, so these switch on by themselves when the repo goes public.
+  test-other-os:
+    if: ${{ !github.event.repository.private }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest]  # Windows CI returns after launch, with skips for POSIX-only tests
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - run: uv sync --locked --python 3.13
+      - run: uv run pytest -m "integration or not integration"

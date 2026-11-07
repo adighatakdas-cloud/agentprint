@@ -9,6 +9,8 @@
 
 <p align="center">
   <a href="https://github.com/adighatakdas-cloud/agentprint/actions/workflows/ci.yml"><img alt="tests" src="https://img.shields.io/github/actions/workflow/status/adighatakdas-cloud/agentprint/ci.yml?branch=main&label=tests&style=flat-square&labelColor=050B14&color=FFB020"></a>
+  <a href="https://adighatakdas-cloud.github.io/agentprint/coverage.json"><img alt="coverage" src="https://img.shields.io/endpoint?url=https://adighatakdas-cloud.github.io/agentprint/coverage.json&style=flat-square"></a>
+  <a href="https://github.com/microsoft/pyright"><img alt="types: pyright" src="https://img.shields.io/badge/types-pyright-FFB020?style=flat-square&labelColor=050B14"></a>
   <a href="https://pypi.org/project/agentprint/"><img alt="PyPI" src="https://img.shields.io/pypi/v/agentprint?style=flat-square&labelColor=050B14&color=FFB020"></a>
   <a href="https://www.npmjs.com/package/agentprint-cli"><img alt="npm" src="https://img.shields.io/npm/v/agentprint-cli?style=flat-square&labelColor=050B14&color=FFB020"></a>
   <a href="https://github.com/adighatakdas-cloud/agentprint/blob/main/LICENSE"><img alt="license: MIT" src="https://img.shields.io/badge/license-MIT-FFB020?style=flat-square&labelColor=050B14"></a>
