@@ -485,3 +485,23 @@ def test_hermes_strict_block_exit_blocks(monkeypatch):
     monkeypatch.setattr(module.subprocess, "run", lambda *a, **k: done)
     answer = module.check(tool_name="terminal", args={"command": "npm publish"})
     assert answer == {"action": "block", "message": "strict: blocked"}
+
+
+# ---- MCP registry --------------------------------------------------------------------------------
+
+
+def test_server_json_for_the_mcp_registry():
+    server = _load(ROOT / "server.json")
+    assert server["name"] == gen.MCP_NAME == "io.github.adighatakdas-cloud/agentprint"
+    assert server["version"] == __version__ and len(server["description"]) <= 100
+    [package] = server["packages"]
+    assert package["registryType"] == "pypi" and package["identifier"] == "agentprint"
+    assert package["version"] == __version__ and package["runtimeHint"] == "uvx"
+    assert package["transport"] == {"type": "stdio"}
+    assert package["packageArguments"] == [{"type": "positional", "value": "mcp"}]
+
+
+def test_readme_carries_the_registry_marker_to_pypi():
+    readme = (ROOT / "README.md").read_text()
+    assert readme.count(gen.MCP_MARKER) == 1
+    assert gen._project()["readme"] == "README.md"  # the README is PyPI's long description

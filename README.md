@@ -1,3 +1,4 @@
+<!-- mcp-name: io.github.adighatakdas-cloud/agentprint -->
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/adighatakdas-cloud/agentprint/main/docs/brand/logo-dark.svg">
