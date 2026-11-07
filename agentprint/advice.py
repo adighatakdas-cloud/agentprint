@@ -28,7 +28,7 @@ from .checks.ap005_mcp_inline_secret import _MARKER as MCP_MARKER
 from .checks.ap005_mcp_inline_secret import ASK_FIRST as MCP_ASK_FIRST
 from .models import Finding, Severity
 from .sanitize import clean, quote, safe_step
-from .secrets import RULES
+from .secrets import HIDDEN_MARKER, RULES, hidden_how
 
 
 class Moment(StrEnum):
@@ -146,6 +146,7 @@ def rotate_text(finding: Finding, *, person: bool = False) -> str:
     """Rotate this finding's key, and where. For an AI agent it says the agent cannot do this;
     for a person (`person`) it is simply their step."""
     name, _, shown = finding.detail.partition(": ")
+    shown = shown.partition(HIDDEN_MARKER)[0]
     rule_id = _RULE_BY_NAME.get(name)
     url = ROTATE_AT.get(rule_id or "")
     key = f"the {clean(name)} that starts {quote(shown)}"
@@ -156,6 +157,18 @@ def rotate_text(finding: Finding, *, person: bool = False) -> str:
     if url:
         return f"Rotate {key}: revoke it and create a new one at {url}. {tail}"
     return f"Rotate {key} with the service that issued it (agentprint can't tell which). {tail}"
+
+
+def _hidden_key(finding: Finding) -> str | None:
+    """The start of the step for a key hidden on purpose (split, folded, invisible characters,
+    base64), which agentprint cannot mask: None for a key written out plainly."""
+    how = hidden_how(finding.detail)
+    if how is None:
+        return None
+    return (
+        f"In {_where(finding)}, a key is hidden ({how}): its characters are not stored together, "
+        "so agentprint cannot mask it. Find every piece of it and delete them by hand"
+    )
 
 
 def _rotate(finding: Finding, person: bool = False) -> list[str]:
@@ -172,46 +185,61 @@ def _no_leak(step: str, person: bool) -> str:
 
 @adviser("AP001")
 def _history_secret(finding: Finding, moment: Moment, person: bool = False) -> Advice:
-    return Advice(
-        [
-            _no_leak(
-                f"In {_where(finding)}, replace the key with the text REDACTED, or delete the "
-                "file if that history is not needed.",
-                person,
-            ),
-        ],
-        _rotate(finding, person),
-    )
+    hidden = _hidden_key(finding)
+    if hidden is not None:
+        step = f"{hidden}, or delete the file if that history is not needed."
+    else:
+        step = (
+            f"In {_where(finding)}, replace the key with the text REDACTED, or delete the "
+            "file if that history is not needed."
+        )
+    return Advice([_no_leak(step, person)], _rotate(finding, person))
 
 
 @adviser("AP002")
 def _settings_secret(finding: Finding, moment: Moment, person: bool = False) -> Advice:
     package, member = split_location(finding.location)
+    hidden = _hidden_key(finding)
     if package is not None:
         source = quote(agent_path(member))
+        how = hidden_how(finding.detail)
+        delete = (
+            f"In the source file {source} in the project (line {finding.line}), a key is hidden "
+            f"({how}): its characters are not stored together, so agentprint cannot mask it. "
+            "Find every piece of it and delete them by hand"
+            if how is not None
+            else f"Delete the key from the source file {source} in the project (line "
+            f"{finding.line})"
+        )
         steps = [
             _no_leak(
-                f"Delete the key from the source file {source} in the project (line "
-                f"{finding.line}); the package copy is built from it. Load the key from an "
-                "environment variable instead.",
+                f"{delete}; the package copy is built from it. Load the key from an environment "
+                "variable instead.",
                 person,
             ),
             "Also keep that file out of the package (see the matching AP006 finding).",
         ]
     elif moment is Moment.push:
+        delete = (
+            f"{hidden}, load the key from an environment variable instead"
+            if hidden is not None
+            else f"Delete the key from {_where(finding)}, load it from an environment variable "
+            "instead"
+        )
         steps = [
-            _no_leak(
-                f"Delete the key from {_where(finding)}, load it from an environment variable "
-                "instead, and commit the change.",
-                person,
-            ),
+            _no_leak(f"{delete}, and commit the change.", person),
             "The key stays in earlier commits, so rotating it (ask_human) is what makes it safe.",
         ]
     else:
+        delete = (
+            f"{hidden}, and load the key"
+            if hidden is not None
+            else f"Delete the key from {_where(finding)} and load it"
+        )
         steps = [
             _no_leak(
-                f"Delete the key from {_where(finding)} and load it from an environment variable "
-                "instead (set it in your shell profile or a secret manager).",
+                f"{delete} from an environment variable instead (set it in your shell profile "
+                "or a secret manager).",
                 person,
             ),
         ]

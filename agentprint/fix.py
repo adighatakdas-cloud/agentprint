@@ -10,7 +10,9 @@ key's bytes in place with its first four characters and `*` to the same length. 
 positioned write at the key's byte offset, made only after re-reading those bytes and checking
 they still hold what was planned. The file is never renamed or truncated, so text a running
 agent appends meanwhile is kept, and no copy of a key is ever made: no backup, and only masked
-stubs (`redact()` form) in the plan, the journal and the output.
+stubs (`redact()` form) in the plan, the journal and the output. A key hidden on purpose (split
+into joined strings, folded over lines, cut by invisible characters, base64) has no run of bytes
+to mask: it is always left to the human.
 
 New kinds of change plug in through PLANNERS (check id -> planner) and APPLIERS (kind ->
 applier); a print with no planner is left to the human with its existing advice.
@@ -43,7 +45,7 @@ from .files import MAX_BYTES
 from .models import Finding, Severity
 from .safewrite import atomic_write, private_dir, real
 from .sanitize import clean, quote
-from .secrets import find_secrets, redact
+from .secrets import find_secrets, hidden_how, redact
 
 JOURNAL_DIR = Path(".agentprint") / "fix"  # under the home folder
 STAMP = "%Y%m%dT%H%M%SZ"  # UTC; also names the run's backup folder
@@ -500,7 +502,7 @@ def _plan_masks(findings: list[Finding], pack: bool) -> tuple[list[Change], list
 
     AP001 masks only pure history, as its agent module names it (transcripts, chat logs, paste
     caches, prompt history). A key in a file the agent reads back (skills, rules, memories,
-    scheduled jobs) is in use: that print is the human's."""
+    scheduled jobs) is in use: that print is the human's. So is a hidden key."""
     changes: list[Change] = []
     manual: list[Manual] = []
     by_file: dict[str, list[Finding]] = {}
@@ -510,6 +512,16 @@ def _plan_masks(findings: list[Finding], pack: bool) -> tuple[list[Change], list
         path = Path(location)
         if split_location(location)[0] is not None:  # inside a package: fix the source
             manual += [_advice(f, pack) for f in group]
+            continue
+        # A key hidden on purpose (split, folded, invisible characters, base64) has no run of
+        # bytes to mask: removing it is the human's, with its advice (find every piece, rotate).
+        hidden = [f for f in group if hidden_how(f.detail) is not None]
+        manual += [
+            _chat_database(f) if f.check_id == "AP001" and not f.line else _advice(f, pack)
+            for f in hidden
+        ]
+        group = [f for f in group if hidden_how(f.detail) is None]
+        if not group:
             continue
         if any(not f.line for f in group) or sqlite_text.is_sqlite(path):  # database rows
             manual += [
