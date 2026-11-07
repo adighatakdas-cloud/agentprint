@@ -3,6 +3,7 @@ demo/demo.tape shows works there and never prints a key in full."""
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import shutil
@@ -14,6 +15,7 @@ import pytest
 from typer.testing import CliRunner
 
 from agentprint.cli import app
+from agentprint.ui.detect import AGENT_MARKERS
 
 ROOT = Path(__file__).resolve().parent.parent
 DEMO = ROOT / "demo"
@@ -218,3 +220,89 @@ def test_tape_menu_keys_land_on_roster():
     row = sum(1 if key == "Down" else -1 for key in moves) % len(menu.ITEMS)
     assert keys[0] == keys[-1] == "Enter" and moves
     assert menu.ITEMS[row][1] == "Roster"
+
+
+# --- the agent-in-the-loop demo: demo/agent_loop.py and demo/agent_loop.tape ---------------
+
+LOOP = DEMO / "agent_loop.py"
+LOOP_TAPE = DEMO / "agent_loop.tape"
+
+
+def test_loop_tape_runs_the_loop_script_and_is_short_enough():
+    tape = LOOP_TAPE.read_text(encoding="utf-8")
+    assert "Output docs/agent-loop.gif" in tape
+    shown, hidden = [], False
+    for line in tape.splitlines():
+        word = line.strip().split(" ", 1)[0]
+        hidden = {"Hide": True, "Show": False}.get(word, hidden)
+        if word == "Type" and not hidden:
+            shown.append(line.strip())
+    assert shown == ['Type `python3 "$REPO/demo/agent_loop.py" "$DEMO"`']
+    # the script's own pauses plus the tape's: the whole recording stays within a minute
+    pauses = sum(
+        float(n) for n in re.findall(r"^\s+pause\((\d+(?:\.\d+)?)\)", LOOP.read_text(), re.M)
+    )
+    sleeps = sum(
+        float(m[1]) / (1000 if m[2] == "ms" else 1)
+        for m in re.finditer(r"^\s*Sleep (\d+(?:\.\d+)?)(ms|s)", tape, re.M)
+    )
+    assert pauses + sleeps <= 50, (pauses, sleeps)
+    for name in (*AGENT_MARKERS, "CI"):
+        assert re.search(rf"\bunset\b[^`\n]*\b{name}\b", tape), name
+
+
+def test_loop_script_labels_itself_simulated():
+    assert "simulated agent · real agentprint output" in LOOP.read_text(encoding="utf-8")
+
+
+def test_workflow_takes_a_tape_input_without_expressions_in_run():
+    text = (ROOT / ".github" / "workflows" / "demo-gif.yml").read_text(encoding="utf-8")
+    assert "demo/agent_loop.tape" in text and "demo/demo.tape" in text
+    for block in re.findall(r"run: \|?\n?((?:\s+.*\n)+?)(?=\s*-|\Z)", text):
+        assert "${{" not in block
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(shutil.which("npm") is None, reason="npm not installed")
+def test_loop_goes_block_then_fix_then_allowed(tmp_path):
+    root = tmp_path / "agentprint-demo"
+    built = subprocess.run(
+        [sys.executable, str(DEMO / "build_demo.py"), str(root)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert built.returncode == 0, built.stderr
+    env = {
+        **os.environ,
+        "HOME": str(root),
+        "AGENT_LOOP_SPEED": "0",
+        "AGENTPRINT_CMD": str(Path(sys.executable).parent / "agentprint"),
+    }
+    for name in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "GEMINI_CLI_HOME", "CI", "CLAUDECODE"):
+        env.pop(name, None)
+    result = subprocess.run(
+        [sys.executable, str(LOOP), str(root)],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        env=env,
+    )
+    out = result.stdout
+    assert result.returncode == 0, result.stdout + result.stderr
+    _no_full_key(out + result.stderr)
+    banner = out.index("simulated agent")
+    block = out.index("agentprint: BLOCK")
+    fix = out.index("agent runs (in my-app): agentprint fix --pack --yes --format agent")
+    fixed = out.index("agentprint fix: CLEAR")
+    home_fix = out.index("agentprint fix --yes --format agent --home fake-home my-app")
+    retry = out.index("agent runs again: npm publish")
+    allowed = out.index("CLEAR: allowed")
+    assert banner < block < fix < fixed < home_fix < retry < allowed
+    assert "sk-p…(len 56)" in out  # keys appear only as redacted stubs
+    assert "Rotate" in out.split("CLEAR: allowed")[0]
+    # only real agentprint commands changed the world: fix --pack wrote the ignore lines
+    assert "/.claude/settings.local.json" in (root / "my-app" / ".npmignore").read_text()
+    assert "FAKEFAKE" not in (root / "my-app" / ".claude" / "settings.local.json").read_text()
+    assert "wrote .npmignore" not in out
+    assert "FAKEFAKE" not in (root / "fake-home" / ".claude" / "history.jsonl").read_text()

@@ -1,12 +1,21 @@
 name: Demo GIF
 
-# Renders docs/demo.gif from demo/demo.tape with VHS and uploads it as a build artifact.
-# Run by hand (Actions -> Demo GIF -> Run workflow), download the artifact, check it, and
-# commit docs/demo.gif yourself. Nothing is committed or pushed by this workflow.
+# Renders a demo GIF with VHS and uploads it as a build artifact. Run by hand (Actions ->
+# Demo GIF -> Run workflow) and pick the tape: demo/demo.tape makes docs/demo.gif,
+# demo/agent_loop.tape makes docs/agent-loop.gif. Download the artifact, check it, and
+# commit the GIF yourself. Nothing is committed or pushed by this workflow.
 # The demo uses only a fake home and fake keys built by demo/build_demo.py.
 
 on:
   workflow_dispatch:
+    inputs:
+      tape:
+        description: Which tape to render
+        type: choice
+        options:
+          - demo/demo.tape
+          - demo/agent_loop.tape
+        default: demo/demo.tape
 
 permissions:
   contents: read
@@ -31,11 +40,16 @@ jobs:
       - uses: charmbracelet/vhs-action@f6d7db07a432fcd3b06772628d36a57f96d95dcf # v2.1.1
         with:
           version: v0.12.1
-          path: demo/demo.tape
-      - name: Check the GIF was written
-        run: test -s docs/demo.gif && ls -l docs/demo.gif
+          path: ${{ inputs.tape }}
+      - name: Find the GIF the tape wrote
+        env:
+          TAPE: ${{ inputs.tape }}
+        run: |
+          gif=$(sed -n 's/^Output //p' "$TAPE" | head -n 1)
+          test -s "$gif" && ls -l "$gif"
+          echo "GIF=$gif" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: demo-gif
-          path: docs/demo.gif
+          path: ${{ env.GIF }}
           if-no-files-found: error

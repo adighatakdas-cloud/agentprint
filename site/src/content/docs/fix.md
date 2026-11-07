@@ -70,6 +70,12 @@ To point a Claude Code MCP server at `${NAME}`, `fix` checks that the config fil
 
 ## Inside your AI agent
 
+Here is one agent turn, from a blocked publish to an allowed one:
+
+![A simulated AI agent tries to run npm publish. The real agentprint hook blocks it and hands the agent its brief with masked keys. The agent runs agentprint fix, follows the last step itself, retries, and is allowed through. What is left for the human is to rotate the keys.](/agentprint/agent-loop.gif)
+
+*The agent is simulated; everything agentprint prints is real. The demo uses fake keys.*
+
 Your AI agent runs it like this:
 
 ```bash

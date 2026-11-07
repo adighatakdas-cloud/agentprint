@@ -13,6 +13,12 @@ Together, the hook and the check it runs are the tripwire. See [What `install` c
 
 ## What the agent reads
 
+A 45-second turn, start to finish:
+
+![A simulated AI agent tries to run npm publish. The real agentprint hook blocks it and hands the agent its brief with masked keys. The agent runs agentprint fix, follows the last step itself, retries, and is allowed through. What is left for the human is to rotate the keys.](/agentprint/agent-loop.gif)
+
+*The agent is simulated; everything agentprint prints is real. The demo uses fake keys.*
+
 When a publish would leak, the agent gets a brief: the verdict first, then fix steps it can do itself, then what only a person can do. This is the brief, shortened:
 
 ```text
