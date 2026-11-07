@@ -1,0 +1,98 @@
+/* agentprint brand tokens. Pages style with var(--ap-*), never raw hex. Dark is the default. */
+:root,
+:root[data-theme="dark"] {
+  --ap-ground: #050b14;
+  --ap-panel: #0a1422;
+  --ap-border: #1a2d44;
+  --ap-text: #e8eef5;
+  --ap-strong: #f3f6fa;
+  --ap-dim: #8da2b5;
+  --ap-faint: #1e2e42;
+  --ap-amber: #ffb020;
+  --ap-red: #ff3b4e;
+  --ap-high: #ff7a2f;
+  --ap-medium: #e9c46a;
+  --ap-low: #5cc8ff;
+
+  --sl-font: "IBM Plex Sans", system-ui, sans-serif;
+  --sl-font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --sl-color-black: var(--ap-ground);
+  --sl-color-gray-6: var(--ap-panel);
+  --sl-color-gray-5: var(--ap-border);
+  --sl-color-gray-4: #2c4560;
+  --sl-color-gray-3: var(--ap-dim);
+  --sl-color-gray-2: var(--ap-dim);
+  --sl-color-gray-1: var(--ap-text);
+  --sl-color-white: var(--ap-strong);
+  --sl-color-text: var(--ap-text);
+  --sl-color-text-accent: var(--ap-amber);
+  --sl-color-accent-low: #3a2a07;
+  --sl-color-accent: #b87800;
+  --sl-color-accent-high: var(--ap-amber);
+  --sl-color-bg-nav: var(--ap-ground);
+  --sl-color-bg-sidebar: var(--ap-ground);
+  --sl-color-hairline: var(--ap-border);
+}
+
+:root[data-theme="light"] {
+  --ap-ground: #f3f8fb;
+  --ap-panel: #ffffff;
+  --ap-border: #c9d8e4;
+  --ap-text: #06121f;
+  --ap-strong: #020a12;
+  --ap-dim: #4a5e72;
+  --ap-faint: #dce6ee;
+  --ap-amber: #a35f00;
+  --ap-red: #c8102e;
+  --ap-high: #b8480a;
+  --ap-medium: #7a5c00;
+  --ap-low: #0b6fa4;
+
+  --sl-color-black: #ffffff;
+  --sl-color-white: var(--ap-strong);
+  --sl-color-gray-1: var(--ap-text);
+  --sl-color-gray-2: var(--ap-dim);
+  --sl-color-gray-3: var(--ap-dim);
+  --sl-color-gray-4: #7d91a4;
+  --sl-color-gray-5: var(--ap-border);
+  --sl-color-gray-6: var(--ap-faint);
+  --sl-color-gray-7: var(--ap-ground);
+  --sl-color-text: var(--ap-text);
+  --sl-color-text-accent: var(--ap-amber);
+  --sl-color-accent-low: #fde7c2;
+  --sl-color-accent: #a35f00;
+  --sl-color-accent-high: #6e3f00;
+  --sl-color-bg-nav: var(--ap-ground);
+  --sl-color-bg-sidebar: var(--ap-ground);
+  --sl-color-bg: var(--ap-ground);
+  --sl-color-hairline: var(--ap-border);
+}
+
+/* A terminal stays dark in both themes and uses the terminal text and dim from the spec:
+   the generated fragments carry the CLI's own colors for a dark ground. */
+[data-ap-terminal] {
+  --ap-ground: #050b14;
+  --ap-panel: #0a1422;
+  --ap-border: #1a2d44;
+  --ap-text: #d5dee8;
+  --ap-strong: #f3f6fa;
+  --ap-dim: #6f8397;
+  --ap-faint: #1e2e42;
+  --ap-amber: #ffb020;
+  --ap-red: #ff3b4e;
+  color-scheme: dark;
+}
+
+.sl-markdown-content a:not(:where(.not-content *)) {
+  color: var(--ap-amber);
+}
+
+:focus-visible {
+  outline: 2px solid var(--ap-amber);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--ap-amber) 30%, transparent);
+}

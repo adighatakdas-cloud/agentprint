@@ -32,7 +32,8 @@ def load(path: Path) -> dict:
     if "…(len" in text or "\\u2026(len" in text:
         raise MergeError(
             f"{path}: holds redacted values, so it looks like a private findings file. "
-            "Never post or merge it; send it privately instead (see docs/VOLUNTEER_SCAN.md)."
+            "Never post or merge it; send it privately instead "
+            "(see https://adighatakdas-cloud.github.io/agentprint/census/)."
         )
     try:
         data = json.loads(text)

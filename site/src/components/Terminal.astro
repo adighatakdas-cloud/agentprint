@@ -1,0 +1,244 @@
+---
+// The landing terminal: the welcome, a sweep that ends on BLOCK, and the brief an AI agent reads.
+// Every line is in the HTML at build time, rendered by agentprint's own code (tools/gen_docs.py).
+// The script only replays it, and only when it runs and the reader allows motion.
+import welcome from "../data/terminal/welcome.html?raw";
+import scan from "../data/terminal/scan.html?raw";
+import agent from "../data/terminal/agent.html?raw";
+
+const SCAN = "agentprint scan";
+const PACK = "agentprint pack . --format agent";
+
+/** rich's export (flat <span style=…> runs, escaped text) as one balanced HTML string per line. */
+function lines(fragment: string): string[] {
+  const out: string[] = [];
+  const open: string[] = [];
+  let line = "";
+  for (const token of fragment.split(/(<[^>]*>)/)) {
+    if (token.startsWith("</")) {
+      open.pop();
+      line += token;
+    } else if (token.startsWith("<")) {
+      open.push(token);
+      line += token;
+    } else {
+      token.split("\n").forEach((part, i) => {
+        if (i > 0) {
+          out.push(line + "</span>".repeat(open.length));
+          line = open.join("");
+        }
+        line += part;
+      });
+    }
+  }
+  out.push(line);
+  while (out.length && !out[out.length - 1].replace(/<[^>]*>/g, "").trim()) out.pop();
+  return out;
+}
+
+// Runs of half blocks are the mascot. Each character becomes one cell that CSS paints as a
+// box (see .ap-px in landing.css): glyph edges at fractional pixels would leave seams.
+const HALF: Record<string, string> = { "█": "full", "▀": "top", "▄": "bottom" };
+const pixels = (html: string) =>
+  html.replace(/<span (style="[^"]*")>([█▀▄]+)<\/span>/g, (_, style: string, run: string) =>
+    [...run].map((ch) => `<span class="ap-px ap-px-${HALF[ch]}" ${style}>${ch}</span>`).join(""),
+  );
+const row = (html: string, cls = "") => `<span class="ap-ln${cls}">${html}</span>`;
+const command = (text: string) =>
+  row(`<span class="ap-prompt">$ </span><span class="ap-typed">${text}</span>`, " ap-cmd");
+const block = (name: string, rows: string[], sep = "\n") =>
+  `<span class="ap-blk ap-blk-${name}">${rows.join(sep)}</span>`;
+// The brief wraps, so each of its lines is a block with a hanging indent: wrapped text lines up
+// under the first word, after the leading spaces and a "- " bullet.
+const hanging = (html: string) => {
+  const text = html.replace(/<[^>]*>/g, "");
+  const indent = (text.match(/^ */)?.[0].length ?? 0) + (/^ *- /.test(text) ? 2 : 0);
+  return indent ? `<span class="ap-ln" style="--ap-ind:${indent}ch">${html}</span>` : row(html);
+};
+
+const screen = [
+  block("welcome", lines(pixels(welcome)).map((l) => row(l))),
+  "",
+  block("scan", [command(SCAN), ...lines(scan).map((l) => row(l))]),
+  "",
+  block("agent", [
+    command(PACK),
+    row("what your AI agent reads", " ap-caption"),
+    ...lines(agent).map(hanging),
+  ], ""),
+].join("\n");
+---
+
+<figure
+  class="ap-term"
+  data-ap-terminal
+  aria-label="agentprint in a terminal: the welcome, a scan that ends on BLOCK, and what an AI agent reads"
+>
+  <div class="ap-term-bar">
+    <span class="ap-term-title">~/code/my-app — agentprint</span>
+    <button class="ap-term-replay" type="button" hidden>Replay</button>
+  </div>
+  <pre class="ap-term-screen" tabindex="0" set:html={screen} />
+</figure>
+{/* A classic inline script, so it runs before the first paint: no flash of the last frame. */}
+<script is:inline>
+  {
+    // The generated text is never rewritten: the sweep draws on a layer over the welcome,
+    // typing uncovers each command, and lines wait behind a class. Anything that goes wrong,
+    // and print or reduced motion (landing.css), falls back to that real text.
+    const fig = document.currentScript.previousElementSibling;
+    const screen = fig.querySelector(".ap-term-screen");
+    const replay = fig.querySelector(".ap-term-replay");
+    const reduce = matchMedia("(prefers-reduced-motion: reduce)");
+    const GLYPHS = "▓▒░#%*+=/|~";
+    const EDGE = 3;
+    const STEPS = 30;
+    const welcome = screen.querySelector(".ap-blk-welcome");
+    const commands = [...screen.querySelectorAll(".ap-cmd")];
+    const output = (cmd) => [...cmd.closest(".ap-blk").querySelectorAll(".ap-ln")].filter((ln) => ln !== cmd);
+    // Each welcome line as cells: one character and the opening tag of the run it sits in.
+    const cells = [...welcome.querySelectorAll(".ap-ln")].map((ln) =>
+      [...ln.childNodes].flatMap((node) => {
+        const open = node.nodeType === 1 ? node.outerHTML.slice(0, node.outerHTML.indexOf(">") + 1) : "";
+        return [...node.textContent].map((ch) => ({ ch, open }));
+      }),
+    );
+    const width = Math.max(...cells.map((c) => c.length));
+    const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const glyph = () => GLYPHS[Math.floor(Math.random() * GLYPHS.length)];
+    const NOISE = '<span class="ap-noise">';
+    const RED = '<span class="ap-edge">';
+    const layer = document.createElement("span");
+    layer.className = "ap-sweep";
+    layer.setAttribute("aria-hidden", "true");
+    const cursor = document.createElement("span");
+    cursor.className = "ap-cursor";
+
+    // Same rule as agentprint/ui/sweep.py: below edge-3 settled, the next 3 red, the rest faint.
+    function frame(edge) {
+      layer.innerHTML = cells
+        .map((line) => {
+          let html = "";
+          let run = null;
+          let buf = "";
+          const flush = () => {
+            if (buf) html += run ? `${run}${buf}</span>` : buf;
+            buf = "";
+          };
+          line.forEach((c, x) => {
+            const open = c.ch === " " || x < edge - EDGE ? c.open : x < edge ? RED : NOISE;
+            if (open !== run) flush();
+            run = open;
+            buf += esc(c.ch === " " || open === c.open ? c.ch : glyph());
+          });
+          flush();
+          return html;
+        })
+        .join("\n");
+    }
+
+    let run = 0;
+    let io = null;
+    const STOP = Symbol("stop");
+    const wait = (ms, id) =>
+      new Promise((ok, no) => setTimeout(() => (id === run ? ok() : no(STOP)), ms));
+    const show = (el) => el.classList.remove("ap-off");
+
+    function follow(el) {
+      const pad = parseFloat(getComputedStyle(screen).paddingBottom);
+      const box = screen.getBoundingClientRect();
+      const over = el.getBoundingClientRect().bottom - (box.top + screen.clientTop + screen.clientHeight - pad);
+      if (over > 0) screen.scrollTop += over;
+    }
+    function reset() {
+      cursor.remove();
+      commands.forEach((cmd) => cmd.classList.remove("ap-typing"));
+      screen.setAttribute("aria-busy", "true");
+      screen.querySelectorAll(".ap-ln").forEach((ln) => ln.classList.add("ap-off"));
+      welcome.append(layer);
+      frame(0);
+      screen.scrollTop = 0;
+      screen.scrollLeft = 0;
+    }
+    function finish() {
+      run += 1;
+      layer.remove();
+      cursor.remove();
+      commands.forEach((cmd) => cmd.classList.remove("ap-typing"));
+      screen.querySelectorAll(".ap-off").forEach(show);
+      screen.removeAttribute("aria-busy");
+    }
+    // Something failed: show the whole run for good, with nothing left to replay.
+    function giveUp() {
+      replay.hidden = true;
+      if (io) io.disconnect();
+      finish();
+    }
+    async function type(cmd, id) {
+      const length = cmd.querySelector(".ap-typed").textContent.length;
+      cmd.style.setProperty("--typed", 0);
+      cmd.classList.add("ap-typing");
+      show(cmd);
+      cmd.append(cursor);
+      follow(cmd);
+      await wait(800, id);
+      for (let i = 1; i <= length; i += 1) {
+        cmd.style.setProperty("--typed", i);
+        await wait(35, id);
+      }
+      cmd.classList.remove("ap-typing");
+      cursor.remove();
+    }
+    async function reveal(lines, id) {
+      for (const ln of lines) {
+        await wait(60, id);
+        show(ln);
+        follow(ln);
+      }
+    }
+    async function play() {
+      const id = ++run;
+      try {
+        reset();
+        for (let i = 0; i < STEPS; i += 1) {
+          frame(Math.round(((i + 1) * (width + EDGE)) / STEPS));
+          await wait(40, id);
+        }
+        layer.remove();
+        welcome.querySelectorAll(".ap-ln").forEach(show);
+        for (const cmd of commands) {
+          await type(cmd, id);
+          await reveal(output(cmd), id);
+        }
+        finish();
+      } catch (e) {
+        if (e === STOP) return;
+        giveUp();
+        throw e;
+      }
+    }
+
+    if (!reduce.matches && "IntersectionObserver" in window) {
+      try {
+        reset();
+        replay.hidden = false;
+        replay.addEventListener("click", play);
+        io = new IntersectionObserver(
+          (entries) => {
+            if (entries.some((e) => e.isIntersecting)) {
+              io.disconnect();
+              play();
+            }
+          },
+          { threshold: 0.3 },
+        );
+        io.observe(fig);
+        // Reduced motion switched on mid-run: show everything now.
+        reduce.addEventListener("change", () => reduce.matches && giveUp());
+      } catch (e) {
+        giveUp();
+        throw e;
+      }
+    }
+  }
+</script>

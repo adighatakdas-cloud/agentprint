@@ -70,9 +70,12 @@ Do these once, before the first tag. Step 2 is a decision, the rest are clicks.
    `-alpha.1`, `b1` → `-beta.1`, `.dev0` → `-dev.0`). A test fails if the two don't match.
    npm pre-releases are published under the `next` tag, so `npx agentprint-cli` never picks them.
 
-   **First release only:** in the same change, take the "Works after the first release" notes and
-   the pre-release **Status** line out of `README.md` (it becomes the PyPI and npm page), and make
-   sure `docs/demo.gif` has been rendered and committed (Actions → Demo GIF).
+   Then run `uv run python -m tools.gen_docs` and commit what it changes. The landing page's
+   welcome fragment shows `__version__`, so without this the drift test fails CI on the release PR.
+
+   **First release only:** in the same change, delete the `> **Pre-release:**` line from
+   `README.md` (it becomes the PyPI and npm page), and make sure `docs/demo.gif` has been
+   rendered and committed (Actions → Demo GIF).
 2. Merge that change into `main` through a pull request, and wait for CI to pass.
 3. Tag the merged commit and push the tag:
 
