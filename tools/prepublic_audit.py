@@ -1,6 +1,11 @@
 """Read-only audit to run before a private repository goes public.
 
     uv run python -m tools.prepublic_audit [--repo PATH] [--no-network] [--format json]
+                                           [--forbid TERM ...]
+
+Extra forbidden terms (names that must not appear in a public repo) come from repeatable
+`--forbid TERM` and from an untracked `docs/private/audit-terms.txt` under the audited
+repository (one term per line, `#` comments). No term is built into this file.
 
 Exit 0 = PASS, 1 = FAIL, 2 = usage error (bad flag, not a git repository).
 
@@ -24,8 +29,7 @@ MAX_BLOB_BYTES = 1_000_000
 FAKE_MARKERS = ("FAKE", "fake_")
 PRIVATE_PREFIXES = ("docs/private/", "docs/superpowers/", ".superpowers/", "scans/")
 REQUIRED_FILES = ("LICENSE", "README.md", "SECURITY.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md")
-# Assembled at runtime so this file does not trip its own check.
-BRAND = "fe" + "asty"
+TERMS_FILE = "docs/private/audit-terms.txt"
 
 
 @dataclass
@@ -149,24 +153,44 @@ def check_private_files(repo: Path, report: Report) -> None:
         report.problems.append(f"private file exists in history: {path}")
 
 
-def check_brand(repo: Path, report: Report) -> None:
-    grep = subprocess.run(
-        ["git", "-C", str(repo), "grep", "-I", "-i", "-l", "-e", BRAND],
-        capture_output=True,
-        check=False,
-    )
+def load_terms(repo: Path, forbid: list[str]) -> list[str]:
+    terms = [t.strip() for t in forbid if t.strip()]
+    path = repo / TERMS_FILE
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                terms.append(line)
+    return list(dict.fromkeys(t.lower() for t in terms))
+
+
+def check_terms(repo: Path, terms: list[str], report: Report) -> None:
+    if not terms:
+        return
+    args = ["git", "-C", str(repo), "grep", "-I", "-i", "-l", "-F"]
+    for term in terms:
+        args += ["-e", term]
+    grep = subprocess.run(args, capture_output=True, check=False)
+    if grep.returncode > 1:
+        raise UsageError(f"git grep failed: {grep.stderr.decode(errors='replace').strip()}")
     for path in grep.stdout.decode(errors="replace").splitlines():
-        report.problems.append(f"private brand/email in tracked file: {path}")
+        report.problems.append(f"forbidden term in tracked file: {path}")
     log = _git(repo, "log", "--all", "--format=%h%x00%ae%x00%ce%x00%B%x01").decode(errors="replace")
     for entry in log.split("\x01"):
         parts = entry.strip("\n").split("\x00", 3)
         if len(parts) != 4:
             continue
         short, ae, ce, body = parts
-        if BRAND in ae.lower() or BRAND in ce.lower():
-            report.problems.append(f"private email in author/committer of commit {short}")
-        if BRAND in body.lower():
-            report.problems.append(f"private brand/email in commit message {short}")
+        if any(t in ae.lower() or t in ce.lower() for t in terms):
+            report.problems.append(f"forbidden term in author/committer of commit {short}")
+        if any(t in body.lower() for t in terms):
+            report.problems.append(f"forbidden term in commit message {short}")
+    seen: set[str] = set()
+    for _sha, path, text in _iter_blobs(repo, _history_blobs(repo), Report()):
+        low = text.lower()
+        if path not in seen and any(t in low for t in terms):
+            seen.add(path)
+            report.problems.append(f"forbidden term in history blob: {path}")
 
 
 def check_community_files(repo: Path, report: Report) -> None:
@@ -197,7 +221,7 @@ def check_github_metadata(repo: Path, report: Report) -> None:
         report.problems.append("GitHub repo topics are not set")
 
 
-def run_audit(repo: Path, network: bool = True) -> Report:
+def run_audit(repo: Path, network: bool = True, forbid: list[str] | None = None) -> Report:
     if not repo.is_dir():
         raise UsageError(f"not a directory: {repo}")
     try:
@@ -208,7 +232,7 @@ def run_audit(repo: Path, network: bool = True) -> Report:
     if _git(repo, "rev-parse", "--all").strip():
         check_history_secrets(repo, report)
         check_private_files(repo, report)
-        check_brand(repo, report)
+        check_terms(repo, load_terms(repo, forbid or []), report)
     else:
         report.problems.append("repository has no commits")
     check_community_files(repo, report)
@@ -225,10 +249,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--repo", default=".", help="repository to audit (default: .)")
     parser.add_argument("--no-network", action="store_true", help="skip the gh api check")
+    parser.add_argument(
+        "--forbid", action="append", default=[], metavar="TERM", help="extra forbidden term"
+    )
     parser.add_argument("--format", choices=("text", "json"), default="text")
     args = parser.parse_args(argv)
     try:
-        report = run_audit(Path(args.repo), network=not args.no_network)
+        report = run_audit(Path(args.repo), network=not args.no_network, forbid=args.forbid)
     except UsageError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

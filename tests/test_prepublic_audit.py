@@ -5,10 +5,11 @@ from pathlib import Path
 import pytest
 
 from tests.fakes import ANTHROPIC
-from tools import prepublic_audit
+
+prepublic_audit = pytest.importorskip("tools.prepublic_audit")
 
 REAL_LOOKING = "sk-ant-" + "api03-" + "aB3dE5gH7jK9mN1pQ3sT5vX7zC2fR4uW6yA8bD0eG" * 2
-BRAND = "Fe" + "asty"
+TERM = "Zorblax"
 COMMUNITY = ("LICENSE", "README.md", "SECURITY.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md")
 
 
@@ -86,18 +87,53 @@ def test_tracked_env_fails(repo, capsys):
     assert audit(repo, capsys)[0] == 1
 
 
-def test_brand_in_tracked_file_and_message_fail(repo, capsys):
-    commit(repo, {"a.txt": f"support@{BRAND.lower()}.co\n"}, f"about {BRAND}")
-    code, out = audit(repo, capsys)
+def test_forbidden_term_in_tracked_file_and_message_fail(repo, capsys):
+    commit(repo, {"a.txt": f"mail@{TERM.lower()}.example\n"}, f"about {TERM}")
+    code, out = audit(repo, capsys, "--forbid", TERM)
     assert code == 1
     assert "a.txt" in out.out
     assert "commit message" in out.out
 
 
-def test_brand_in_author_email_fails(repo, capsys, monkeypatch):
-    monkeypatch.setenv("GIT_AUTHOR_EMAIL", f"me@{BRAND.lower()}.co")
+def test_forbidden_term_in_author_email_fails(repo, capsys, monkeypatch):
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", f"me@{TERM.lower()}.example")
     commit(repo, {"b.txt": "b\n"})
-    assert audit(repo, capsys)[0] == 1
+    assert audit(repo, capsys, "--forbid", TERM)[0] == 1
+
+
+def test_forbidden_term_only_in_deleted_blob_fails(repo, capsys):
+    commit(repo, {"gone.txt": f"{TERM}\n"})
+    git(repo, "rm", "-q", "gone.txt")
+    git(repo, "commit", "-m", "rm")
+    code, out = audit(repo, capsys, "--forbid", TERM)
+    assert code == 1
+    assert "history blob: gone.txt" in out.out
+
+
+def test_terms_file_is_read_and_comments_skipped(repo, capsys):
+    (repo / "docs" / "private").mkdir(parents=True)
+    (repo / "docs/private/audit-terms.txt").write_text(f"# comment\n\n{TERM}\n")
+    commit(repo, {"a.txt": f"{TERM}\n"})
+    code, out = audit(repo, capsys)
+    assert code == 1 and "a.txt" in out.out
+    assert "comment" not in out.out
+
+
+def test_no_terms_means_no_term_check(repo, capsys):
+    commit(repo, {"a.txt": f"{TERM}\n"})
+    assert audit(repo, capsys)[0] == 0
+
+
+def test_git_grep_error_is_a_usage_error_not_a_pass(repo, capsys, monkeypatch):
+    real = prepublic_audit.subprocess.run
+
+    def run(cmd, *a, **k):
+        if "grep" in cmd:
+            return subprocess.CompletedProcess(cmd, 128, b"", b"boom")
+        return real(cmd, *a, **k)
+
+    monkeypatch.setattr(prepublic_audit.subprocess, "run", run)
+    assert audit(repo, capsys, "--forbid", TERM)[0] == 2
 
 
 def test_missing_community_file_fails(repo, capsys):
