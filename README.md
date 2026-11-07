@@ -76,6 +76,7 @@ including running from a clone of this repo.
 | [AP006](https://adighatakdas-cloud.github.io/agentprint/checks/ap006/) | An agent file, such as .claude/settings.local.json, would ship in your npm or PyPI package. | high, medium or low, by file |
 | [AP007](https://adighatakdas-cloud.github.io/agentprint/checks/ap007/) | A personal agent file, such as CLAUDE.local.md, is in a git repo but not gitignored, or is already committed. | low |
 | [AP008](https://adighatakdas-cloud.github.io/agentprint/checks/ap008/) | Agent history, settings or a key store can be read by other users on this machine (macOS and Linux). | medium; high for key stores |
+| [AP009](https://adighatakdas-cloud.github.io/agentprint/checks/ap009/) | Source maps, original source or AI instruction files in your package hand an AI your code. | high to low by licence; no licence, UNLICENSED, SEE LICENSE IN, proprietary or LicenseRef- counts as closed |
 <!-- checks:end -->
 
 Keys are found by pattern (Anthropic, OpenAI, GitHub, AWS, Stripe, Slack and Google formats, plus

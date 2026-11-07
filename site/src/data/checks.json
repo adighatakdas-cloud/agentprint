@@ -54,5 +54,12 @@
     "severity": "medium; high for key stores",
     "summary": "Agent history, settings or a key store can be read by other users on this machine (macOS and Linux).",
     "slug": "ap008"
+  },
+  {
+    "id": "AP009",
+    "title": "Package lets an AI rebuild your source",
+    "severity": "high to low by licence; no licence, UNLICENSED, SEE LICENSE IN, proprietary or LicenseRef- counts as closed",
+    "summary": "Source maps, original source or AI instruction files in your package hand an AI your code.",
+    "slug": "ap009"
   }
 ]

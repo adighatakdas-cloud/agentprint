@@ -25,6 +25,8 @@ from .agents import ALL_AGENTS
 from .checks.ap004_network_hook import ASK_FIRST as HOOK_ASK_FIRST
 from .checks.ap005_mcp_inline_secret import _MARKER as MCP_MARKER
 from .checks.ap005_mcp_inline_secret import ASK_FIRST as MCP_ASK_FIRST
+from .checks.ap009_source_exposure import CUSTOM_ID as LICENCE_CUSTOM_ID
+from .checks.ap009_source_exposure import INSTRUCTIONS_FIX, MAP_FIX, SOURCE_FIX
 from .models import Finding, Severity
 from .sanitize import clean, quote, safe_step
 from .secrets import RULES
@@ -291,6 +293,28 @@ def _readable_by_others(finding: Finding, moment: Moment) -> Advice:
     return Advice([finding.fix], ask)
 
 
+_OPEN_SOURCE_ASK = (
+    "Decide whether this package is meant to be open source; if so, add a licence and these "
+    "prints go away."
+)
+_SPDX_ASK = "Use an SPDX licence id (such as MIT or Apache-2.0) for the licence, not a custom one."
+
+
+@adviser("AP009")
+def _rebuildable_source(finding: Finding, moment: Moment, person: bool = False) -> Advice:
+    # The check's fix for each kind names the build settings (tsc sourceMap, esbuild
+    # --sources-content, Vite build.sourcemap, webpack devtool); the wording differs only in
+    # who does it. Nothing here edits a build config.
+    known = (MAP_FIX, SOURCE_FIX, INSTRUCTIONS_FIX)
+    step = finding.fix if finding.fix in known else MAP_FIX
+    if person:
+        step = f"In your build settings or package file list: {step[0].lower()}{step[1:]}"
+    ask = [_OPEN_SOURCE_ASK]
+    if LICENCE_CUSTOM_ID in finding.detail:
+        ask.append(_SPDX_ASK)
+    return Advice([step], ask)
+
+
 # ---- explanations (agentprint mcp: explain_finding) ------------------------------------------
 
 EXPLAIN: dict[str, str] = {
@@ -314,6 +338,19 @@ EXPLAIN: dict[str, str] = {
         "package you are about to publish, where anyone can download it. Fix: exclude it "
         "(.npmignore or the package.json files list for npm; the build tool's exclude list for "
         "Python), add it to .gitignore, and check again. Rotate any key it held."
+    ),
+    "AP009": (
+        "AP009 Package lets an AI rebuild your source (high/medium/low). The package you are "
+        "about to publish holds source maps with your original source, source maps that give "
+        "away your file layout, original .ts/.vue/.svelte source next to the compiled files, or "
+        "AI instruction files. Nobody can stop reverse engineering of code you ship; this shows "
+        "what hands an AI your source or a map of it. Severity depends on the licence: a package "
+        "with no licence, UNLICENSED, SEE LICENSE IN, a LicenseRef id or a proprietary marker "
+        "counts as closed source. Fix: turn off source maps or their sourcesContent in the build "
+        "(tsc sourceMap/inlineSources, esbuild --sources-content=false, Vite build.sourcemap, "
+        "webpack devtool), or keep the files out with .npmignore, the package.json files list or "
+        "the Python build tool's exclude list. The human decides whether the package is meant to "
+        "be open source; if so, adding a licence makes these prints go away."
     ),
     "AP007": (
         "AP007 Personal agent file not gitignored (low). A personal agent file is neither "
