@@ -13,7 +13,6 @@ import json
 import re
 import shlex
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -24,6 +23,7 @@ from agentprint.checks.ap004_network_hook import network_indicator
 from agentprint.integrations import ALL_INTEGRATIONS
 from agentprint.integrations.base import BLOCK_EXIT, INSTRUCTIONS, Launch
 from agentprint.secrets import find_secrets
+from tests.fake_uvx import fake_uvx, real_guard_uvx
 from tests.test_hooks import payload
 from tests.test_hooks import project as project  # noqa: F401 - the leaky-package fixture
 from tools import plugins as gen
@@ -172,20 +172,6 @@ def test_instruction_files_carry_install_s_instructions():
 # ---- the hook command, run for real --------------------------------------------------------------
 
 
-def _fake_uvx(bin_dir: Path, body: str) -> None:
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    uvx = bin_dir / "uvx"
-    uvx.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > "{bin_dir}/args"\n{body}\n')
-    uvx.chmod(0o755)
-
-
-def _real_guard_uvx(bin_dir: Path) -> None:
-    """A uvx that runs this checkout's agentprint for `--from agentprint==V agentprint ...`."""
-    python = shlex.quote(sys.executable)
-    code = shlex.quote("import sys; from agentprint.cli import app; app()")
-    _fake_uvx(bin_dir, f'shift 3\nexec {python} -c {code} "$@"')
-
-
 def _run(command: str, home: Path, path: str, stdin: str) -> subprocess.CompletedProcess:
     env = {"HOME": str(home), "PATH": path}
     return subprocess.run(
@@ -197,7 +183,7 @@ def _run(command: str, home: Path, path: str, stdin: str) -> subprocess.Complete
 @pytest.mark.parametrize("agent", sorted(HOOK_FILES))
 def test_plugin_hook_blocks_a_leaky_publish_like_the_guard(agent, project, tmp_path):
     bin_dir = tmp_path / "bin"
-    _real_guard_uvx(bin_dir)
+    real_guard_uvx(bin_dir)
     raw = json.dumps(payload(agent, LEAKY_PUBLISH, project))
     result = _run(_hook_command(agent), tmp_path, str(bin_dir), raw)
     expected = hook.run_hook(agent, raw, {})
@@ -212,7 +198,7 @@ def test_plugin_hook_blocks_a_leaky_publish_like_the_guard(agent, project, tmp_p
 @pytest.mark.parametrize("agent", sorted(HOOK_FILES))
 def test_plugin_hook_lets_an_ordinary_command_through(agent, project, tmp_path):
     bin_dir = tmp_path / "bin"
-    _real_guard_uvx(bin_dir)
+    real_guard_uvx(bin_dir)
     raw = json.dumps(payload(agent, "ls -la", project))
     result = _run(_hook_command(agent), tmp_path, str(bin_dir), raw)
     assert result.returncode == 0
@@ -233,7 +219,7 @@ def test_missing_uvx_fails_open_with_one_stderr_line(agent, tmp_path):
 
 @pytest.mark.posix_only
 def test_uvx_in_the_installer_folder_is_found_without_path(tmp_path):
-    _fake_uvx(tmp_path / ".local" / "bin", "while read -r _; do :; done; exit 0")
+    fake_uvx(tmp_path / ".local" / "bin", "while read -r _; do :; done; exit 0")
     empty = tmp_path / "empty"
     empty.mkdir()
     result = _run(_hook_command("claude-code"), tmp_path, str(empty), "{}")
@@ -246,7 +232,7 @@ def test_uvx_in_the_installer_folder_is_found_without_path(tmp_path):
 def test_failing_uvx_fails_open_and_never_blocks(agent, tmp_path):
     # uv's own errors exit 2, which Claude Code and Codex would read as "block".
     bin_dir = tmp_path / "bin"
-    _fake_uvx(bin_dir, "while read -r _; do :; done; echo 'error: no network' >&2; exit 2")
+    fake_uvx(bin_dir, "while read -r _; do :; done; echo 'error: no network' >&2; exit 2")
     result = _run(_hook_command(agent), tmp_path, str(bin_dir), "{}")
     assert result.returncode == 0
     assert result.stderr.splitlines()[-1] == plugins.FAILED.replace("$s", "2")
@@ -256,7 +242,7 @@ def test_failing_uvx_fails_open_and_never_blocks(agent, tmp_path):
 @pytest.mark.posix_only
 def test_strict_mode_reaches_the_guard_through_the_plugin_hook(tmp_path):
     bin_dir = tmp_path / "bin"
-    _real_guard_uvx(bin_dir)
+    real_guard_uvx(bin_dir)
     env = {"HOME": str(tmp_path), "PATH": str(bin_dir), "AGENTPRINT_STRICT": "1"}
     strict = subprocess.run(
         _hook_command("claude-code"), shell=True, input="not json", capture_output=True,
@@ -272,7 +258,7 @@ def test_strict_mode_reaches_the_guard_through_the_plugin_hook(tmp_path):
 @pytest.mark.posix_only
 def test_guard_block_exit_becomes_the_agents_exit_2(tmp_path):
     bin_dir = tmp_path / "bin"
-    _fake_uvx(bin_dir, f"while read -r _; do :; done; echo blocked; exit {BLOCK_EXIT}")
+    fake_uvx(bin_dir, f"while read -r _; do :; done; echo blocked; exit {BLOCK_EXIT}")
     result = _run(_hook_command("claude-code"), tmp_path, str(bin_dir), "{}")
     assert result.returncode == 2 and result.stdout == "blocked\n"
 
@@ -483,7 +469,7 @@ def test_hermes_skill_failure_keeps_the_hook():
 def test_hermes_blocks_a_leaky_publish(project, tmp_path, monkeypatch):
     module = _hermes()
     bin_dir = tmp_path / "bin"
-    _real_guard_uvx(bin_dir)
+    real_guard_uvx(bin_dir)
     monkeypatch.setattr(module.shutil, "which", lambda name, path=None: str(bin_dir / "uvx"))
     monkeypatch.chdir(project)
     answer = module.check(tool_name="terminal", args={"command": LEAKY_PUBLISH}, task_id="t")
@@ -495,7 +481,7 @@ def test_hermes_blocks_a_leaky_publish(project, tmp_path, monkeypatch):
 @pytest.mark.posix_only
 def test_hermes_finds_uvx_in_the_installer_folders_without_path(tmp_path, monkeypatch):
     module = _hermes()
-    _fake_uvx(tmp_path / ".cargo" / "bin", "while read -r _; do :; done; exit 0")
+    fake_uvx(tmp_path / ".cargo" / "bin", "while read -r _; do :; done; exit 0")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     assert module.check(tool_name="terminal", args={"command": "ls"}) is None
