@@ -111,7 +111,7 @@ def _load_json(text: str | None) -> dict:
     if text is None or not text.strip():
         return {}
     try:
-        data = json.loads(text)
+        data = json.loads(text.removeprefix("\ufeff"))  # Notepad saves JSON with a BOM
     except json.JSONDecodeError as exc:
         raise Unsupported("it is not plain JSON (comments or trailing commas?)") from exc
     if not isinstance(data, dict):

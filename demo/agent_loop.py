@@ -79,7 +79,11 @@ def wrapped(text: str) -> None:
 
 
 def agentprint(*args: str, stdin: str | None = None, cwd: Path) -> subprocess.CompletedProcess:
-    cmd = shlex.split(os.environ.get("AGENTPRINT_CMD", "agentprint"))
+    windows = os.name == "nt"  # POSIX splitting would eat the backslashes of C:\\path\\python.exe
+    cmd = [
+        part.strip('"') if windows else part
+        for part in shlex.split(os.environ.get("AGENTPRINT_CMD", "agentprint"), posix=not windows)
+    ]
     return subprocess.run(
         [*cmd, *args], input=stdin, capture_output=True, text=True, cwd=cwd, timeout=120
     )

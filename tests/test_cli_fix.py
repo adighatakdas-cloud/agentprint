@@ -291,6 +291,7 @@ def _normalise(text: str, tmp_path: Path) -> str:
     return text.replace(str(tmp_path), "<TMP>").replace(__version__, "<VERSION>")
 
 
+@pytest.mark.posix_only  # snapshot holds POSIX paths and the 2 permission fixes
 @needs_demo
 def test_agent_format_snapshot(world, tmp_path):
     result = _fix(world, "--yes", "--format", "agent")

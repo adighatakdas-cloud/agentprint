@@ -10,6 +10,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from . import platform
 from .agents import ALL_AGENTS
 from .checks.ap002_settings_secret import CHECK as AP002
 from .checks.ap005_mcp_inline_secret import CHECK as AP005
@@ -31,11 +32,13 @@ def _git(root: Path, *args: str) -> str | None:
         return None
     try:
         result = subprocess.run(
-            [git, "-C", str(root), *args],
+            [git, "-C", str(root), "-c", "core.quotepath=false", *args],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             timeout=GIT_TIMEOUT,
+            **platform.subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

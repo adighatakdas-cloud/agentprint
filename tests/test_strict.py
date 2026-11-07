@@ -148,6 +148,7 @@ def test_pack_exits_2_when_it_cannot_check(tmp_path):
 # ---- install --strict ---------------------------------------------------------------------
 
 
+@pytest.mark.posix_only  # checks the /bin/sh hook launcher; Windows installs no hooks
 def test_install_strict_writes_strict_hooks_default_does_not(tmp_path):
     (tmp_path / ".claude").mkdir()
     settings = tmp_path / ".claude" / "settings.json"
@@ -164,6 +165,7 @@ def test_install_strict_writes_strict_hooks_default_does_not(tmp_path):
     assert not settings.exists() or "agentprint-hook" not in settings.read_text()
 
 
+@pytest.mark.posix_only  # checks the /bin/sh hook launcher; Windows installs no hooks
 def test_install_strict_opencode_plugin_passes_flag(tmp_path):
     (tmp_path / ".config" / "opencode").mkdir(parents=True)
     runner.invoke(app, ["install", "--home", str(tmp_path), "--agent", "opencode", "--strict"])
@@ -252,6 +254,7 @@ def _strict_install(home, *flags):
     return result.output, launcher
 
 
+@pytest.mark.posix_only  # checks the /bin/sh hook launcher; Windows installs no hooks
 @pytest.mark.parametrize(
     ("prints", "status", "why"),
     [
@@ -275,6 +278,7 @@ def test_strict_install_passes_over_an_agentprint_that_would_ignore_it(
     assert "Strict mode: a publish or push agentprint cannot check will be blocked." in output
 
 
+@pytest.mark.posix_only  # checks the /bin/sh hook launcher; Windows installs no hooks
 @pytest.mark.parametrize("prints", ["agentprint 0.1.1", "agentprint 0.2.0", "agentprint 1.0.0"])
 def test_strict_install_keeps_an_agentprint_that_knows_strict(tmp_path, monkeypatch, prints):
     exe = _permanent(tmp_path, monkeypatch, prints)
@@ -284,6 +288,7 @@ def test_strict_install_keeps_an_agentprint_that_knows_strict(tmp_path, monkeypa
     assert "will be blocked" in output
 
 
+@pytest.mark.posix_only  # checks the /bin/sh hook launcher; Windows installs no hooks
 def test_default_install_does_not_run_the_version_check(tmp_path, monkeypatch):
     exe = _permanent(tmp_path, monkeypatch, "agentprint 0.1.0")
     output, launcher = _strict_install(tmp_path / "home")

@@ -27,6 +27,9 @@ def _text(fragment: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", fragment))
 
 
+# The committed fragments are POSIX renderings (permission fixes and the AP008 sweep cannot be
+# reproduced on NTFS); Windows checks the engine-vs-fragment tests below instead.
+@pytest.mark.posix_only
 def test_generated_files_are_current():
     stale = [p for p, text in gen_docs.outputs().items() if p.read_text() != text]
     assert stale == []  # run: uv run python -m tools.gen_docs
@@ -186,6 +189,7 @@ def _person_at_a_terminal(monkeypatch, home: Path, project: Path) -> None:
     monkeypatch.setattr(cli, "is_agent", lambda env: False)
 
 
+@pytest.mark.posix_only  # POSIX rendering; Windows adds the AP008 'not checked' note
 def test_fix_fragment_is_what_agentprint_fix_prints(tmp_path, monkeypatch):
     """The landing's fix block, line for line, is the real command run in ~/code/my-app by a
     person who answers y."""
@@ -198,6 +202,7 @@ def test_fix_fragment_is_what_agentprint_fix_prints(tmp_path, monkeypatch):
     assert result.output == _text(gen_docs.terminal_fragments()["fix"])
 
 
+@pytest.mark.posix_only  # POSIX rendering; Windows adds the AP008 'not checked' note
 def test_scan_fragment_is_what_agentprint_scan_prints(tmp_path, monkeypatch):
     """Below its header (time and roster are fixed on the landing), the scan block is the real
     sweep of the same world."""

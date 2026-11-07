@@ -7,8 +7,11 @@ Tests monkeypatch `is_windows` (never `os.name`, which breaks pathlib), and call
 
 from __future__ import annotations
 
+import contextlib
 import os
+import sys
 from pathlib import Path, PurePath
+from typing import Any
 
 NOT_CHECKED_WINDOWS = "File permissions (AP008) are not checked on Windows yet."
 NO_HOOKS_WINDOWS = "Hooks are not installed on Windows yet; the MCP server and the note are."
@@ -16,6 +19,25 @@ NO_HOOKS_WINDOWS = "Hooks are not installed on Windows yet; the MCP server and t
 
 def is_windows() -> bool:
     return os.name == "nt"
+
+
+def subprocess_kwargs() -> dict[str, Any]:
+    """Extra `subprocess.run` arguments: on Windows, no console window flashes up for each git or
+    npm call a background hook makes. Nothing on POSIX."""
+    if not is_windows():
+        return {}
+    return {"creationflags": 0x08000000}  # subprocess.CREATE_NO_WINDOW
+
+
+def use_utf8_streams() -> None:
+    """Read stdin and write stdout/stderr as UTF-8 whatever the console code page is (cp1252 on
+    most Windows machines), so non-ASCII JSON survives a hook round trip. Streams that cannot be
+    reconfigured (test captures, closed streams) are left as they are."""
+    for stream, errors in ((sys.stdin, "replace"), (sys.stdout, "strict"), (sys.stderr, "replace")):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            with contextlib.suppress(OSError, ValueError):
+                reconfigure(encoding="utf-8", errors=errors)
 
 
 def scan_notes() -> tuple[str, ...]:

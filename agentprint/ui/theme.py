@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Mapping
 from typing import Any, TextIO
 
@@ -64,10 +65,21 @@ def console(
     if plain or is_agent(env):  # --plain or an AI agent: no color, no bold or reverse codes
         kwargs.setdefault("no_color", True)
         kwargs.setdefault("force_terminal", False)
+    if not _is_tty(file if file is not None else sys.stdout):
+        # rich narrows a legacy Windows console by one column; a pipe or file has no console,
+        # so it wraps at exactly the width asked for, on every OS.
+        kwargs.setdefault("legacy_windows", False)
     # Otherwise no_color stays unset, so rich honours a NO_COLOR environment variable.
     # soft_wrap stays off: the screens build their lines to fit (ui/layout.py) and print the
     # few lines that name a path with soft_wrap=True themselves.
     return Console(file=file, theme=theme(env), highlight=False, **kwargs)
+
+
+def _is_tty(stream: Any) -> bool:
+    try:
+        return bool(stream.isatty())
+    except (AttributeError, ValueError, OSError):
+        return False
 
 
 SEVERITY_STYLE: dict[Severity, str] = {s: f"ap.sev.{s.name.lower()}" for s in Severity}

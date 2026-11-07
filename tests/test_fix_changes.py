@@ -27,7 +27,7 @@ needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git not inst
 
 def _write(path: Path, text: str, mode: int | None = None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    path.write_text(text, newline="\n")
     if mode is not None:
         path.chmod(mode)
     return path
@@ -65,7 +65,7 @@ def test_claude_code_mcp_env_becomes_reference(tmp_path):
     assert after["mcpServers"]["github"]["env"]["GITHUB_TOKEN"] == "${GITHUB_TOKEN}"
     before["mcpServers"]["github"]["env"]["GITHUB_TOKEN"] = "${GITHUB_TOKEN}"
     assert after == before
-    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert os.name == "nt" or stat.S_IMODE(path.stat().st_mode) == 0o640
     assert any("set GITHUB_TOKEN" in m.text for m in p.manual)
     assert not _ids(scan(home, None), "AP005")
     assert not [f for f in path.parent.rglob("*") if f.name.startswith(".") and "tmp" in f.name]
@@ -247,14 +247,18 @@ def test_gitignore_line_added_with_backup(repo, tmp_path):
     assert [c.kind for c in p.changes] == ["ignore"]
     assert len(outcome.applied) == 1, outcome.skipped
     assert gi.read_text() == "node_modules/\n/.claude/settings.local.json\n"
-    assert stat.S_IMODE(gi.stat().st_mode) == 0o644
+    assert os.name == "nt" or stat.S_IMODE(gi.stat().st_mode) == 0o644
     backups = [f for f in (home / ".agentprint" / "fix" / "backups").rglob("*") if f.is_file()]
     assert len(backups) == 1 and backups[0].read_text() == "node_modules/\n"
     assert outcome.journal.stem in backups[0].parts
     if sys.platform != "win32":
-        assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
+        assert os.name == "nt" or stat.S_IMODE(backups[0].stat().st_mode) == 0o600
         folders = [p for p in backups[0].parents if outcome.journal.stem in p.parts]
-        assert folders and all(stat.S_IMODE(p.stat().st_mode) == 0o700 for p in folders)
+        assert (
+            os.name == "nt"
+            or folders
+            and all(stat.S_IMODE(p.stat().st_mode) == 0o700 for p in folders)
+        )
     assert not _ids(scan(None, repo), "AP007")
     assert fix.plan(scan(None, repo)).changes == []  # idempotent
 

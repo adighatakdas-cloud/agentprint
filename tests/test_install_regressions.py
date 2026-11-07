@@ -12,10 +12,6 @@ from agentprint import install
 from agentprint.integrations import claude_code
 from agentprint.integrations.base import BlockEdit
 
-# POSIX-only: asserts the /bin/sh launcher, hook command strings and file modes (Windows installs
-# only the MCP server and the note; see tests/test_windows_gate.py).
-pytestmark = pytest.mark.posix_only
-
 QUIET = lambda line: None  # noqa: E731
 
 
@@ -33,7 +29,7 @@ def _uninstall(home, names=None, dry_run=False, echo=QUIET):
 
 def snapshot(root: Path) -> dict[str, bytes | None]:
     return {
-        str(p.relative_to(root)): (None if p.is_dir() else p.read_bytes())
+        p.relative_to(root).as_posix(): (None if p.is_dir() else p.read_bytes())
         for p in sorted(root.rglob("*"))
     }
 
@@ -106,6 +102,7 @@ def _claude_home(tmp_path) -> Path:
     return home
 
 
+@pytest.mark.posix_only
 @pytest.mark.parametrize(
     "gemini_settings",
     [
@@ -146,6 +143,7 @@ def test_lone_surrogate_escape_in_json_does_not_crash(tmp_path, monkeypatch):
     assert state.read_text() == original
 
 
+@pytest.mark.posix_only
 def test_unexpected_error_in_one_file_still_saves_state(tmp_path, monkeypatch):
     home = _claude_home(tmp_path)
     (home / ".codex").mkdir()
@@ -172,6 +170,7 @@ def test_unexpected_error_in_one_file_still_saves_state(tmp_path, monkeypatch):
 # ---- 2. uninstall --agent NAME touches only that agent's files -------------------------------
 
 
+@pytest.mark.posix_only
 def test_uninstall_one_agent_leaves_the_others(tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / ".claude").mkdir(parents=True)
@@ -305,6 +304,7 @@ def test_tables_codex_writes_inside_our_block_are_kept(tmp_path, monkeypatch):
 # ---- 9. file permissions: private temp files, modes kept, read-only files left alone --------
 
 
+@pytest.mark.posix_only
 def test_read_only_file_is_not_edited(tmp_path, monkeypatch):
     home = _claude_home(tmp_path)
     settings = home / ".claude" / "settings.json"
@@ -316,6 +316,7 @@ def test_read_only_file_is_not_edited(tmp_path, monkeypatch):
     assert any("read-only" in line for line in out) and any("by hand" in line for line in out)
 
 
+@pytest.mark.posix_only
 def test_temp_files_are_private_from_the_first_byte_and_modes_are_kept(tmp_path, monkeypatch):
     home = _claude_home(tmp_path)
     state = home / ".claude.json"
@@ -383,6 +384,7 @@ def test_throwaway_installs_are_never_written_into_hooks(path, ephemeral):
 # ---- 15. Devin Desktop keeps ~/.devin; Devin CLI config lives in ~/.config/devin ----------
 
 
+@pytest.mark.posix_only
 @pytest.mark.parametrize("existing", [".devin", ".config/devin"])
 def test_devin_is_found_by_either_folder_and_round_trips(tmp_path, monkeypatch, existing):
     home = tmp_path / "home"

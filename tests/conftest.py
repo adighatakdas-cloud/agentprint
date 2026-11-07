@@ -74,7 +74,7 @@ def _no_ambient_agent_env(monkeypatch):
 
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    path.write_text(text, newline="\n")  # the same bytes on every OS
 
 
 def _jsonl(*rows: dict) -> str:
