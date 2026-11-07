@@ -160,3 +160,14 @@ def test_badge_page_covers_the_verifiable_badge():
     assert "adighatakdas-cloud/agentprint@v0.1.0  # better: pin the release's commit SHA" in text
     assert "![" not in text.split("```")[0] and "<img" not in text
     assert "/agentprint/badge/" in (DOCS / "ci.md").read_text()
+
+
+def test_no_page_hardcodes_the_check_count():
+    """The Checks page is generated; other pages must not say how many checks there are."""
+    words = "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\\d+"
+    count = re.compile(rf"\b(?:{words})\s+checks\b|\bAP001\s+(?:to|through|–|-)\s+AP0\d\d", re.I)
+    for path in DOCS.rglob("*.md"):
+        if "checks" in path.relative_to(DOCS).parts[:1]:
+            continue
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            assert not count.search(line), f"{path.name}:{number}: {line.strip()}"

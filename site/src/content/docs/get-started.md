@@ -97,6 +97,6 @@ You do not have to pick. Inside an AI coding agent, `scan`, `pack` and `fix` cho
 
 ## Next
 
-- [What agentprint checks](/agentprint/checks/): eight checks, AP001 to AP008.
+- [What agentprint checks](/agentprint/checks/): every check, from AP001 onward, with what it finds and how to fix it.
 - [Use it in CI](/agentprint/ci/).
 - [Privacy](/agentprint/privacy/): what agentprint reads, and what it never does.
