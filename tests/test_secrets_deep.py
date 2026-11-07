@@ -26,6 +26,8 @@ from tests import fakes
 
 KEY = fakes.ANTHROPIC
 A, B = KEY[:20], KEY[20:]  # two halves: neither is a key on its own
+ZWSP = chr(0x200B)  # zero-width space
+OTHER_OPENAI = fakes.OPENAI[:-4] + "EKAF"  # a second, different fake key of the same shape
 
 
 def _b64(text: str) -> str:
@@ -253,6 +255,46 @@ def test_a_key_already_visible_inside_a_block_is_not_hidden():
     assert [m.obfuscation for m in find_secrets_deep(text)] == [None]
 
 
+# A view joins pieces with no separator, so a rule with a loose upper bound would run a plain key
+# on into the text after a join and report a longer "hidden" key. The plain key wins.
+PLAIN_WINS = {
+    "yaml env block": (
+        f"env_file: |\n  ANTHROPIC_API_KEY={KEY}\n  LOG_LEVEL=debug\n",
+        [KEY],
+    ),
+    "github actions run block": (
+        "jobs:\n  t:\n    steps:\n      - run: |\n"
+        f"          export OPENAI_API_KEY={fakes.OPENAI}\n          npm test\n",
+        [fakes.OPENAI],
+    ),
+    "two plain literals side by side": (f'k = "{KEY}" "{fakes.GITHUB}"\n', [KEY, fakes.GITHUB]),
+    "key rotation diff": (
+        f'-  "{fakes.OPENAI}"\n+  "{OTHER_OPENAI}"\n',
+        [fakes.OPENAI, OTHER_OPENAI],
+    ),
+    "generic line in a block": (
+        f"env: |\n  {fakes.GENERIC_LINE}\n  DEBUG=1\n",
+        [fakes.GENERIC_VALUE],
+    ),
+    "continuation right after a key": (f"export K={fakes.OPENAI}\\\n--verbose\n", [fakes.OPENAI]),
+    "invisible character right after a key": (f"{fakes.OPENAI}{ZWSP}more\n", [fakes.OPENAI]),
+}
+
+
+@pytest.mark.parametrize("name", PLAIN_WINS)
+def test_a_plain_key_is_never_reported_again_as_a_longer_hidden_one(name):
+    text, plain = PLAIN_WINS[name]
+    assert [(m.value, m.obfuscation) for m in find_secrets_deep(text)] == [(k, None) for k in plain]
+    assert find_hidden(text) == []
+
+
+def test_settings_check_reports_only_the_plain_key_in_a_block(tmp_path):
+    f = tmp_path / "config.yaml"
+    f.write_text(PLAIN_WINS["yaml env block"][0])
+    [finding] = AP002.run([Artifact("hermes", Kind.SETTINGS, f)])
+    assert (finding.line, finding.detail) == (2, f"Anthropic API key: {redact(KEY)}")
+
+
 # ---- limits ----------------------------------------------------------------------------------
 
 
@@ -290,7 +332,21 @@ HOSTILE = {
     # Joins all through the text: every view is searched, generic rules included.
     "joins among words": ('"x" + "y"' + "abcdefghij" * 60) * 8_000,
     "joins among generic names": ('"x" + "y"' + "token_ab " * 66) * 8_000,
+    # Dense key-shaped text: thousands of matches in every view.
+    "joins among AWS-shaped ids": ('"x" + "y" ' + (fakes.AWS + " ") * 30) * 8_000,
+    "invisible characters among AWS-shaped ids": (fakes.AWS + ZWSP) * 240_000,
+    "split keys back to back": f'"{A}" + "{B}"; ' * 40_000,
 }
+
+
+def test_dense_plain_keys_are_fast():
+    # Each match is checked against the text earlier rules claimed by binary search. Comparing
+    # every match with every match before it took about 2 minutes on this input.
+    text = (fakes.AWS + " ") * 60_000  # 60,000 key-shaped ids
+    start = time.perf_counter()
+    found = find_secrets(text)
+    assert time.perf_counter() - start < 1.0
+    assert len(found) == 60_000
 
 
 @pytest.mark.parametrize("name", HOSTILE)
@@ -393,6 +449,40 @@ def test_safe_snippet_redacts_hidden_keys():
         shown = safe_snippet(text, 400)
         assert redact(KEY) in shown
         assert A not in shown and B not in shown and _b64("k=" + KEY) not in shown
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f'x = "{A}" + "{B}"; y = "{A}" + "{B}"',  # the same hidden key twice
+        f'echo {KEY}; k = "{A}" + "{B}"',  # a plain copy, then a hidden one
+        f'k = "{A}" + "{B}"; echo {KEY}',
+        f"{A}{ZWSP}{B} and again {A}{ZWSP}{B}",
+        f"echo {KEY} then {A}{ZWSP}{B}",
+        f"key: |\n  {A}\n  {B}\nother: |\n  {A}\n  {B}\n",
+    ],
+)
+def test_safe_snippet_redacts_every_copy_of_a_hidden_key(text):
+    shown = safe_snippet(text, 2000)
+    assert A not in shown and B not in shown
+    assert redact(KEY) in shown
+
+
+def test_safe_snippet_redacts_the_tail_after_a_plain_prefix():
+    # The first 50 characters are a whole key on their own, so a scan reports that plain key.
+    # The rest of the real key, after the invisible character, must not be shown either.
+    text = f"{fakes.OPENAI[:50]}{ZWSP}{fakes.OPENAI[50:]}"
+    assert [m.value for m in find_secrets_deep(text)] == [fakes.OPENAI[:50]]
+    assert safe_snippet(text, 2000) == redact(fakes.OPENAI[:50])
+
+
+@pytest.mark.parametrize("plain_first", [True, False])
+def test_safe_snippet_redacts_every_copy_of_a_base64_key(plain_first):
+    blob = _b64("k=" + KEY)
+    text = f"{KEY} {blob} {blob}" if plain_first else f"{blob} {blob} {KEY}"
+    shown = safe_snippet(text, 2000)
+    assert blob not in shown and A not in shown
+    assert shown.count(redact(KEY)) == 3
 
 
 def test_rotate_text_names_the_key_without_the_hidden_note(tmp_path):

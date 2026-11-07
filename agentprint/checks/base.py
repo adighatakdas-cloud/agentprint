@@ -11,7 +11,7 @@ from .. import secrets
 from ..agents import by_name
 from ..files import iter_lines
 from ..models import AgentConfig, Artifact, Finding, Kind, Severity
-from ..secrets import Budget, SecretMatch, find_hidden, find_secrets, find_secrets_deep, redact
+from ..secrets import Budget, SecretMatch, find_hidden, find_secrets, hidden_spans, redact
 
 
 class Check(Protocol):
@@ -32,11 +32,12 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
 
 
 def safe_snippet(text: str, limit: int = 120) -> str:
-    """Text taken from a scanned file, made safe to show: secrets redacted (hidden ones too,
-    with all the text they were hidden in), control and ANSI characters removed, whitespace
-    collapsed, length capped."""
+    """Text taken from a scanned file, made safe to show: secrets redacted (every copy of a
+    hidden one too, with all the text it was hidden in), control and ANSI characters removed,
+    whitespace collapsed, length capped."""
     spans: list[SecretMatch] = []
-    for match in find_secrets_deep(text):  # in text order; a hidden one may overlap a plain one
+    found = sorted([*find_secrets(text), *hidden_spans(text)], key=lambda m: m.start)
+    for match in found:  # in text order; a hidden one may overlap a plain one
         if spans and match.start < spans[-1].end:
             if match.end > spans[-1].end:
                 last = spans[-1]

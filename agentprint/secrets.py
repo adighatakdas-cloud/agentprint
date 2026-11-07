@@ -102,20 +102,33 @@ def _looks_random(value: str, min_entropy: float) -> bool:
 
 
 def _matches(
-    text: str, rules: tuple[SecretRule, ...] = RULES
+    text: str, rules: tuple[SecretRule, ...] = RULES, pos: int = 0, endpos: int | None = None
 ) -> list[tuple[SecretMatch, int, int]]:
-    """Every key in `text`, with the span of the whole rule match (name and separator
-    included for the generic rules), in text order."""
+    """Every key in text[pos:endpos] (lookbehinds still see what comes before `pos`), with the
+    span of the whole rule match (name and separator included for the generic rules), in text
+    order. A rule never reports text an earlier rule claimed: the claimed spans are kept sorted,
+    so each check is a binary search, not a scan of every match so far."""
+    end_at = len(text) if endpos is None else endpos
     found: list[tuple[SecretMatch, int, int]] = []
+    starts: list[int] = []  # value spans claimed by earlier rules, in text order (never overlap)
+    ends: list[int] = []
     for rule in rules:
-        for m in rule.pattern.finditer(text):
+        mine: list[tuple[SecretMatch, int, int]] = []
+        for m in rule.pattern.finditer(text, pos, end_at):
             start, end = m.span(rule.group)
-            if any(start < f.end and f.start < end for f, _, _ in found):
+            i = bisect_right(starts, start)
+            if (i and ends[i - 1] > start) or (i < len(starts) and starts[i] < end):
                 continue
             value = m.group(rule.group)
             if rule.min_entropy and not _looks_random(value, rule.min_entropy):
                 continue
-            found.append((SecretMatch(rule.id, rule.name, value, start, end), m.start(), m.end()))
+            mine.append((SecretMatch(rule.id, rule.name, value, start, end), m.start(), m.end()))
+        if mine:  # one rule's matches never overlap each other (finditer)
+            found += mine
+            claimed = [*zip(starts, ends, strict=True), *((f.start, f.end) for f, _, _ in mine)]
+            spans = sorted(claimed)
+            starts = [a for a, _ in spans]
+            ends = [b for _, b in spans]
     return sorted(found, key=lambda f: f[0].start)
 
 
@@ -372,11 +385,15 @@ _SPECIFIC_RULES = tuple(rule for rule in RULES if rule.id != "generic")
 class _View:
     """text[start:end] without its joins, and the way back to the text."""
 
+    source: str  # the whole text the view was cut from
+    start: int
+    end: int
     text: str
     view_at: list[int]  # where each kept piece starts in the view ...
     text_at: list[int]  # ... and in the text
     cuts: list[int]  # where each join was, in the view
     kinds: list[str]
+    plain: tuple[list[int], list[int]] | None = None  # plain keys in source[start:end], once
 
     def in_text(self, i: int) -> int:
         k = bisect_right(self.view_at, i) - 1
@@ -384,7 +401,7 @@ class _View:
 
 
 def _view(text: str, start: int, end: int, joins: list[Join]) -> _View:
-    view = _View("", [], [], [], [])
+    view = _View(text, start, end, "", [], [], [], [])
     parts: list[str] = []
     pos = start
     length = 0
@@ -403,8 +420,37 @@ def _view(text: str, start: int, end: int, joins: list[Join]) -> _View:
     return view
 
 
-def _in_view(view: _View) -> Iterator[SecretMatch]:
-    """Keys in a view that span at least one join."""
+def _plain_near(view: _View, v_start: int, v_end: int, start: int, end: int) -> bool:
+    """Is there a plain key in the text that overlaps text[start:end], the span of the view's
+    match view.text[v_start:v_end]? The plain keys of the window are found once per view. When
+    long joins make the window much longer than its view, only the kept pieces under the match
+    are read instead (a plain key never spans a join), each no further than CONTEXT beyond it."""
+    if view.end - view.start <= 2 * len(view.text) + 4 * CONTEXT:
+        if view.plain is None:
+            found = _matches(view.source, RULES, view.start, view.end)
+            view.plain = ([m.start for m, _, _ in found], [m.end for m, _, _ in found])
+        starts, ends = view.plain
+        i = bisect_right(starts, start)
+        return bool((i and ends[i - 1] > start) or (i < len(starts) and starts[i] < end))
+    first = bisect_right(view.view_at, v_start) - 1
+    last = bisect_right(view.view_at, v_end - 1) - 1
+    for k in range(first, last + 1):
+        piece_start = view.text_at[k]
+        view_end = view.view_at[k + 1] if k + 1 < len(view.view_at) else len(view.text)
+        piece_end = piece_start + view_end - view.view_at[k]
+        lo, hi = max(piece_start, start - CONTEXT), min(piece_end, end + CONTEXT)
+        if lo < hi and any(
+            m.start < end and start < m.end for m, _, _ in _matches(view.source, RULES, lo, hi)
+        ):
+            return True
+    return False
+
+
+def _in_view(view: _View, plain_wins: bool) -> Iterator[SecretMatch]:
+    """Keys in a view that span at least one join. With `plain_wins`, not those that overlap a
+    plain key: a view joins pieces with no separator, so a rule with a loose length (anthropic,
+    openai, generic, ...) would read a plain key plus the next word as one longer key, and the
+    plain key is what is reported. Redaction keeps them, to hide every character either way."""
     lower = view.text.lower()
     rules = RULES if any(word in lower for word in _GENERIC_WORDS) else _SPECIFIC_RULES
     cuts = view.cuts
@@ -415,17 +461,13 @@ def _in_view(view: _View) -> Iterator[SecretMatch]:
         inside = bisect_right(cuts, match.start)
         if inside < len(cuts) and cuts[inside] < match.end:
             k = inside  # name the trick that cut the key itself
-        yield SecretMatch(
-            match.rule_id,
-            match.name,
-            match.value,
-            view.in_text(match.start),
-            view.in_text(match.end - 1) + 1,
-            view.kinds[k],
-        )
+        start, end = view.in_text(match.start), view.in_text(match.end - 1) + 1
+        if plain_wins and _plain_near(view, match.start, match.end, start, end):
+            continue
+        yield SecretMatch(match.rule_id, match.name, match.value, start, end, view.kinds[k])
 
 
-def _joined(text: str) -> Iterator[SecretMatch]:
+def _joined(text: str, plain_wins: bool) -> Iterator[SecretMatch]:
     joins: list[Join] = []
     for collect in _COLLECTORS:
         joins += islice(collect(text), MAX_JOINS)
@@ -436,7 +478,7 @@ def _joined(text: str) -> Iterator[SecretMatch]:
         room -= len(view.text)
         if room < 0:
             return
-        yield from _in_view(view)
+        yield from _in_view(view, plain_wins)
 
 
 def _plausible(head: str) -> bool:
@@ -541,13 +583,15 @@ def _in_json_strings(text: str, budget: Budget) -> Iterator[tuple[int, int, str]
             yield span[0], span[1], decoded
 
 
-def _hidden_in(text: str, budget: Budget, nested: bool = False) -> Iterator[SecretMatch]:
-    yield from _joined(text)
+def _hidden_in(
+    text: str, budget: Budget, plain_wins: bool = True, nested: bool = False
+) -> Iterator[SecretMatch]:
+    yield from _joined(text, plain_wins)
     if nested:
         return
     yield from _in_base64(text, budget)
     for start, end, decoded in _in_json_strings(text, budget):
-        for found in _hidden_in(decoded, budget, nested=True):
+        for found in _hidden_in(decoded, budget, plain_wins, nested=True):
             yield SecretMatch(found.rule_id, found.name, found.value, start, end, found.obfuscation)
 
 
@@ -565,6 +609,14 @@ def find_hidden(
             seen.add(match.value)
             found.append(match)
     return found
+
+
+def hidden_spans(text: str) -> list[SecretMatch]:
+    """Every hidden key in `text`, each occurrence, in text order: what output must redact.
+    Unlike find_hidden it keeps every copy, keys also written out plainly, and longer matches
+    that overlap a plain key (so the rest of a key cut after a plain-looking prefix is hidden
+    too)."""
+    return sorted(_hidden_in(text, Budget(), plain_wins=False), key=lambda m: m.start)
 
 
 def find_secrets_deep(text: str) -> list[SecretMatch]:
