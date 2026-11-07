@@ -648,6 +648,7 @@ def guard(
     """
     from .hook import run_hook  # imported here so other commands stay fast to start
 
+    platform.use_utf8_streams()  # a Windows console is cp1252 unless told otherwise
     reply = run_hook(agent, sys.stdin.read(), os.environ, fail_on, strict)
     if reply.stdout:
         typer.echo(reply.stdout)

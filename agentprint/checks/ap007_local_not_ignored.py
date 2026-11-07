@@ -17,6 +17,7 @@ import subprocess
 from collections.abc import Iterable
 from pathlib import Path
 
+from .. import platform
 from ..models import Artifact, Finding, Severity
 from .base import safe_snippet
 
@@ -32,13 +33,15 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str] | None:
     try:
         return subprocess.run(
             # core.fsmonitor=false: a repo's own config must not make us run its programs.
-            ["git", "-c", "core.fsmonitor=false", *args],
+            ["git", "-c", "core.fsmonitor=false", "-c", "core.quotepath=false", *args],
             cwd=cwd,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_TIMEOUT,
             stdin=subprocess.DEVNULL,
             env=env,
+            **platform.subprocess_kwargs(),
         )
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
