@@ -10,6 +10,7 @@ text), and the key stores oauth_creds.json, mcp-oauth-tokens.json and .env. In a
 Docs: github.com/QwenLM/qwen-code docs/users/configuration/settings.md, docs/users/features/
 {mcp,hooks,memory}.md, packages/core/src/config/storage.ts.
 
+MCP `env` values may name a variable as ${NAME}, so `agentprint fix` moves an inline key there.
 Not covered: QWEN_HOME, which moves the folder; permissions and approval mode (AP003).
 """
 
@@ -23,6 +24,7 @@ from ..models import AgentConfig, Artifact, Kind, PackageRule, Severity
 from ..structured import load
 from .base import (
     AgentDoc,
+    EnvReference,
     artifacts,
     from_home,
     hook_commands,
@@ -36,6 +38,7 @@ _SECRET_FIX = (
     'replace the value with "${<VAR>}" (Qwen Code expands ${NAME} in an MCP server\'s env), '
     "then export <VAR> in the shell that starts Qwen Code."
 )
+ENV = EnvReference("mcpServers", "${{var}}", "the shell that starts Qwen Code")
 
 # History that is only a record (fix masks keys there): chats, everything under tmp/ (chats,
 # shell history), and edit backups. projects/<project>/memory/ is read back, so it is not.
@@ -51,7 +54,7 @@ DOC = AgentDoc(
         "(MCP, hooks, `env` block) and project `.qwen/settings.json`"
     ),
     keys="`oauth_creds.json`, `mcp-oauth-tokens.json`, `.env`; project `.qwen/.env`",
-    fix="masks keys in chats and history; MCP keys: needs you",
+    fix='masks keys in chats and history; MCP `env` keys become `"${NAME}"`',
     checked="docs and source, 2026-11-05",
 )
 
@@ -104,6 +107,9 @@ class QwenCode:
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)
+
+    def env_reference(self, path: Path) -> EnvReference | None:
+        return ENV if path.name == "settings.json" else None
 
     def read_config(self, artifact: Artifact) -> AgentConfig:
         if artifact.path.name != "settings.json":

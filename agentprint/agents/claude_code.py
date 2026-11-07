@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
 from .base import (
+    EnvReference,
     artifacts,
     dig,
     from_home,
@@ -58,6 +60,11 @@ def _grants(data: dict[str, Any]) -> tuple[Grant, ...]:
     if data.get("enableAllProjectMcpServers") is True:
         grants.append(Grant("enableAllProjectMcpServers", "true", _MCP_ALL_FIX))
     return tuple(grants)
+
+
+# The files that expand ${VAR}: `agentprint fix` moves an inline env key there to "${VAR}".
+_ENV = EnvReference("mcpServers", "${{var}}", "the shell that starts Claude Code")
+_ENV_FILES = {".mcp.json": _ENV, ".claude.json": replace(_ENV, projects=True)}
 
 
 # History that is only a record (fix masks keys there): typed prompts, pasted text, backups of
@@ -129,6 +136,9 @@ class ClaudeCode:
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)
+
+    def env_reference(self, path: Path) -> EnvReference | None:
+        return _ENV_FILES.get(path.name)
 
     def read_config(self, artifact: Artifact) -> AgentConfig:
         name = artifact.path.name

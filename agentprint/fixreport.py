@@ -97,7 +97,7 @@ def describe(row: Row) -> str:
         more = f" ({places} places)" if places > 1 else ""
         return f"key {quote(first.shown)} masked in place{more}"
     if row.kind == "env":
-        reference = "${" + first.var + "}"
+        reference = first.reference or "${" + first.var + "}"
         server = quote(server_name(first))
         return f"env.{first.var} of MCP server {server} set to {quote(reference)}"
     if row.kind == "ignore":

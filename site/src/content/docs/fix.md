@@ -19,7 +19,7 @@ Each line of the plan starts with what it will do: `mask`, `env`, `ignore` or `l
 |---|---|---|
 | [AP001](/agentprint/checks/ap001/): a key in an agent's transcript, chat log, paste cache, prompt history or backup of an edited file | `mask`: masks the key where it is | No |
 | [AP002](/agentprint/checks/ap002/): a key inside a permission entry, such as a pasted command in `permissions.allow` | `mask`: masks the key where it is | No |
-| [AP005](/agentprint/checks/ap005/): a key written into a Claude Code MCP server's `env` | `env`: replaces the value with `"${NAME}"`, so Claude Code reads the key from your shell | No |
+| [AP005](/agentprint/checks/ap005/): a key written into an MCP server's `env`, for an agent that documents a reference to an environment variable (Claude Code, VS Code, Qwen Code, Amp) | `env`: replaces the value with that reference, `"${NAME}"` (`"${env:NAME}"` in VS Code's `mcp.json`), so the agent reads the key from your environment | No |
 | [AP006](/agentprint/checks/ap006/): an agent file would ship in your npm package (with `--pack`) | `ignore`: adds a line naming that file to `.npmignore` and to `.gitignore` | Yes |
 | [AP007](/agentprint/checks/ap007/): a personal agent file is not in `.gitignore` | `ignore`: adds it to `.gitignore` | Yes |
 | [AP008](/agentprint/checks/ap008/): other users on this machine can read agent files | `lock`: makes exactly those files private to you | Yes |
@@ -37,12 +37,12 @@ If your npm package has no `.npmignore` yet, `fix` starts one as a copy of `.git
 `fix` lists these under **Needs you**, each with the exact steps:
 
 - **Rotate every key it found.** Revoke it with its provider and make a new one. A masked key still counts as exposed: it sat in a plain file, so treat it as public. Neither agentprint nor your AI agent can rotate a key for you.
-- **Set the variable.** After `env`, set `NAME` (for example `GITHUB_TOKEN`) to the new key in the shell that starts Claude Code.
+- **Set the variable.** After `env`, set `NAME` (for example `GITHUB_TOKEN`) to the new key where the agent starts: the shell that starts Claude Code, Qwen Code or Amp, or the environment VS Code starts from.
 - **Agent permissions and hooks** ([AP003](/agentprint/checks/ap003/), [AP004](/agentprint/checks/ap004/)). They change how your agent behaves, so you decide.
 - **A key your agent uses as a setting**, such as an `env` block or an `apiKey` field. Masking it would break the agent, so move it to an environment variable yourself.
 - **A key in a file your agent reads back**: a skill, a rule, a memory or a scheduled job, such as Hermes skills and cron jobs, Windsurf rules, Antigravity knowledge or Claude Code's auto memory. The key is in use there, and masking it would break what uses it. `fix` masks only history that is a record and nothing more: transcripts, chat logs, paste caches, prompt history and backups of files the agent edited.
 - **A key in a chat database** (Cursor, OpenCode). Delete that chat in the app.
-- **An MCP key in another agent's config**, or in a header, an argument or a URL.
+- **An MCP key in another agent's config**, or in a header, an argument or a URL. For these the print says what to do instead: Kiro expands only variables you approve, Goose reads the names listed in `env_keys` from its secret store, Continue reads `${{ secrets.NAME }}` from a `.env` file and Crush expands `$NAME`; Claude Desktop, Cline, Kilo Code, Zed, Factory Droid, Augment and Junie document no reference at all.
 - **A PyPI package.** Build tools differ, so you get the exclude steps.
 - **A file that is already committed.** You get the `git rm --cached` command: `fix` never rewrites git history.
 - **A `files` list in `package.json`** that includes the agent file: `fix` never edits `package.json`.
@@ -66,7 +66,7 @@ This puts back the `ignore` and `lock` changes of the last run: ignore files com
 
 ### One limit
 
-To point a Claude Code MCP server at `${NAME}`, `fix` checks that the config file (usually `~/.claude.json`) has not changed, then replaces it in one step. Claude Code saves to that file too, and a change it saves in that same instant can be overwritten. This is rare: the gap is a few milliseconds. Running `agentprint fix` again checks the file afresh and fixes anything left.
+To point an MCP server at `${NAME}`, `fix` checks that the config file (usually `~/.claude.json`) has not changed, then replaces it in one step. The agent saves to that file too, and a change it saves in that same instant can be overwritten. This is rare: the gap is a few milliseconds. Running `agentprint fix` again checks the file afresh and fixes anything left.
 
 ## Inside your AI agent
 

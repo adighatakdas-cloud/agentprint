@@ -45,7 +45,8 @@ def _what(row: Row) -> Text:
             text.append(f" (×{places})", style="ap.dim")
         return text
     if row.kind == "env":
-        return Text(f"{clean(server_name(first), 60)}.env.{first.var} → ${{{first.var}}}")
+        reference = first.reference or "${" + first.var + "}"
+        return Text(f"{clean(server_name(first), 60)}.env.{first.var} → {clean(reference)}")
     if row.kind == "ignore":
         text = Text(f"+ {clean(first.line_text)}")
         if not os.path.lexists(first.path):

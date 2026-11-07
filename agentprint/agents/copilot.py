@@ -26,6 +26,7 @@ from typing import Any
 from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
 from .base import (
+    EnvReference,
     artifacts,
     from_home,
     glob,
@@ -65,6 +66,9 @@ _VSCODE_SECRET_FIX = (
     '"password": true} to the file\'s "inputs" list: VS Code then asks for the key once and keeps '
     "it in its secret storage."
 )
+# VS Code-format mcp.json (top key "servers") names an environment variable as ${env:NAME}.
+# https://code.visualstudio.com/docs/copilot/reference/mcp-configuration (read 2026-11-07)
+VSCODE_ENV = EnvReference("servers", "${env:{var}}", "the environment VS Code starts from")
 _REGEX_ALL = re.compile(r"/\^?\.[*+]\$?/[a-z]*")
 
 
@@ -215,6 +219,11 @@ class Copilot:
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)
+
+    def env_reference(self, path: Path) -> EnvReference | None:
+        """VS Code's own mcp.json files (workspace .vscode/mcp.json, the user's and each
+        profile's), never Copilot CLI's mcp-config.json or a repo's .github/mcp.json."""
+        return VSCODE_ENV if path.name == "mcp.json" and path.parent.name != ".github" else None
 
     def read_config(self, artifact: Artifact) -> AgentConfig:
         path = artifact.path

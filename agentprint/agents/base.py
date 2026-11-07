@@ -275,6 +275,21 @@ def read_mcp_file(path: Path, secret_fix: str, *keys: str) -> AgentConfig:
 
 
 @dataclass(frozen=True)
+class EnvReference:
+    """How `agentprint fix` moves an inline key in one agent's MCP file to an environment
+    variable, for agents that document such a reference: the key of the server map, the text
+    that names the variable ("${env:{var}}" in VS Code), and where the human then sets it."""
+
+    servers: str
+    template: str
+    where: str
+    projects: bool = False  # also each project's own servers (Claude Code ~/.claude.json)
+
+    def reference(self, var: str) -> str:
+        return self.template.replace("{var}", var)
+
+
+@dataclass(frozen=True)
 class AgentDoc:
     """How the docs' agents table and `agentprint status` describe an agent that a sweep reads
     in full but `agentprint install` can't arm yet (tools/gen_docs.py draws the table)."""

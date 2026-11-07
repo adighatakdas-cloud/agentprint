@@ -17,7 +17,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from ..models import AgentConfig, Artifact, Kind, PackageRule
-from .base import AgentDoc, artifacts, from_home, read_mcp_file
+from .base import AgentDoc, EnvReference, artifacts, from_home, read_mcp_file
 
 NAME = "amp"
 SERVERS = "amp.mcpServers"
@@ -26,12 +26,13 @@ _SECRET_FIX = (
     'replace the value with "${<VAR>}" (Amp expands ${NAME} in amp.mcpServers), then export '
     "<VAR> in the shell that starts Amp."
 )
+ENV = EnvReference(SERVERS, "${{var}}", "the shell that starts Amp")
 
 DOC = AgentDoc(
     label="Amp",
     reads="`~/.config/amp/settings.json(c)` and project `.amp/settings.json(c)` (`amp.mcpServers`)",
     keys="`~/.local/share/amp/secrets.json`",
-    fix="MCP keys: needs you",
+    fix='MCP `env` keys become `"${NAME}"`',
     checked="docs, 2026-11-05",
     unverified="`~/.local/share/amp/secrets.json` (third-party report)",
 )
@@ -55,6 +56,9 @@ class Amp:
 
     def pure_history(self, path: Path) -> bool:
         return False  # Amp keeps no history on disk
+
+    def env_reference(self, path: Path) -> EnvReference | None:
+        return ENV if path.name in _NAMES else None
 
     def read_config(self, artifact: Artifact) -> AgentConfig:
         if artifact.path.name not in _NAMES:
