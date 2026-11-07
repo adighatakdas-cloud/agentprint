@@ -4,6 +4,7 @@ Augment "${NAME}", Kilo Code "{env:NAME}", Crush "$NAME" (Claude Code's "${NAME}
 test_fix_changes.py). Every other agent's MCP key, and every header, stays with the human."""
 
 import json
+import os
 import stat
 from pathlib import Path
 
@@ -28,11 +29,15 @@ def _fix(home, project=None):
     return p, fix.apply(p, home)
 
 
-def test_vscode_user_mcp_env_becomes_env_reference_and_comments_stay(tmp_path):
+@pytest.mark.parametrize("eol", ["\n", "\r\n"])
+def test_vscode_user_mcp_env_becomes_env_reference_and_comments_stay(tmp_path, eol):
     home = tmp_path / "home"
     servers = {"github": homes.stdio("GITHUB_TOKEN", fakes.GITHUB), "x": {"env": {"A": "b"}}}
     text = "{\n  // my servers\n  " + json.dumps({"servers": servers})[1:-1] + ",\n}\n"
-    path = homes.write(home / USER / "mcp.json", text)
+    data = text.replace("\n", eol).encode()  # bytes: no newline translation on any OS
+    path = home / USER / "mcp.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(data)
     path.chmod(0o640)
 
     p, outcome = _fix(home)
@@ -40,10 +45,11 @@ def test_vscode_user_mcp_env_becomes_env_reference_and_comments_stay(tmp_path):
     [change] = [c for c in p.changes if c.kind == "env"]
     assert change.reference == "${env:GITHUB_TOKEN}" and change.var == "GITHUB_TOKEN"
     assert len(outcome.applied) == 1 and not outcome.skipped
-    after = path.read_text()
-    assert "// my servers" in after and fakes.GITHUB not in after
-    assert after == text.replace(f'"{fakes.GITHUB}"', '"${env:GITHUB_TOKEN}"')
-    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    # Byte-exact apart from the key's slot: comments and line endings are kept.
+    after = path.read_bytes()
+    assert b"// my servers" in after and fakes.GITHUB.encode() not in after
+    assert after == data.replace(f'"{fakes.GITHUB}"'.encode(), b'"${env:GITHUB_TOKEN}"')
+    assert os.name == "nt" or stat.S_IMODE(path.stat().st_mode) == 0o640  # Windows: no modes
     assert any(
         "set GITHUB_TOKEN in the environment VS Code starts from" in m.text for m in p.manual
     )
