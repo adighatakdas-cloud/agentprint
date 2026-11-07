@@ -1,0 +1,153 @@
+# Reusable workflow: agentprint signs the verdict itself. The attestation names THIS file
+# (adighatakdas-cloud/agentprint/.github/workflows/badge.yml), so `gh attestation verify
+# --signer-workflow` proves these steps, which the caller cannot edit, produced the verdict.
+# It installs the released agentprint from PyPI, so it works from v0.1.0.
+#
+# Caller (push-only, default branch):
+#   jobs:
+#     badge:
+#       permissions: { contents: write, id-token: write, attestations: write }
+#       uses: adighatakdas-cloud/agentprint/.github/workflows/badge.yml@v0.1.0
+name: badge
+
+on:
+  workflow_call:
+    inputs:
+      command:
+        description: "`pack` checks what your package would publish; `scan` checks the repository's agent files."
+        type: string
+        required: false
+        default: pack
+      path:
+        description: Project directory, relative to the repository root.
+        type: string
+        required: false
+        default: "."
+      fail-on:
+        description: "Fail at or above this severity: low, medium, high or critical. `none` is refused."
+        type: string
+        required: false
+        default: high
+
+permissions: {}
+
+env:
+  # bumped by the release checklist (docs/RELEASING.md); equals agentprint.__version__ once released
+  AGENTPRINT_VERSION: "0.1.0"
+
+jobs:
+  badge:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # publish: pushes the agentprint-badge branch
+      id-token: write # attest: signs with GitHub's OIDC identity
+      attestations: write # attest: stores the attestation
+    env:
+      AP_COMMAND: ${{ inputs.command }}
+      AP_PATH: ${{ inputs.path }}
+      AP_FAIL_ON: ${{ inputs.fail-on }}
+    steps:
+      - name: Check the inputs
+        shell: bash
+        run: |
+          case "$AP_COMMAND" in scan | pack) ;; *)
+            echo "::error title=agentprint::input 'command' must be 'scan' or 'pack'"
+            exit 2
+            ;;
+          esac
+          case "$AP_FAIL_ON" in low | medium | high | critical) ;; none)
+            echo "::error title=agentprint::fail-on 'none' is refused: a report-only run must not publish a signed CLEAR"
+            exit 2
+            ;;
+          *)
+            echo "::error title=agentprint::input 'fail-on' must be low, medium, high or critical"
+            exit 2
+            ;;
+          esac
+          case "$AP_PATH" in /* | .. | ../* | */.. | */../*)
+            echo "::error title=agentprint::input 'path' must be relative to the repository root"
+            exit 2
+            ;;
+          esac
+
+      # No `repository:` means the caller's repository.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: latest-known # newest uv whose checksum this setup-uv release knows
+          enable-cache: "false"
+
+      - name: Run agentprint
+        id: run
+        shell: bash
+        env:
+          COLUMNS: "160"
+        run: |
+          set +e
+          set -uo pipefail
+          AP_BADGE_DIR="$RUNNER_TEMP/agentprint-badge"
+          mkdir -p "$AP_BADGE_DIR"
+          case "$AP_COMMAND" in scan) cmd=(scan --no-home) ;; *) cmd=(pack) ;; esac
+          uvx --from "agentprint==$AGENTPRINT_VERSION" agentprint "${cmd[@]}" \
+            --fail-on "$AP_FAIL_ON" --format table --badge "$AP_BADGE_DIR" -- "$AP_PATH"
+          code=$?
+          echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" -le 1 ] && [ -f "$AP_BADGE_DIR/badge.json" ] && [ -f "$AP_BADGE_DIR/verdict.json" ]; then
+            # This mode only: the verdict also says which path was checked, so a verifier can see
+            # the whole repository was covered. The path is relative; the action's output has none.
+            jq --arg path "$AP_PATH" --arg command "$AP_COMMAND" '. + {path: $path, command: $command}' \
+              "$AP_BADGE_DIR/verdict.json" > "$AP_BADGE_DIR/verdict.tmp"
+            mv "$AP_BADGE_DIR/verdict.tmp" "$AP_BADGE_DIR/verdict.json"
+            echo "badge-file=$AP_BADGE_DIR/badge.json" >> "$GITHUB_OUTPUT"
+            echo "verdict-file=$AP_BADGE_DIR/verdict.json" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Same gate as action.yml: a push to the default branch of a public repository.
+      - name: Attest the badge
+        if: steps.run.outputs.badge-file != '' && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !github.event.repository.private
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.run.outputs.badge-file }}
+          predicate-type: https://adighatakdas-cloud.github.io/agentprint/badge/v1
+          predicate-path: ${{ steps.run.outputs.verdict-file }}
+
+      - name: Skip signing and publishing
+        if: steps.run.outputs.badge-file != '' && !(github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+        shell: bash
+        run: echo "::notice title=agentprint::badge not signed or published, only a push to the default branch does that"
+
+      - name: Skip attestation on a private repository
+        if: github.event.repository.private
+        shell: bash
+        run: echo "::notice title=agentprint::badge not signed, this repository is private (build attestations need a public repository)"
+
+      # The publish script lives in agentprint's repository, at the release tag. Checked out only
+      # now, so the scan above never saw it.
+      - name: Fetch the publish script
+        if: steps.run.outputs.badge-file != '' && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: adighatakdas-cloud/agentprint
+          ref: v${{ env.AGENTPRINT_VERSION }}
+          path: .agentprint-tool
+          persist-credentials: false
+
+      - name: Publish badge to the agentprint-badge branch
+        if: steps.run.outputs.badge-file != '' && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        shell: bash
+        env:
+          AP_BADGE_DIR: ${{ runner.temp }}/agentprint-badge
+          AP_PUBLISH_MODE: "true"
+          AP_REPOSITORY: ${{ github.repository }}
+          AP_TOKEN: ${{ github.token }}
+        run: bash .agentprint-tool/scripts/publish-badge.sh
+
+      # Last, so the badge is signed and published even when findings fail the job.
+      - name: Finish with agentprint's exit code
+        shell: bash
+        env:
+          AP_EXIT: ${{ steps.run.outputs.exit-code }}
+        run: exit "${AP_EXIT:-2}"

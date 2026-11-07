@@ -4,7 +4,7 @@ description: Show agentprint CLEAR or BLOCK in your README, with a signed GitHub
 ---
 
 :::note
-These steps work after the first release.
+These steps work after the first release. The signed-by-agentprint mode works from v0.1.0, because it installs the released agentprint from PyPI.
 :::
 
 The agentprint GitHub Action can write a badge for your README: `agentprint | CLEAR` or `agentprint | BLOCK`. It can also sign the result, so anyone can check which workflow signed it.
@@ -23,7 +23,43 @@ It does not prove the workflow ran agentprint unchanged. The repository owner co
 
 `badge.json` and `verdict.json` hold only the verdict and counts. No paths, no findings, no keys.
 
-## Set it up
+## Signed by agentprint (recommended)
+
+Your workflow calls a reusable workflow that lives in the agentprint repository. It checks out your repository, installs the released agentprint from PyPI, scans, and signs the result. Because the signature names agentprint's own workflow file, a passing check proves that agentprint's own steps, which you cannot edit, produced the verdict.
+
+Add this to `.github/workflows/agentprint.yml`:
+
+```yaml
+on:
+  push:
+    branches: [main]
+permissions: {}
+jobs:
+  badge:
+    permissions:
+      contents: write       # pushes the agentprint-badge branch
+      id-token: write       # signs with GitHub's OIDC identity
+      attestations: write   # stores the attestation
+    uses: adighatakdas-cloud/agentprint/.github/workflows/badge.yml@v0.1.0  # better: pin the release's commit SHA
+    with:
+      command: pack
+```
+
+The inputs are `command` (`pack` or `scan`, default `pack`), `path` (relative to your repository, default `.`) and `fail-on` (default `high`). `fail-on: none` is refused: a report-only run must never publish a signed CLEAR. Like the other mode, it only signs and publishes on a push to the default branch of a public repository.
+
+In this mode `verdict.json` also holds the `path` that was scanned (relative) and the `command`, so a verifier can see the whole repository was checked and not an empty folder. They are public repositories and the path is relative, so nothing private is added. The other mode leaves them out.
+
+A passing check, bound to the current commit, proves:
+
+- agentprint's own workflow file, at the release you pinned, signed this exact badge file.
+- It was signed on the default branch, at the commit you name.
+- The verdict, with `path`, `command`, `fail_on` and `version`, is attached to the signature.
+
+It does not prove the repository is safe: one scan, with those settings, gave that verdict. An old CLEAR file is byte-identical to a new one, so always bind the check to the current commit. The `pack` command runs your project's own build, so project code runs in that job.
+
+Verify it with the commands [below](#verify-a-badge), using the signer workflow `adighatakdas-cloud/agentprint/.github/workflows/badge.yml`.
+
+## Signed by your own workflow
 
 Add this to `.github/workflows/agentprint.yml`:
 
@@ -118,9 +154,11 @@ You need the [GitHub CLI](https://cli.github.com/), signed in with `gh auth logi
      --format json --jq '.[].verificationResult.statement.predicate'
    ```
 
+   For a badge signed by agentprint, use `--signer-workflow adighatakdas-cloud/agentprint/.github/workflows/badge.yml` instead. Then read `path`, `command`, `fail_on` and `version` in the printed predicate: `path` should be `.` (or the folder you expect) and `command` should be the one you expect.
+
 4. Read the result. If the command fails, the file wasn't signed for that commit by that workflow, and you shouldn't trust the badge. If it passes, look at the printed verdict and at `fail_on`. A `fail_on` of `none` means the run was set up never to block.
 
-A passing check does not prove the workflow ran agentprint unchanged. Read the workflow file at that commit to see what it does.
+For a badge signed by your own workflow, a passing check does not prove the workflow ran agentprint unchanged. Read the workflow file at that commit to see what it does.
 
 ## Private repositories
 

@@ -70,6 +70,10 @@ Do these once, before the first tag. Step 2 is a decision, the rest are clicks.
    `-alpha.1`, `b1` → `-beta.1`, `.dev0` → `-dev.0`). A test fails if the two don't match.
    npm pre-releases are published under the `next` tag, so `npx agentprint-cli` never picks them.
 
+   Also set `AGENTPRINT_VERSION` in `.github/workflows/badge.yml` (the reusable badge workflow
+   installs that exact release from PyPI, and fetches its publish script from the same tag) to the
+   same plain version, for example `0.1.0`. A test fails if it differs from `__version__`.
+
    Then run `uv run python -m tools.gen_docs` and commit what it changes. The landing page's
    welcome fragment shows `__version__`, so without this the drift test fails CI on the release PR.
 

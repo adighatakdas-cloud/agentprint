@@ -162,6 +162,19 @@ def test_badge_page_covers_the_verifiable_badge():
     assert "/agentprint/badge/" in (DOCS / "ci.md").read_text()
 
 
+def test_badge_page_offers_both_modes_and_recommends_signed_by_agentprint():
+    text = (DOCS / "badge.md").read_text()
+    assert "## Signed by agentprint (recommended)" in text
+    assert "## Signed by your own workflow" in text
+    assert text.index("## Signed by agentprint") < text.index("## Signed by your own workflow")
+    assert "uses: adighatakdas-cloud/agentprint/.github/workflows/badge.yml@v0.1.0" in text
+    assert "--signer-workflow adighatakdas-cloud/agentprint/.github/workflows/badge.yml" in text
+    assert "works from v0.1.0" in text
+    assert "`path`" in text and "`command`" in text and "`fail_on`" in text
+    assert "proves" in text and "agentprint's own" in text
+    assert "fail-on: none" in text and "refused" in text
+
+
 def test_no_page_hardcodes_the_check_count():
     """The Checks page is generated; other pages must not say how many checks there are."""
     words = "one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\\d+"
