@@ -12,7 +12,7 @@ from collections.abc import Mapping
 
 from .guard import Verdict, evaluate, strict_block, strict_requested
 from .integrations import ALL_INTEGRATIONS
-from .integrations.base import HookReply
+from .integrations.base import BLOCK_EXIT, HookReply
 from .report import FailOn
 
 __all__ = ["HookReply", "run_hook"]
@@ -54,7 +54,12 @@ def run_hook(
                     )
                 )
             except Exception:  # noqa: BLE001
-                return HookReply(stderr="agentprint: internal error (strict mode)", exit_code=2)
+                # BLOCK_EXIT, which the hook launcher turns into exit 2, the agents' "block"; any
+                # other code is read by the launcher as agentprint failing, and allowed.
+                return HookReply(
+                    stderr="agentprint: internal error (strict mode); command blocked",
+                    exit_code=BLOCK_EXIT,
+                )
         warning = (
             f"agentprint hit an internal error ({type(exc).__name__}) and allowed the command "
             "without checking it."

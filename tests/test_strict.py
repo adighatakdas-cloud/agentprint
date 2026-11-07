@@ -1,20 +1,25 @@
 """Strict mode: when agentprint cannot check a publish or push, block instead of allowing."""
 
 import json
+import subprocess
+import sys
 
 import pytest
 from typer.testing import CliRunner
 
-from agentprint import guard, hook, install
+from agentprint import __version__, guard, hook, install
 from agentprint.cli import app
 from agentprint.guard import evaluate
+from agentprint.integrations.base import BLOCK_EXIT
 
 runner = CliRunner()
+REAL_REPORTED_VERSION = install.reported_version
 
 
 @pytest.fixture(autouse=True)
 def fixed_launch(monkeypatch):
     monkeypatch.setattr(install, "resolve_agentprint", lambda: ["/usr/bin/agentprint"])
+    monkeypatch.setattr(install, "reported_version", lambda argv: install.STRICT_SINCE)
 
 
 def _boom(*_args, **_kwargs):
@@ -164,3 +169,132 @@ def test_install_strict_opencode_plugin_passes_flag(tmp_path):
     runner.invoke(app, ["install", "--home", str(tmp_path), "--agent", "opencode", "--strict"])
     plugin = (tmp_path / ".config" / "opencode" / "plugins" / "agentprint.js").read_text()
     assert '"--strict"' in plugin
+
+
+# ---- strict mode through the hook launcher ---------------------------------------------------
+
+# Runs the real `agentprint guard` with an agent integration that fails even to answer, so
+# run_hook falls back to its bare reply.
+_BROKEN_GUARD = """
+import sys
+from agentprint import hook
+class Broken:
+    def parse_hook(self, payload, env):
+        raise RuntimeError("bug")
+    def reply(self, verdict):
+        raise RuntimeError("bug")
+hook.ALL_INTEGRATIONS["claude-code"] = Broken()
+from agentprint.cli import app
+sys.argv = ["agentprint", *sys.argv[1:]]
+app()
+"""
+
+
+@pytest.mark.parametrize(
+    ("flags", "blocked"), [((), False), (("--strict",), True)], ids=["default", "strict"]
+)
+def test_bare_fallback_blocks_through_the_launcher_only_in_strict(tmp_path, flags, blocked):
+    script = tmp_path / "agentprint-hook"
+    script.write_text(install.launcher_script([sys.executable, "-c", _BROKEN_GUARD]))
+    raw = claude_payload("npm publish", tmp_path)
+    result = subprocess.run(
+        ["sh", str(script), "--agent", "claude-code", *flags],
+        input=raw,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if blocked:  # exit 2 is Claude Code's "block"; stderr is the reason it shows
+        assert result.returncode == 2, result.stderr
+        assert "internal error (strict mode); command blocked" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "blocked" not in result.stderr
+
+
+def test_bare_strict_fallback_uses_the_launchers_block_code(monkeypatch):
+    class Broken:
+        def parse_hook(self, payload, env):
+            raise RuntimeError("bug")
+
+        def reply(self, verdict):
+            raise RuntimeError("bug")
+
+    monkeypatch.setitem(hook.ALL_INTEGRATIONS, "claude-code", Broken())
+    assert hook.run_hook("claude-code", "{}", {}, strict=True).exit_code == BLOCK_EXIT
+    assert hook.run_hook("claude-code", "{}", {}).exit_code == 0
+
+
+# ---- install --strict with an older permanent agentprint on PATH -----------------------------
+
+UVX = ["/opt/uv/uvx", f"agentprint=={__version__}"]
+
+
+def _permanent(tmp_path, monkeypatch, prints: str, status: int = 0) -> str:
+    """A permanent agentprint on PATH that prints `prints` for --version (and notes each run)."""
+    exe = tmp_path / "bin" / "agentprint"
+    exe.parent.mkdir()
+    ran = tmp_path / "ran"
+    exe.write_text(f"#!/bin/sh\necho run >> '{ran}'\nprintf '%s\\n' '{prints}'\nexit {status}\n")
+    exe.chmod(0o755)
+    monkeypatch.setattr(install, "resolve_agentprint", lambda: [str(exe)])
+    monkeypatch.setattr(install, "reported_version", REAL_REPORTED_VERSION)
+    monkeypatch.setattr(install, "pinned_uvx", lambda: list(UVX))
+    return str(exe)
+
+
+def _strict_install(home, *flags):
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    args = ["install", "--home", str(home), "--agent", "claude-code", *flags]
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, result.output
+    launcher = (home / ".agentprint" / "bin" / "agentprint-hook").read_text()
+    return result.output, launcher
+
+
+@pytest.mark.parametrize(
+    ("prints", "status", "why"),
+    [
+        ("agentprint 0.1.0", 0, "is version 0.1.0, which ignores strict mode"),
+        ("agentprint 0.0.9", 0, "is version 0.0.9, which ignores strict mode"),
+        ("Usage: agentprint [OPTIONS]", 0, "did not report its version"),
+        ("agentprint 0.1.1", 1, "did not report its version"),  # it failed
+    ],
+    ids=["0.1.0", "0.0.9", "no version", "failed"],
+)
+def test_strict_install_passes_over_an_agentprint_that_would_ignore_it(
+    tmp_path, monkeypatch, prints, status, why
+):
+    exe = _permanent(tmp_path, monkeypatch, prints, status)
+    output, launcher = _strict_install(tmp_path / "home", "--strict")
+    assert exe not in launcher and "agentprint==" + __version__ in launcher
+    assert f"the agentprint at {exe} {why}" in output
+    assert "uv tool upgrade agentprint" in output
+    assert "Agents will start agentprint with: " + " ".join(UVX) in output
+    assert "no permanent install found" not in output
+    assert "Strict mode: a publish or push agentprint cannot check will be blocked." in output
+
+
+@pytest.mark.parametrize("prints", ["agentprint 0.1.1", "agentprint 0.2.0", "agentprint 1.0.0"])
+def test_strict_install_keeps_an_agentprint_that_knows_strict(tmp_path, monkeypatch, prints):
+    exe = _permanent(tmp_path, monkeypatch, prints)
+    output, launcher = _strict_install(tmp_path / "home", "--strict")
+    assert exe in launcher and "agentprint==" not in launcher
+    assert "ignores strict mode" not in output and "did not report" not in output
+    assert "will be blocked" in output
+
+
+def test_default_install_does_not_run_the_version_check(tmp_path, monkeypatch):
+    exe = _permanent(tmp_path, monkeypatch, "agentprint 0.1.0")
+    output, launcher = _strict_install(tmp_path / "home")
+    assert exe in launcher and not (tmp_path / "ran").exists()
+    assert "Strict mode" not in output
+
+
+def test_reported_version_of_a_missing_agentprint_is_none(tmp_path):
+    assert REAL_REPORTED_VERSION([str(tmp_path / "gone" / "agentprint")]) is None
+
+
+def test_uvx_running_this_version_is_trusted_without_running_it(monkeypatch):
+    monkeypatch.setattr(install, "reported_version", _boom)
+    assert install.ignores_strict(["/opt/uv/uvx", f"agentprint=={__version__}"]) is None

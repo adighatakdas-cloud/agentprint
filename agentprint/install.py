@@ -34,9 +34,11 @@ from __future__ import annotations
 import difflib
 import json
 import os
+import re
 import shlex
 import shutil
 import stat
+import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -91,12 +93,45 @@ def _ephemeral(path: str) -> bool:
     return any(part in low for part in _THROWAWAY)
 
 
+def pinned_uvx() -> list[str]:
+    # Pinned: hooks keep running the version that was installed, not whatever is newest.
+    return [shutil.which("uvx") or "uvx", f"agentprint=={__version__}"]
+
+
 def resolve_agentprint() -> list[str]:
     exe = shutil.which("agentprint")
     if exe and not _ephemeral(os.path.abspath(exe)):
         return [os.path.abspath(exe)]
-    # Pinned: hooks keep running the version that was installed, not whatever is newest.
-    return [shutil.which("uvx") or "uvx", f"agentprint=={__version__}"]
+    return pinned_uvx()
+
+
+STRICT_SINCE = (0, 1, 1)  # the first agentprint whose guard honours --strict
+_VERSION = re.compile(r"\bagentprint (\d+)\.(\d+)\.(\d+)")
+
+
+def reported_version(agentprint: list[str]) -> tuple[int, ...] | None:
+    """The version `<agentprint> --version` prints, or None if it cannot be run or read."""
+    try:
+        done = subprocess.run(
+            [*agentprint, "--version"], capture_output=True, text=True, timeout=30, check=False
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    found = _VERSION.search(done.stdout or "")
+    return tuple(int(part) for part in found.groups()) if found and done.returncode == 0 else None
+
+
+def ignores_strict(agentprint: list[str]) -> str | None:
+    """Why the agentprint hooks would run cannot be trusted with --strict, or None if it can.
+    An older guard accepts --strict and ignores it, so its version is checked first."""
+    if agentprint[1:] == [f"agentprint=={__version__}"]:
+        return None  # uvx runs this very version
+    version = reported_version(agentprint)
+    if version is None:
+        return "did not report its version"
+    if version < STRICT_SINCE:
+        return f"is version {'.'.join(map(str, version))}, which ignores strict mode"
+    return None
 
 
 def _native_allows() -> str:
@@ -366,23 +401,34 @@ def install(
 
     apply_hint ends a dry run's count line; the menu, which asks y/N itself, passes None."""
     agentprint = resolve_agentprint()
+    found = select(names, home, env)
+    # Strict hooks must run an agentprint that honours --strict: an older permanent install is
+    # passed over for uvx running this version, so the promise printed below holds.
+    stale = (agentprint[0], ignores_strict(agentprint)) if strict and found else None
+    if stale and stale[1]:
+        agentprint = pinned_uvx()
     launch = Launch(
         hook=str(home / STATE_DIR / "bin" / HOOK_MARK), mcp=(*agentprint, "mcp"), strict=strict
     )
-    found = select(names, home, env)
     echo(f"agentprint install{' (dry run: nothing is written)' if dry_run else ''}")
     if not found:
         echo("No supported AI agent found under " + str(home) + ". Nothing to do.")
         return 0
     echo("Agents found: " + ", ".join(i.label for i in found))
     echo("Agents will start agentprint with: " + " ".join(agentprint))
-    if strict:
-        echo("Strict mode: a publish or push agentprint cannot check will be blocked.")
-    if len(agentprint) == 2 and agentprint[1].startswith("agentprint=="):
+    if stale and stale[1]:
+        echo(
+            f"  (the agentprint at {stale[0]} {stale[1]}, so hooks use uvx with agentprint "
+            f"{__version__} instead. Upgrade it with `uv tool upgrade agentprint`, then install "
+            "again.)"
+        )
+    elif len(agentprint) == 2 and agentprint[1].startswith("agentprint=="):
         echo(
             "  (no permanent install found, so hooks use uvx. For faster offline hooks run "
             "`uv tool install agentprint`, then install again.)"
         )
+    if strict:
+        echo("Strict mode: a publish or push agentprint cannot check will be blocked.")
     state = State.load(home)
     changed = 0
     agents = [(i.name, i.label, i.edits(home, env, launch)) for i in found]
