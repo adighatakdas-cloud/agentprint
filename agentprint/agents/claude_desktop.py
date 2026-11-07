@@ -62,6 +62,9 @@ class ClaudeDesktop:
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         return iter(())
 
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        return []  # extensions' install folder is not in the docs read
+
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)
 

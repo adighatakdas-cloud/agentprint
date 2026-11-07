@@ -16,8 +16,10 @@ from ..structured import load
 from .base import (
     EnvReference,
     artifacts,
+    children,
     dig,
     from_home,
+    glob,
     hook_commands,
     is_blanket_command,
     matches_any,
@@ -77,6 +79,20 @@ _RECORDS = (
 )
 
 
+# What Claude Code loads from ~/.claude and a project's .claude/ as instructions or runs as hook
+# scripts, one extension per entry (extension_paths).
+_LOADED = ("skills", "commands", "agents", "rules", "hooks")
+
+
+def _live(folder: Path) -> bool:
+    """A cached plugin version still in use: an update or uninstall leaves `.orphaned_at` in
+    the old version folder until a cleanup deletes it."""
+    try:
+        return folder.is_dir() and not (folder / ".orphaned_at").exists()
+    except OSError:
+        return False
+
+
 class ClaudeCode:
     name = NAME
     package_rules = (
@@ -133,6 +149,23 @@ class ClaudeCode:
             NAME, Kind.SETTINGS, root / ".claude" / "settings.local.json", personal=True
         )
         yield from artifacts(NAME, Kind.PERSONAL, root / "CLAUDE.local.md", personal=True)
+
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # CLAUDE.md and .claude/rules/ (https://code.claude.com/docs/en/memory), skills/,
+        # commands/, agents/ (.../skills, .../slash-commands, .../sub-agents), and each plugin
+        # version Claude Code loads from ~/.claude/plugins/cache/<marketplace>/<plugin>/
+        # <version>/ (.../plugins/loading.md; a version marked .orphaned_at is no longer
+        # used). .claude/hooks/ is where the hooks docs keep the scripts a hook runs.
+        paths: list[Path] = []
+        if home is not None:
+            base = home / ".claude"
+            paths += [base / "CLAUDE.md", *children(*(base / name for name in _LOADED))]
+            paths += [v for v in glob(base / "plugins" / "cache", "*/*/*") if _live(v)]
+        if project is not None:
+            base = project / ".claude"
+            paths += [project / "CLAUDE.md", base / "CLAUDE.md"]
+            paths += children(*(base / name for name in _LOADED))
+        return paths
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)

@@ -63,6 +63,9 @@ synthetic. Note in the agent module where and when you checked the layout (for e
      log, paste cache or prompt history). `agentprint fix` masks keys only in these; a skill,
      rule, memory or scheduled job the agent reads back must return False. `matches_any` in
      `agents/base.py` checks a path against a list of patterns.
+   - `extension_paths(home, project)`: the instruction files it loads and each skill,
+     command, rule or plugin in the folders its docs name (`children` lists one per entry), or
+     `[]`. Only what the agent loads as instructions or runs: AP010 and AP011 read them.
    Start the module with a docstring linking the docs you followed. `agents/gemini.py` is a
    good short example.
 2. Add one line to `ALL_AGENTS` in `agentprint/agents/__init__.py`. Every check picks it up.

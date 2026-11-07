@@ -28,6 +28,7 @@ from ..structured import load
 from .base import (
     AgentDoc,
     artifacts,
+    children,
     from_home,
     glob,
     hook_commands,
@@ -107,6 +108,21 @@ class Goose:
 
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         return iter(())
+
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # Hints: ~/.config/goose/.goosehints and AGENTS.md there, a project's .goosehints
+        # (https://goose-docs.ai/docs/guides/context-engineering/using-goosehints, read
+        # 2026-11-07; the Windows file is the same name in Goose's config folder). Plugins in
+        # ~/.agents/plugins/<name>/, whose hooks run commands (hooks.json is read above).
+        paths: list[Path] = []
+        if home is not None:
+            windows = home / "AppData" / "Roaming" / "Block" / "goose" / "config"
+            for config in (home / ".config" / "goose", windows):
+                paths += [config / ".goosehints", config / "AGENTS.md"]
+            paths += children(home / ".agents" / "plugins")
+        if project is not None:
+            paths += [project / ".goosehints"]
+        return paths
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)

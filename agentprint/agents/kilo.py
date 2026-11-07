@@ -30,6 +30,7 @@ from .base import (
     EnvReference,
     app_dirs,
     artifacts,
+    children,
     from_home,
     matches_any,
     read_mcp_file,
@@ -117,6 +118,14 @@ class Kilo:
             *(root / ".kilo" / name for name in _PROJECT_NAMES),
             root / ".kilocode" / "mcp.json",
         )
+
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # Rule files in .kilo/rules/ and the legacy .kilocode/rules/, still read
+        # (https://kilo.ai/docs/customize/custom-rules, read 2026-11-07). Global rules are
+        # whatever files the config's "instructions" key names: not read.
+        if project is None:
+            return []
+        return children(project / ".kilo" / "rules", project / ".kilocode" / "rules")
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)

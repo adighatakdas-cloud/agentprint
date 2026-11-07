@@ -25,6 +25,7 @@ from .base import (
     MCP_WHY,
     AgentDoc,
     artifacts,
+    children,
     from_home,
     hook_commands,
     matches_any,
@@ -72,6 +73,18 @@ class Junie:
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         base = root / ".junie"
         yield from artifacts(NAME, Kind.SETTINGS, base / "mcp" / "mcp.json", base / "config.json")
+
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # Guidelines: .junie/AGENTS.md, the legacy .junie/guidelines.md or .junie/guidelines/,
+        # and ~/.junie/AGENTS.md (https://junie.jetbrains.com/docs/guidelines-and-memory.html,
+        # read 2026-11-07). Hooks are in config.json (read above).
+        paths: list[Path] = []
+        if home is not None:
+            paths += [home / ".junie" / "AGENTS.md"]
+        if project is not None:
+            base = project / ".junie"
+            paths += [base / "AGENTS.md", base / "guidelines.md", *children(base / "guidelines")]
+        return paths
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)

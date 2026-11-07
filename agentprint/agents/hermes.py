@@ -28,6 +28,7 @@ from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
 from .base import (
     artifacts,
+    children,
     dig,
     from_home,
     hook_commands,
@@ -127,6 +128,18 @@ class Hermes:
 
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         return iter(())
+
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # SOUL.md (the persona read into every session), skills/ and plugins/<name>/ (Python
+        # Hermes runs once enabled), and a project's .hermes.md or HERMES.md.
+        # https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins
+        paths: list[Path] = []
+        if home is not None:
+            base = home / ".hermes"
+            paths += [base / "SOUL.md", *children(base / "skills", base / "plugins")]
+        if project is not None:
+            paths += [project / ".hermes.md", project / "HERMES.md"]
+        return paths
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)

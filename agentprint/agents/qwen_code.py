@@ -27,6 +27,7 @@ from .base import (
     AgentDoc,
     EnvReference,
     artifacts,
+    children,
     from_home,
     hook_commands,
     matches_any,
@@ -104,6 +105,19 @@ class QwenCode:
         yield from artifacts(NAME, Kind.SETTINGS, base / "settings.json")
         yield from artifacts(NAME, Kind.CREDENTIALS, base / ".env", personal=True)
         yield from artifacts(NAME, Kind.PERSONAL, base / "QWEN.local.md", personal=True)
+
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # QWEN.md context files, custom commands (~/.qwen/commands/, .qwen/commands/) and
+        # subagents (~/.qwen/agents/, .qwen/agents/): docs/users/features/{memory,commands,
+        # sub-agents}.md, read 2026-11-07. Hooks are in settings.json (read above).
+        paths: list[Path] = []
+        if home is not None:
+            base = home / ".qwen"
+            paths += [base / "QWEN.md", *children(base / "commands", base / "agents")]
+        if project is not None:
+            base = project / ".qwen"
+            paths += [project / "QWEN.md", *children(base / "commands", base / "agents")]
+        return paths
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)
