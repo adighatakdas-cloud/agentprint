@@ -33,6 +33,7 @@ import agentprint
 from agentprint import fix as fixer
 from agentprint.checks import SCAN_CHECKS
 from agentprint.checks import ap006_package_leak as ap006
+from agentprint.checks import ap009_source_exposure as ap009
 from agentprint.fixreport import fixes, rows
 from agentprint.integrations import ALL_INTEGRATIONS
 from agentprint.report import FailOn
@@ -92,6 +93,7 @@ def check_docs() -> list[CheckDoc]:
     # (id, title, severity name or None, fix); AP006 is not a scan check, it has no severity
     rows = [(c.id, c.title, c.severity.name.lower(), c.fix) for c in SCAN_CHECKS]
     rows.append((ap006.ID, ap006.TITLE, "", ap006.FIX))
+    rows.append((ap009.ID, ap009.TITLE, "", ap009.FIX))
     docs = []
     for check_id, title, code_severity, fix in sorted(rows):
         meta, body = _note(SITE / "check-notes" / f"{check_id.lower()}.md")

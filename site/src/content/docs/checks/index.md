@@ -19,6 +19,7 @@ Each check has an ID. Open one to see what it finds, why it matters and how to f
 | [AP006](/agentprint/checks/ap006/) | An agent file, such as .claude/settings.local.json, would ship in your npm or PyPI package. | high, medium or low, by file |
 | [AP007](/agentprint/checks/ap007/) | A personal agent file, such as CLAUDE.local.md, is in a git repo but not gitignored, or is already committed. | low |
 | [AP008](/agentprint/checks/ap008/) | Agent history, settings or a key store can be read by other users on this machine (macOS and Linux). | medium; high for key stores |
+| [AP009](/agentprint/checks/ap009/) | Source maps, original source or AI instruction files in your package hand an AI your code. | high to low by licence; no licence, UNLICENSED, SEE LICENSE IN, proprietary or only LicenseRef- choices count as closed; low for a private registry |
 
 Every print has a severity: critical, high, medium or low. `--fail-on` sets the lowest severity that counts (default `high`).
 The verdict is BLOCK when any print is at or above it, and CLEAR when none is.

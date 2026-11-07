@@ -19,7 +19,7 @@ from tests import fakes
 from tools import gen_docs
 
 SITE = gen_docs.ROOT / "site"
-IDS = [f"AP00{n}" for n in range(1, 9)]
+IDS = [f"AP00{n}" for n in range(1, 10)]
 
 
 def _text(fragment: str) -> str:
@@ -63,7 +63,7 @@ def test_readme_table_links_each_check_page():
     readme = (gen_docs.ROOT / "README.md").read_text()
     block = readme.split(gen_docs.README_START)[1].split(gen_docs.README_END)[0]
     rows = [line for line in block.splitlines() if re.match(r"\| \[AP00\d", line)]
-    assert len(rows) == 8
+    assert len(rows) == 9
     for row, check_id in zip(rows, IDS, strict=True):
         assert f"{gen_docs.DOCS_URL}checks/{check_id.lower()}/" in row
 
@@ -253,3 +253,10 @@ def test_landing_title_is_not_duplicated():
 
     index = Path(__file__).resolve().parents[1] / "site" / "src" / "content" / "docs" / "index.mdx"
     assert "agentprint: the security check" in index.read_text(encoding="utf-8").split("---")[1]
+
+
+def test_ap009_page_has_title_and_licence_rule():
+    doc = [d for d in gen_docs.check_docs() if d.id == "AP009"][0]
+    assert doc.title == "Package lets an AI rebuild your source"
+    assert "UNLICENSED" in doc.severity and "LicenseRef-" in doc.body
+    assert "10 MB" in doc.body and "reverse engineer" in doc.body

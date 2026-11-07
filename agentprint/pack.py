@@ -35,6 +35,34 @@ ARCHIVE_ERRORS = (
 Want = Callable[[str], bool]
 
 
+def _nothing(name: str) -> bool:
+    return False
+
+
+@dataclass(frozen=True)
+class Wants:
+    """Two `want` predicates used as one, in order of priority.
+
+    `first` files are read exactly as if `first` were the only predicate: they keep the whole
+    content budget. `extra` files are read only from the room `first` leaves, and give it back
+    (moving to `skipped`) when a later `first` file needs it. So extra reads can never stop an
+    agent file from being read for keys, and one archive never holds more than
+    MAX_TOTAL_CONTENT_BYTES of content.
+    """
+
+    first: Want
+    extra: Want
+
+    def __call__(self, name: str) -> bool:
+        return self.first(name) or self.extra(name)
+
+
+def _split(want: Want) -> tuple[Want, Want]:
+    if isinstance(want, Wants):
+        return want.first, want.extra
+    return want, _nothing
+
+
 class PackError(Exception):
     """The package file list could not be produced."""
 
@@ -55,15 +83,19 @@ class _Collector:
       read; the name is still listed and also put in `skipped`. Links are listed, never followed.
     - A name that appears twice is listed once, with the content of its last copy: that is the
       copy tar, unzip, npm and pip leave on disk. Copies are never mixed together.
+    - With `Wants`, `extra` files share the budget but always yield it to `first` files.
     """
 
     def __init__(self, label: str, want: Want) -> None:
-        self.label, self.want = label, want
+        self.label = label
+        self.first, self.extra = _split(want)
         self.files: dict[str, None] = {}  # dicts keep insertion order: an ordered set
         self.contents: dict[str, bytes] = {}
         self.skipped: dict[str, None] = {}
+        self.extras: dict[str, int] = {}  # extra files read so far, in order, with their size
         self.entries = 0
-        self.used = 0
+        self.used = 0  # content held for `first` files
+        self.used_extra = 0  # content held for `extra` files
 
     def count(self) -> None:
         self.entries += 1
@@ -72,17 +104,44 @@ class _Collector:
 
     def add(self, name: str, size: int, read: Callable[[], bytes] | None) -> None:
         self.files.setdefault(name, None)
-        if not self.want(name):
+        first = self.first(name)
+        if not first and not self.extra(name):
             return
-        old = self.contents.pop(name, None)  # a later copy replaces an earlier one
-        self.used -= len(old) if old is not None else 0
-        self.skipped.pop(name, None)
-        if read is None or size > MAX_CONTENT_BYTES or self.used + size > MAX_TOTAL_CONTENT_BYTES:
+        self._drop(name)  # a later copy replaces an earlier one
+        if read is None or size > MAX_CONTENT_BYTES:
+            self.skipped[name] = None
+            return
+        if first:
+            if self.used + size > MAX_TOTAL_CONTENT_BYTES:
+                self.skipped[name] = None
+                return
+            while self.extras and self.used + self.used_extra + size > MAX_TOTAL_CONTENT_BYTES:
+                self._give_back()
+        elif self.used + self.used_extra + size > MAX_TOTAL_CONTENT_BYTES:
             self.skipped[name] = None
             return
         data = read()[:size]
-        self.used += len(data)
         self.contents[name] = data
+        if first:
+            self.used += len(data)
+        else:
+            self.extras[name] = len(data)
+            self.used_extra += len(data)
+
+    def _drop(self, name: str) -> None:
+        old = self.contents.pop(name, None)
+        if name in self.extras:
+            self.used_extra -= self.extras.pop(name)
+        elif old is not None:
+            self.used -= len(old)
+        self.skipped.pop(name, None)
+
+    def _give_back(self) -> None:
+        """Drop the latest extra file's content to make room for a `first` file."""
+        name, size = self.extras.popitem()
+        del self.contents[name]
+        self.used_extra -= size
+        self.skipped[name] = None
 
     def listing(self) -> PackageListing:
         return PackageListing(self.label, list(self.files), self.contents, list(self.skipped))
@@ -163,12 +222,35 @@ def read_npm_project(root: Path, want: Want) -> PackageListing:
         files = [entry["path"] for entry in info["files"]]
     except (json.JSONDecodeError, IndexError, KeyError, TypeError) as exc:
         raise PackError("could not read npm pack output") from exc
+    first, extra = _split(want)
     contents: dict[str, bytes] = {}
+    skipped: list[str] = []
+    room = MAX_TOTAL_CONTENT_BYTES  # for extra files; `first` files are read as they always were
     for rel in files:
         file = root / rel
-        if want(rel) and file.is_file() and file.stat().st_size <= MAX_CONTENT_BYTES:
-            contents[rel] = file.read_bytes()
-    return PackageListing(label=info.get("filename", root.name), files=files, contents=contents)
+        if first(rel):
+            if file.is_file() and file.stat().st_size <= MAX_CONTENT_BYTES:
+                contents[rel] = file.read_bytes()
+        elif extra(rel):
+            data = _read_extra(file, room)
+            if data is None:
+                skipped.append(rel)
+            else:
+                contents[rel] = data
+                room -= len(data)
+    label = info.get("filename", root.name)
+    return PackageListing(label=label, files=files, contents=contents, skipped=skipped)
+
+
+def _read_extra(file: Path, room: int) -> bytes | None:
+    """An extra file's content, or None when it is missing, unreadable, or over a limit."""
+    try:
+        if not file.is_file() or file.stat().st_size > min(MAX_CONTENT_BYTES, room):
+            return None
+        data = file.read_bytes()
+    except OSError:
+        return None
+    return data if len(data) <= min(MAX_CONTENT_BYTES, room) else None
 
 
 def read_python_project(root: Path, want: Want) -> list[PackageListing]:

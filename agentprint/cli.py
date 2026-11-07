@@ -17,7 +17,7 @@ from typer.core import TyperCommand, TyperGroup
 
 from . import __version__
 from .advice import Moment
-from .checks.ap006_package_leak import check_listing, is_agent_file
+from .checks import PACKAGE_WANT, check_package
 from .integrations import ALL_INTEGRATIONS
 from .models import Finding
 from .pack import PackError, collect
@@ -345,12 +345,12 @@ def run_pack_command(
     started = time.perf_counter()
     try:
         with _working(out, plain, "preflighting…"):
-            listings = collect(target, is_agent_file)
+            listings = collect(target, PACKAGE_WANT)
     except PackError as exc:
         typer.secho(f"error: {exc}", err=True, fg=typer.colors.RED)
         return 2
     secs = time.perf_counter() - started
-    findings = [finding for listing in listings for finding in check_listing(listing)]
+    findings = [finding for listing in listings for finding in check_package(listing)]
     labels = [listing.label for listing in listings]
     header = f"agentprint pack  {', '.join(labels)} · {secs:.2f}s" if out is not None else None
     _emit(
@@ -378,7 +378,8 @@ def pack(
     plain: PlainOpt = False,
     badge: BadgeOpt = None,
 ) -> None:
-    """Check what a package would publish: agent files and the keys inside them.
+    """Check what a package would publish: agent files, the keys inside them, and what lets an
+    AI rebuild your source (source maps, original source, AI instruction files).
 
     npm projects are listed with `npm pack --dry-run --ignore-scripts` (no package code runs).
     Python projects are built with `uv build`, which runs the project's build backend and may
@@ -397,10 +398,9 @@ def _check_ids(only: str | None) -> set[str] | None:
     """--only AP001,AP008 as a set of check ids (None: every check). Exits 2 on an unknown id."""
     if only is None:
         return None
-    from .checks import SCAN_CHECKS
-    from .checks.ap006_package_leak import ID as AP006
+    from .checks import PACKAGE_CHECK_IDS, SCAN_CHECKS
 
-    known = sorted({check.id for check in SCAN_CHECKS} | {AP006})
+    known = sorted({check.id for check in SCAN_CHECKS} | set(PACKAGE_CHECK_IDS))
     wanted = {part.strip().upper() for part in only.split(",") if part.strip()}
     unknown = sorted(wanted - set(known))
     if unknown or not wanted:
@@ -463,8 +463,8 @@ def run_fix_command(
     if pack:
 
         def check() -> list[Finding]:
-            listings = collect(path, is_agent_file)
-            return [finding for listing in listings for finding in check_listing(listing)]
+            listings = collect(path, PACKAGE_WANT)
+            return [finding for listing in listings for finding in check_package(listing)]
 
         root = path.absolute() if path.is_dir() else None
         header = f"agentprint fix --pack  {path}"

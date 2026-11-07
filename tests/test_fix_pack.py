@@ -185,3 +185,24 @@ def test_a_shared_folder_is_never_planned_as_an_ignore_line(tmp_path):
     assert lines == {
         (name, f"/{member}") for name in (".npmignore", ".gitignore") for member in members
     }
+
+
+def test_ap009_goes_to_needs_you_with_person_wording(tmp_path):
+    from agentprint.checks import ap009_source_exposure as ap009
+
+    listing = PackageListing(
+        "demo-1.0.0.tgz",
+        ["package/package.json", "package/dist/a.js.map"],
+        {
+            "package/package.json": b'{"name": "demo", "version": "1.0.0"}',
+            "package/dist/a.js.map": b'{"version":3,"mappings":"","sources":["a.ts"],'
+            b'"sourcesContent":["x"]}',
+        },
+    )
+    findings = ap009.check_listing(listing)
+    p = fix.plan(findings, pack=True, root=tmp_path)
+    assert not p.changes
+    [item] = [m for m in p.manual if m.check_id == "AP009"]
+    assert "The agent cannot do this" not in item.person
+    assert "devtool" in item.person and "sourceMap" in item.person
+    assert "open source" in item.person

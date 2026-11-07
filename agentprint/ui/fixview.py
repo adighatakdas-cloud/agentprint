@@ -140,24 +140,28 @@ def keep_note(planned: list[Row]) -> list[str]:
 
 def render_plan(plan: Plan, console: Console, *, header: str | None = None) -> None:
     """The header (`header` plus how many fixes are ready), what agentprint will change, what
-    only the human can do, and what can't be undone. Ends without a blank line, so the y/N
-    question follows the plan directly."""
+    only the human can do, notes that need nothing done, and what can't be undone. Ends
+    without a blank line, so the y/N question follows the plan directly."""
     planned = rows(plan.changes, plan.findings)
+    todo, notes = plan.todo, plan.notes
     blocks = _Blocks(console)
     if header is not None:
         if planned:
             count = f"{fixes(len(planned))} ready"
         else:
-            count = "nothing to fix automatically" if plan.manual else "nothing to fix"
+            count = "nothing to fix automatically" if todo else "nothing to fix"
         title = Text(clean(f"{header} · {count}"), style="ap.dim")
         blocks.next().print(title, soft_wrap=True)  # names paths: printed whole
     if planned:
         blocks.next().print(Text("Fixing", style="ap.dim"))
         _print_list(console, [(r.kind, _place(r.path, r.line), _what(r)) for r in planned])
-    if plan.manual:
+    if todo:
         blocks.next().print(Text("Needs you", style="ap.dim"))
         # Each item as worded for a person (the agent view keeps the agent wording).
-        _numbered(console, [(m.check_id, m.person or m.text) for m in plan.manual])
+        _numbered(console, [(m.check_id, m.person or m.text) for m in todo])
+    if notes:
+        blocks.next().print(Text("Notes · nothing needs doing", style="ap.dim"))
+        _numbered(console, [(m.check_id, m.person or m.text) for m in notes])
     if planned:
         blocks.next()
         for sentence in keep_note(planned):
