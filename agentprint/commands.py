@@ -132,6 +132,101 @@ _REDIRECT_ATTACHED = re.compile(r"^[0-9]*(?:>>?|<<?<?)\S")
 _FD_DUP = re.compile(r"[0-9]*[<>]&[0-9-]+")  # 2>&1, >&2: the '&' is not a separator here
 _AMP_REDIRECT = re.compile(r"&>>?")  # &>file sends both streams to file
 _UNKNOWABLE = re.compile(r"[$`*?]")  # variables, substitutions and globs: known only at run time
+_VARIABLE = re.compile(r"[$`]")  # a word only the shell can fill in
+_DEFAULTED = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?-([A-Za-z0-9_.+-]+)\}")  # ${NPM:-npm}
+PUBLISH_VERBS = {"publish": Action.publish, "upload": Action.publish, "push": Action.push}
+# Subcommands that show a variable before them only held options (`git $FLAGS commit`).
+_OTHER_VERBS: dict[str, set[str]] = {
+    "git": {
+        "status",
+        "commit",
+        "log",
+        "diff",
+        "add",
+        "fetch",
+        "pull",
+        "checkout",
+        "switch",
+        "branch",
+        "merge",
+        "rebase",
+        "tag",
+        "show",
+        "clone",
+        "init",
+        "stash",
+        "reset",
+        "restore",
+        "remote",
+        "rm",
+        "mv",
+        "config",
+        "rev-parse",
+        "describe",
+        "blame",
+        "grep",
+        "worktree",
+        "submodule",
+        "cherry-pick",
+        "revert",
+        "bisect",
+        "apply",
+        "am",
+        "clean",
+        "ls-files",
+        "ls-remote",
+    },
+    **{
+        tool: NOT_PUBLISH
+        | RUN_VERBS
+        | {
+            "test",
+            "t",
+            "start",
+            "build",
+            "exec",
+            "x",
+            "dlx",
+            "info",
+            "view",
+            "ls",
+            "list",
+            "outdated",
+            "audit",
+            "whoami",
+            "login",
+            "link",
+            "prune",
+            "why",
+            "create",
+            "config",
+            "version",
+        }
+        for tool in ("npm", "pnpm", "yarn", "bun")
+    },
+    **{
+        tool: {
+            "build",
+            "sync",
+            "run",
+            "lock",
+            "add",
+            "remove",
+            "pip",
+            "venv",
+            "tool",
+            "install",
+            "test",
+            "env",
+            "version",
+            "shell",
+            "new",
+            "init",
+            "check",
+        }
+        for tool in ("uv", "poetry", "hatch", "flit", "twine")
+    },
+}
 _BACKTICK = re.compile(r"`([^`]*)`")
 _DOLLAR_PAREN = re.compile(r"\$\(([^()]*)\)")
 # Backstop: a publishing word at a command position of the unquoted text. Linear time even on
@@ -307,11 +402,50 @@ def _strip_redirects(words: list[str]) -> list[str]:
     return out
 
 
+def _positional(program: str, args: list[str]) -> list[str]:
+    """The words that are not options (nor an option's value)."""
+    out, skip = [], False
+    for arg in args:
+        if skip:
+            skip = False
+        elif arg.startswith("-"):
+            name, eq, _ = arg.partition("=")
+            takes = VALUE_OPTS.get(program, set()) | ({"-C", "-c"} if program == "git" else set())
+            skip = name in takes and not eq
+        else:
+            out.append(arg)
+    return out
+
+
+def _named_by_variable(first: str, program: str, args: list[str], cwd: Path) -> Risky | None:
+    """A publish or push whose program or subcommand is a variable (`"$NPM" publish`,
+    `npm $CMD`): what runs is known only when the command runs, so it is "could not check",
+    never nothing. A variable followed by an ordinary subcommand only held options."""
+    plain = _positional(program, args)
+    if _VARIABLE.search(first):
+        verb = plain[0] if plain else ""
+        if verb not in PUBLISH_VERBS:
+            return None
+        why = "the program is a variable, known only when the command runs"
+        return Risky(PUBLISH_VERBS[verb], "sh", cwd, unsure=why, label=f"{first} {verb}")
+    others = _OTHER_VERBS.get(program)
+    if others is None or not plain or not _VARIABLE.search(plain[0]):
+        return None
+    later = plain[1:]
+    if not any(word in PUBLISH_VERBS for word in later) and any(word in others for word in later):
+        return None  # `git $FLAGS commit`: the variable held options
+    action = Action.push if program == "git" else Action.publish
+    why = "its subcommand is a variable, known only when the command runs"
+    return Risky(action, program, cwd, unsure=why, label=f"{program} {plain[0]}")
+
+
 def _segment(words: list[str], where: _Where, found: list[Risky], depth: int, seen) -> _Where:
     """Analyse one simple command. Returns where the shell is after it."""
     words = _unwrap(_strip_redirects(words))
     if not words or words[0] in SKIP_SEGMENT:
         return where
+    if (default := _DEFAULTED.fullmatch(words[0])) is not None:
+        words = [default.group(1), *words[1:]]  # ${NPM:-npm} publish: check it as npm publish
     program, args = Path(words[0]).name, words[1:]
     if program in {"cd", "pushd"}:
         return _chdir(where, _cd_target(args))
@@ -348,6 +482,8 @@ def _segment(words: list[str], where: _Where, found: list[Risky], depth: int, se
         found.extend(following._interpreted(program, args, where.cwd, depth))
     elif "/" in words[0]:  # ./release.sh, scripts/release, /abs/path/in/project/x
         found.extend(following._script(words[0], where.cwd, depth, None, where.unknown, args))
+    if len(found) == before and (named := _named_by_variable(words[0], program, args, where.cwd)):
+        found.append(named)
     if where.unknown:
         found[before:] = [replace(r, unsure=r.unsure or where.unknown) for r in found[before:]]
     return where
