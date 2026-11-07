@@ -485,6 +485,19 @@ def test_hermes_blocks_a_leaky_publish(project, tmp_path, monkeypatch):
     assert module.check(tool_name="terminal", args={"command": "ls"}, task_id="t") is None
 
 
+@pytest.mark.posix_only
+def test_hermes_finds_uvx_in_the_installer_folders_without_path(tmp_path, monkeypatch):
+    module = _hermes()
+    _fake_uvx(tmp_path / ".cargo" / "bin", "while read -r _; do :; done; exit 0")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    assert module.check(tool_name="terminal", args={"command": "ls"}) is None
+    assert (tmp_path / ".cargo" / "bin" / "args").read_text().split()[:2] == [
+        "--from",
+        f"agentprint=={__version__}",
+    ]
+
+
 def test_hermes_ignores_other_tools_and_fails_open(monkeypatch, capsys):
     module = _hermes()
     assert module.check(tool_name="read_file", args={"path": "x"}) is None

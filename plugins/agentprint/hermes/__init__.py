@@ -19,6 +19,7 @@ COMMAND = ["uvx", "--from", "agentprint==0.1.1", "agentprint", "guard", "--agent
 TIMEOUT = 25
 BLOCKED = 3
 NO_UVX = "agentprint: uvx not found, so this command was not checked (install uv to turn it on)"
+UV_DIRS = ["~/.local/bin", "~/.cargo/bin"]  # where uv's installer puts uvx, if PATH lacks it
 FAILED = "agentprint: hook check failed ({}); the command was allowed"
 SKILL = Path(__file__).parent / "skills" / "agentprint" / "SKILL.md"
 _said = set()
@@ -35,7 +36,8 @@ def check(tool_name="", args=None, task_id="", **kwargs):
     try:
         if tool_name != "terminal":
             return None
-        uvx = shutil.which("uvx") or shutil.which("uvx", path=os.path.expanduser("~/.local/bin"))
+        found = os.pathsep.join(os.path.expanduser(folder) for folder in UV_DIRS)
+        uvx = shutil.which("uvx") or shutil.which("uvx", path=found)
         if uvx is None:
             _say(NO_UVX)
             return None

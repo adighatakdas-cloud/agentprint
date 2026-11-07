@@ -257,86 +257,6 @@ def antigravity() -> dict[Path, str]:
     }
 
 
-HERMES_PLUGIN = '''\
-"""agentprint for Hermes Agent: check a package publish or git push before the terminal tool
-runs it. {generated}
-
-Hermes blocks the tool when a pre_tool_call callback raises or runs past
-plugins.hook_callback_timeout (30 s by default), so this callback never raises and gives up
-after {timeout} s: anything that stops agentprint from running lets the command through, with one
-line on stderr (uvx missing is said once per session). AGENTPRINT_STRICT=1 reaches agentprint.
-https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins
-"""
-
-import json
-import os
-import shutil
-import subprocess
-import sys
-from pathlib import Path
-
-COMMAND = {command}
-TIMEOUT = {timeout}
-BLOCKED = {blocked}
-NO_UVX = {no_uvx}
-FAILED = "agentprint: hook check failed ({{}}); the command was allowed"
-SKILL = Path(__file__).parent / "skills" / "{name}" / "SKILL.md"
-_said = set()
-
-
-def _say(line):
-    if line not in _said:
-        _said.add(line)
-        print(line, file=sys.stderr)
-
-
-def check(tool_name="", args=None, task_id="", **kwargs):
-    """Hermes pre_tool_call: None lets the tool run; a block dict stops it."""
-    try:
-        if tool_name != "terminal":
-            return None
-        uvx = shutil.which("uvx") or shutil.which("uvx", path=os.path.expanduser("~/.local/bin"))
-        if uvx is None:
-            _say(NO_UVX)
-            return None
-        payload = {{
-            "hook_event_name": "pre_tool_call",
-            "tool_name": tool_name,
-            "tool_input": args if isinstance(args, dict) else {{}},
-            "cwd": os.getcwd(),
-        }}
-        done = subprocess.run(
-            [uvx, *COMMAND[1:]],
-            input=json.dumps(payload),
-            capture_output=True,
-            text=True,
-            timeout=TIMEOUT,
-            check=False,
-        )
-        if done.stderr.strip():
-            print(done.stderr.strip(), file=sys.stderr)
-        answer = json.loads(done.stdout) if done.stdout.strip() else {{}}
-        blocked = isinstance(answer, dict) and answer.get("decision") == "block"
-        if blocked or done.returncode == BLOCKED:  # BLOCKED: strict mode, reply failed
-            reason = (answer.get("reason") if blocked else None) or done.stderr.strip()
-            reason = str(reason or "agentprint: BLOCK")
-            return {{"action": "block", "message": reason}}
-        if done.returncode != 0:
-            _say(FAILED.format(f"exit {{done.returncode}}"))
-    except Exception as exc:  # noqa: BLE001 - Hermes would block the tool on an exception
-        _say(FAILED.format(type(exc).__name__))
-    return None
-
-
-def register(ctx):
-    ctx.register_hook("pre_tool_call", check)
-    try:
-        ctx.register_skill("{name}", str(SKILL))
-    except Exception as exc:  # noqa: BLE001 - the hook matters more than the skill
-        _say(f"agentprint: skill not registered ({{type(exc).__name__}})")
-'''
-
-
 def hermes() -> dict[Path, str]:
     """https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins and .../hooks"""
     folder = PLUGIN / "hermes"
@@ -348,12 +268,14 @@ def hermes() -> dict[Path, str]:
         "provides_hooks:\n"
         "  - pre_tool_call\n"
     )
-    code = HERMES_PLUGIN.format(
+    code = fill(
+        "hermes-plugin.py.txt",
         generated=GENERATED,
         command=json.dumps(list(plugins.guard_argv("hermes"))),
-        timeout=25,
-        blocked=BLOCK_EXIT,
+        timeout="25",  # Hermes blocks a callback that runs past its 30 s default
+        blocked=str(BLOCK_EXIT),
         no_uvx=json.dumps(plugins.NO_UVX),
+        uv_dirs=json.dumps([d.replace("$HOME/", "~/") for d in plugins.UV_DIRS]),
         name=NAME,
     )
     return {
@@ -388,7 +310,7 @@ def mcp_registry() -> dict[Path, str]:
     return {ROOT / "server.json": _json(server)}
 
 
-def _fill(template: str, **values: str) -> str:
+def fill(template: str, **values: str) -> str:
     """A template from tools/templates/ with each {{key}} replaced."""
     text = (TEMPLATES / template).read_text(encoding="utf-8")
     for key, value in values.items():
@@ -399,7 +321,7 @@ def _fill(template: str, **values: str) -> str:
 
 
 def plugin_readme() -> dict[Path, str]:
-    text = _fill("plugins-readme.md", generated=GENERATED, version=VERSION, owner=OWNER, repo=REPO)
+    text = fill("plugins-readme.md", generated=GENERATED, version=VERSION, owner=OWNER, repo=REPO)
     return {PLUGIN / "README.md": text}
 
 
@@ -435,7 +357,7 @@ def vscode_link() -> str:
 
 def page_block() -> str:
     """The install commands on site/src/content/docs/plugins.md (they carry the version)."""
-    return _fill(
+    return fill(
         "plugins-page.md",
         version=VERSION,
         owner=OWNER,
