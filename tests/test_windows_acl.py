@@ -267,7 +267,8 @@ def test_scan_says_which_files_could_not_be_checked(odd_project, fmt):
     personal = odd_project / ".claude" / "settings.local.json"
     if fmt == "json":
         note, todo = json.loads(out)["not_checked"]
-        assert note.startswith("AP008 could not check who can read") and str(personal) in note
+        assert note.startswith("AP008 could not check who can read")
+        assert quote(str(personal)) in note
         assert todo.startswith("AP008: check it with icacls")
     elif fmt == "agent":
         assert out.splitlines()[0] == "agentprint: OK"  # line 1 stays the verdict
