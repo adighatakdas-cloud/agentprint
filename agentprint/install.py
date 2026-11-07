@@ -306,7 +306,7 @@ def _data(text: str, edits: list[Edit]) -> object:
     its anchors would expand it past MAX_EXPANDED values (checked before anything walks it)."""
     if any(isinstance(e, YamlEdit) for e in edits):
         try:
-            data = yaml.safe_load((text or "").lstrip("﻿")) or {}
+            data = yaml.safe_load((text or "").lstrip("\ufeff")) or {}
         except yaml.YAMLError as exc:
             raise ValueError(str(exc)) from exc
     elif any(isinstance(e, JsonEdit) for e in edits):
