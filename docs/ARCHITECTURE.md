@@ -48,8 +48,12 @@ steps, and what to ask the human). Who is running it decides which (`ui/detect.p
   key there, and which it reads back as instructions or config;
 - which of its files must never ship in a package (`package_rules`).
 
-`agents/scan_only.py` holds 15 lighter agents that are only package rules and project files.
-Adding an agent never touches a check.
+`agents/scan_only.py` holds 4 lighter agents that are only package rules and project files.
+An agent that a sweep reads in full but `install` can't arm yet carries an `AgentDoc`, which
+draws its row on the docs' agents page and its `agentprint status` line. Every MCP config
+format goes through one reader in `agents/base.py` (`read_mcp_servers`), and an agent whose
+docs name an environment-variable reference for MCP keys says so with `env_reference`, which
+`agentprint fix` then writes. Adding an agent never touches a check.
 
 **`checks/` (what is risky).** One module per check, `ap001_...` to `ap008_...`. A check gets
 the list of found files and returns findings. Checks never parse an agent's file format; they
@@ -147,7 +151,7 @@ your own changes. Files are backed up first (the backups are readable only by yo
 written atomically. A file agentprint can't edit safely (JSON with comments, YAML with anchors) is left alone, and the
 lines to add by hand are printed instead.
 
-**Reading is bounded.** SQLite chat databases are opened read-only. Archives are read in
+**Reading is bounded.** SQLite chat databases are opened read-only (immutable when no sidecar file exists, so nothing is created); a file that can't be read is named in the scan's not_checked notes (`unread.py`). Archives are read in
 memory, never unpacked to disk, with caps on entries, unpacked size and content read. YAML is
 read with a safe loader that gives up after 100 aliases, so a crafted file can't blow up.
 

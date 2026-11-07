@@ -1,5 +1,6 @@
-"""Draw the docs pages that mirror the code: check pages, the README table, landing terminals,
-and the plugin, extension and MCP registry files (tools/plugins.py).
+"""Draw the docs pages that mirror the code: check pages, the README table, the agents page's
+table of agents scanned in full (from each module's AgentDoc), landing terminals, and the plugin,
+extension and MCP registry files (tools/plugins.py).
 
     uv run python -m tools.gen_docs            # write every file
     uv run python -m tools.gen_docs --check    # list stale files, exit 1 if any
@@ -32,13 +33,14 @@ from rich.text import Text
 
 import agentprint
 from agentprint import fix as fixer
+from agentprint.agents.base import AgentDoc
 from agentprint.checks import SCAN_CHECKS
 from agentprint.checks import ap006_package_leak as ap006
 from agentprint.checks import ap009_source_exposure as ap009
 from agentprint.fixreport import fixes, rows
 from agentprint.integrations import ALL_INTEGRATIONS
 from agentprint.report import FailOn
-from agentprint.roster import SHORT_NAMES, AgentState
+from agentprint.roster import SHORT_NAMES, AgentState, swept_agents
 from agentprint.scanner import scan
 from agentprint.ui import fixview
 from agentprint.ui.results import render
@@ -55,6 +57,8 @@ DEMO = ROOT / "demo" / "build_demo.py"
 DOCS_URL = "https://adighatakdas-cloud.github.io/agentprint/"
 README_START = "<!-- checks:start -->"
 README_END = "<!-- checks:end -->"
+AGENTS_START = "<!-- agents:start -->"
+AGENTS_END = "<!-- agents:end -->"
 PLUGINS_START = "<!-- plugins:start -->"
 PLUGINS_END = "<!-- plugins:end -->"
 # The CI page's snippets that pin this release (the GitHub Action, pre-commit, lefthook, husky).
@@ -269,6 +273,32 @@ def replace_block(
     return f"{head}{start}\n{block}\n{end}{tail}"
 
 
+def scanned_agents() -> list[AgentDoc]:
+    """The AgentDoc of every agent a sweep reads in full that install can't arm yet, in the
+    order `agentprint status` lists them."""
+    return [doc for _, doc in swept_agents()]
+
+
+def agents_table(docs: list[AgentDoc]) -> str:
+    """The agents page's table for agents scanned in full with no install yet. Cells are our own
+    Markdown (code spans included), so only a `|` is escaped."""
+
+    def cell(text: str) -> str:
+        return text.replace("|", "\\|") or "none"
+
+    rows = [
+        "| Agent | What `scan` reads | Key stores (only who can read them is checked) "
+        "| What `fix` does | Paths from | Docs-unverified (probed) |",
+        "|---|---|---|---|---|---|",
+    ]
+    for d in docs:
+        rows.append(
+            f"| {cell(d.label)} | {cell(d.reads)} | {cell(d.keys)} | {cell(d.fix)} "
+            f"| {cell(d.checked)} | {cell(d.unverified)} |"
+        )
+    return "\n".join(rows)
+
+
 def _recording_console() -> Console:
     return Console(
         file=io.StringIO(),
@@ -407,6 +437,14 @@ def outputs() -> dict[Path, str]:
     )
     readme = ROOT / "README.md"
     files[readme] = replace_block(readme.read_text(encoding="utf-8"), readme_checks_block(docs))
+    agents_page = pages.parent / "agents.md"
+    files[agents_page] = replace_block(
+        agents_page.read_text(encoding="utf-8"),
+        agents_table(scanned_agents()),
+        AGENTS_START,
+        AGENTS_END,
+        "agents.md",
+    )
     page = pages.parent / "plugins.md"
     files[page] = replace_block(
         page.read_text(encoding="utf-8"),
