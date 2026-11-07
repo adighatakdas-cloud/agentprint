@@ -75,13 +75,35 @@ def test_a_plain_permission_error_on_posix_is_not_retried(tmp_path, monkeypatch,
     assert not isinstance(info.value, safewrite.FileInUse) and sleeps == []
 
 
-def test_any_permission_error_is_retried_on_windows(tmp_path, monkeypatch, sleeps):
-    monkeypatch.setattr(platform, "is_windows", lambda: True)
+def test_access_denied_on_a_read_only_target_is_not_retried(tmp_path, monkeypatch, sleeps):
     target = tmp_path / "f"
     target.write_text("old")
-    calls = _fail_then_work(monkeypatch, 1, 0)  # winerror 0: still a PermissionError on Windows
-    safewrite.atomic_write(target, "new")
-    assert target.read_text() == "new" and len(calls) == 2
+    calls = _fail_then_work(monkeypatch, 99, 5)
+    monkeypatch.setattr(safewrite, "_read_only", lambda path: True)
+    with pytest.raises(safewrite.FileReadOnly, match="read-only, left as is"):
+        safewrite.atomic_write(target, "new")
+    assert len(calls) == 1 and sleeps == []
+    assert target.read_text() == "old"
+
+
+def test_a_leftover_temp_file_that_cannot_be_removed_is_reported_not_raised_raw(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "f"
+    target.write_text("old")
+    leftover = tmp_path / ".f.agentprint-tmp"
+    leftover.write_text("stale")
+    real_unlink = type(leftover).unlink
+
+    def locked(self, *args, **kwargs):
+        if self.name.endswith(".agentprint-tmp"):
+            raise _busy(32)
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(leftover), "unlink", locked)
+    with pytest.raises(safewrite.FileInUse):
+        safewrite.atomic_write(target, "new")
+    assert target.read_text() == "old"
 
 
 def test_install_reports_a_file_in_use_and_leaves_it_alone(tmp_path, monkeypatch, sleeps):
