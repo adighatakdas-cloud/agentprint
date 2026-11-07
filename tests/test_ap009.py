@@ -10,6 +10,7 @@ import json
 import shutil
 import subprocess
 import tarfile
+import time
 import zipfile
 from pathlib import Path
 
@@ -360,13 +361,50 @@ def test_npm_licence_classification(licence, closed):
         (" unlicensed", "closed-source package: licence UNLICENSED"),
         ("see license in terms.txt", "closed-source package: licence SEE LICENSE IN a file"),
         ("LicenseRef-Acme-EULA", ap009.CUSTOM_ID),
-        ("MIT OR LicenseRef-Acme", ap009.CUSTOM_ID),
+        # Closed only when no OR choice is open: AND keeps a custom id in every choice.
+        ("LicenseRef-A OR LicenseRef-B", ap009.CUSTOM_ID),
+        ("MIT AND LicenseRef-X", ap009.CUSTOM_ID),
         ("(Apache-2.0 AND licenseref-acme.1)", ap009.CUSTOM_ID),
+        ("(LicenseRef-A OR (MIT AND LicenseRef-B))", ap009.CUSTOM_ID),
+        ("LicenseRef-A WITH Classpath-exception-2.0", ap009.CUSTOM_ID),
+        ("proprietary OR commercial", ap009.NO_OPEN_CHOICE),
         ({"type": "Proprietary"}, "closed-source package: licence proprietary"),  # old form
     ],
 )
 def test_npm_explicit_closed_markers(licence, reason):
     assert ap009.licence_of(_npm(licence)) == (True, reason)
+
+
+# Ruling R1, refined: a LicenseRef- id that is only one OR choice next to an open licence
+# (open core, dual licensing) leaves the package open. These rows were closed before.
+DUAL_LICENSED = [
+    "MIT OR LicenseRef-Acme",
+    "AGPL-3.0-only OR LicenseRef-Commercial",
+    "(GPL-3.0-or-later OR LicenseRef-Commercial)",
+    "LicenseRef-Commercial OR (MIT AND Apache-2.0)",
+    "LicenseRef-A OR LicenseRef-B OR BSD-3-Clause",
+    "agpl-3.0-only or licenseref-commercial",  # npm values are compared in lower case
+]
+
+
+@pytest.mark.parametrize("licence", DUAL_LICENSED)
+def test_an_open_or_choice_keeps_the_package_open(licence):
+    assert ap009.licence_of(_npm(licence)) == (False, ap009.OPEN)
+    wheel = _listing(
+        {"demo-1.0.dist-info/METADATA": _metadata(f"License-Expression: {licence}")},
+        label="demo.whl",
+    )
+    assert ap009.licence_of(wheel) == (False, ap009.OPEN)
+    listing = _npm(licence, **{"a.js": b"1", "a.js.map": _map([SOURCE]), "CLAUDE.md": b"x"})
+    assert _severities(_ap009(listing)) == ["LOW"]
+
+
+def test_licence_expression_is_linear_on_hostile_input():
+    for expression in ("(" * 200_000 + "LicenseRef-A", "LicenseRef-A OR " * 100_000 + "MIT"):
+        start = time.perf_counter()
+        ap009.licence_of(_npm(expression))
+        assert time.perf_counter() - start < 1.0
+    assert ap009.licence_of(_npm("(" * 50_000 + "LicenseRef-A")) == (True, ap009.CUSTOM_ID)
 
 
 def test_custom_licence_id_detail_says_how_to_fix_a_false_call():
@@ -442,7 +480,8 @@ def test_pypi_metadata_licence_classification(headers, closed):
     ("headers", "reason"),
     [
         (["License-Expression: LicenseRef-Acme-EULA"], ap009.CUSTOM_ID),
-        (["License-Expression: MIT OR LicenseRef-Acme"], ap009.CUSTOM_ID),
+        (["License-Expression: LicenseRef-A OR LicenseRef-B"], ap009.CUSTOM_ID),
+        (["License-Expression: MIT AND LicenseRef-X"], ap009.CUSTOM_ID),
         (
             # A custom id is closed even next to an OSI classifier.
             ["License-Expression: LicenseRef-Acme",
@@ -455,6 +494,19 @@ def test_pypi_metadata_licence_classification(headers, closed):
         (["License: All Rights Reserved."], "closed-source package: licence all rights reserved"),
         (
             ["Classifier: License :: Other/Proprietary License"],
+            "closed-source package: classifier License :: Other/Proprietary License",
+        ),
+        (
+            # setuptools writes a multi-line License with every line indented, blank ones too:
+            # a line of only spaces continues the field; only an empty line ends the headers.
+            ["License: ACME SOFTWARE LICENSE", " " * 8,
+             "        Use requires a paid agreement.",
+             "Classifier: License :: Other/Proprietary License"],
+            "closed-source package: classifier License :: Other/Proprietary License",
+        ),
+        (
+            ["License: ACME SOFTWARE LICENSE", "\t", "\tUse requires a paid agreement.",
+             "Classifier: License :: Other/Proprietary License"],
             "closed-source package: classifier License :: Other/Proprietary License",
         ),
     ],
@@ -504,6 +556,84 @@ def test_package_json_in_a_python_package_is_not_its_licence():
         label="demo-1.0.tar.gz",
     )
     assert ap009.licence_of(sdist)[0] is True
+
+
+# ---- hostile metadata and bundles: linear, so the publish guard can't be stalled ------------
+
+MB = 1024 * 1024
+HOSTILE_METADATA = {
+    "a continuation chain": b"Metadata-Version: 2.1\nName: demo\nLicense: x\n" + b" a\n" * MB,
+    "lines of only spaces": b"Metadata-Version: 2.1\nLicense: x\n" + b"        \n" * (MB // 3),
+    "one 3 MB line": b"Metadata-Version: 2.1\nLicense: " + b"a" * (3 * MB) + b"\n",
+    "many headers": b"Metadata-Version: 2.1\n" + b"Classifier: Topic :: X\n" * (MB // 7),
+    "carriage returns": b"Metadata-Version: 2.1\rLicense: x\r" + b" a\r" * MB,
+}
+
+
+@pytest.mark.parametrize("name", list(HOSTILE_METADATA))
+def test_hostile_metadata_is_read_in_linear_time(name):
+    meta = HOSTILE_METADATA[name] + b"\nBody."
+    assert len(meta) >= 3 * MB
+    listing = _listing(
+        {"demo-1.0.dist-info/METADATA": meta, "demo/static/a.js.map": _map([SOURCE])},
+        label="demo-1.0-py3-none-any.whl",
+    )
+    start = time.perf_counter()
+    findings = _ap009(listing)
+    assert time.perf_counter() - start < 1.0  # the old parse took 175 s through the guard
+    assert len(findings) == 1
+
+
+def test_hostile_metadata_does_not_stall_the_publish_guard(tmp_path):
+    # The guard's hook times out (and fails open) at 60 s: a slow METADATA parse would also
+    # have dropped AP006's BLOCK for the agent file in the same wheel.
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    leaky = json.dumps({"permissions": {"allow": [f"Bash(export K={fakes.ANTHROPIC})"]}})
+    with zipfile.ZipFile(dist / "demo-1.0-py3-none-any.whl", "w") as zf:
+        zf.writestr("demo-1.0.dist-info/METADATA", HOSTILE_METADATA["a continuation chain"])
+        zf.writestr(".claude/settings.local.json", leaky)
+    start = time.perf_counter()
+    verdict = evaluate("twine upload dist/*", tmp_path)
+    assert time.perf_counter() - start < 5.0
+    assert verdict is not None and verdict.block and "AP006" in verdict.reason
+    assert fakes.ANTHROPIC not in verdict.reason
+
+
+def test_metadata_headers_are_read_up_to_a_limit_and_never_half_a_line():
+    prefix = "Metadata-Version: 2.1\nName: demo\nLicense-Expression: MIT\n"
+    cut = "Classifier: License :: Other/Proprietary License"  # where the limit falls
+    filler = "a" * (ap009.HEADER_LIMIT - len(prefix) - len(cut) - len("Summary: \n"))
+    meta = f"{prefix}Summary: {filler}\n{cut} (not really)\n\nBody.".encode()
+    assert meta[: ap009.HEADER_LIMIT].endswith(cut.encode())
+    wheel = _listing({"demo-1.0.dist-info/METADATA": meta}, label="demo.whl")
+    assert ap009.licence_of(wheel) == (False, ap009.OPEN)
+
+
+@pytest.mark.parametrize(
+    "bundle",
+    [
+        # media-type parameters on and on before ;base64,
+        b"x;\n//# sourceMappingURL=data:application/json" + b";a" * (5 * MB) + b";base64,"
+        + base64.b64encode(_map([SOURCE])),
+        # base64 that runs on, then stops short of the end of the file
+        b"x;\n//# sourceMappingURL=data:application/json;base64," + b"A" * (10 * MB) + b"!",
+    ],
+)  # fmt: skip
+def test_hostile_inline_maps_are_linear(bundle):
+    listing = _npm("UNLICENSED", **{"dist/index.js": bundle})
+    start = time.perf_counter()
+    assert _ap009(listing) == []
+    assert time.perf_counter() - start < 1.0
+
+
+def test_inline_map_comment_end_and_whitespace_still_found():
+    for tail in (b"\n", b" */\n", b"\n*/", b""):
+        b64 = base64.b64encode(_map([SOURCE]))
+        bundle = b"x;\n/*# sourceMappingURL=data:application/json;base64," + b64 + tail
+        assert _severities(_ap009(_npm("UNLICENSED", **{"a.js": bundle}))) == ["HIGH"]
+    broken = b"x;\n//# sourceMappingURL=data:application/json;base64,AA AA\n"
+    assert _ap009(_npm("UNLICENSED", **{"a.js": broken})) == []
 
 
 # ---- one finding per kind, limits, no contents ---------------------------------------------
