@@ -72,9 +72,9 @@ To point a Claude Code MCP server at `${NAME}`, `fix` checks that the config fil
 
 Here is one agent turn, from a blocked publish to an allowed one:
 
-![A simulated AI agent tries to run npm publish. The real agentprint hook blocks it and hands the agent its brief with masked keys. The agent runs agentprint fix, follows the last step itself, retries, and is allowed through. What is left for the human is to rotate the keys.](/agentprint/agent-loop.gif)
+![A simulated AI agent tries to run npm publish. The real agentprint hook blocks it and hands the agent its brief with masked keys. The agent runs agentprint fix --pack in the package folder and agentprint fix for the machine, retries, and is allowed through. It then names the keys the human has to rotate.](/agentprint/agent-loop.gif)
 
-*The agent is simulated; everything agentprint prints is real. The demo uses fake keys.*
+*The agent is simulated: its own lines are dim and start with `agent:`. Everything else is real agentprint output. The demo uses fake keys.*
 
 Your AI agent runs it like this:
 
@@ -82,7 +82,7 @@ Your AI agent runs it like this:
 uvx agentprint fix --yes --format agent
 ```
 
-The note that `agentprint install` adds to each agent's instructions tells it to do this when agentprint reports BLOCK. The agent gets a brief: the verdict after fixing, what was fixed, and what to ask you. Shortened:
+The note that `agentprint install` adds to each agent's instructions tells it what to run when agentprint reports BLOCK: after a blocked publish, `uvx agentprint fix --pack --yes --format agent` in the package folder; for any other BLOCK, the command above. The agent gets a brief: the verdict after fixing, what was fixed, and what to ask you. Shortened:
 
 ```text
 agentprint fix: CLEAR — 3 fixed, 5 for the human

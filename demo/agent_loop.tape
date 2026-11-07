@@ -4,10 +4,12 @@
 # Same setup and look as demo/demo.tape: a throwaway folder (/tmp/agentprint-demo) built by
 # demo/build_demo.py, HOME pointed at it, so no real agent settings are ever read.
 #
-# The story (about 45 s): a SIMULATED agent wants to `npm publish`; the REAL agentprint hook
-# blocks it and gives the agent its brief; the agent runs the real `agentprint fix`, does the
-# last step itself, retries, and is let through. The banner on screen says so. The script is
-# demo/agent_loop.py (it holds the pauses); tests/test_demo.py runs it against a fresh world.
+# The story (under a minute): a SIMULATED agent wants to `npm publish`; the REAL agentprint hook
+# blocks it and gives the agent its brief; the agent runs the real `agentprint fix --pack` and
+# `agentprint fix`, retries, is let through, and names the keys the human must rotate (read from
+# fix's answers). The banner on screen says so; the agent's own lines are dim and start "agent:".
+# The script is demo/agent_loop.py (it holds the pauses); tests/test_demo.py runs it against a
+# fresh world.
 
 Output docs/agent-loop.gif
 

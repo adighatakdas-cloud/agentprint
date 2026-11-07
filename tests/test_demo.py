@@ -3,6 +3,7 @@ demo/demo.tape shows works there and never prints a key in full."""
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
 import shlex
@@ -293,16 +294,68 @@ def test_loop_goes_block_then_fix_then_allowed(tmp_path):
     _no_full_key(out + result.stderr)
     banner = out.index("simulated agent")
     block = out.index("agentprint: BLOCK")
-    fix = out.index("agent runs (in my-app): agentprint fix --pack --yes --format agent")
+    fix = out.index("agent: running (in my-app): agentprint fix --pack --yes --format agent")
     fixed = out.index("agentprint fix: CLEAR")
     home_fix = out.index("agentprint fix --yes --format agent --home fake-home my-app")
-    retry = out.index("agent runs again: npm publish")
-    allowed = out.index("CLEAR: allowed")
-    assert banner < block < fix < fixed < home_fix < retry < allowed
+    retry = out.index("agent: running again: npm publish")
+    allowed = out.index("agent: the hook let it run this time")
+    left = out.index("agent: Left for you: rotate these 3 keys.")
+    assert banner < block < fix < fixed < home_fix < retry < allowed < left
     assert "sk-p…(len 56)" in out  # keys appear only as redacted stubs
-    assert "Rotate" in out.split("CLEAR: allowed")[0]
+    # The count and the keys come from the real fix answers' "Rotate ..." lines.
+    told = re.findall(r'Rotate the (.+?) that starts ("[^"]*")', out[:left])
+    assert len(set(told)) == 3
+    for name, stub in told:
+        assert f"agent:   - {name} {stub}" in out[left:]
+    # Nothing the script wrote itself passes for agentprint output: every such line is dim.
+    for line in out.splitlines():
+        if "agent:" in line or "hook:" in line or "(shortened)" in line:
+            assert line.startswith(("\033[2;36magent: ", "\033[2m")), line
+    assert "CLEAR: allowed" not in out and "has told you which" not in out
+    assert "Tell the human" not in out and "(shortened)" in out  # the cut is said out loud
     # only real agentprint commands changed the world: fix --pack wrote the ignore lines
     assert "/.claude/settings.local.json" in (root / "my-app" / ".npmignore").read_text()
     assert "FAKEFAKE" not in (root / "my-app" / ".claude" / "settings.local.json").read_text()
     assert "wrote .npmignore" not in out
     assert "FAKEFAKE" not in (root / "fake-home" / ".claude" / "history.jsonl").read_text()
+
+
+def _loop_module():
+    spec = importlib.util.spec_from_file_location("agent_loop", LOOP)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize(
+    ("answer", "shortened"),
+    [
+        ("agentprint fix: CLEAR\nask_human:\n  - x\nTell the human each ask_human item.\n", True),
+        ("agentprint fix: CLEAR\nask_human:\n  - x\n", False),
+    ],
+    ids=["cut", "whole"],
+)
+def test_loop_says_when_it_shortens_a_fix_answer(tmp_path, monkeypatch, capsys, answer, shortened):
+    loop = _loop_module()
+    monkeypatch.setattr(loop, "SPEED", 0)
+    done = subprocess.CompletedProcess([], 0, stdout=answer, stderr="")
+    monkeypatch.setattr(loop, "agentprint", lambda *args, **kwargs: done)
+    assert loop.run_fix("agentprint fix", ["fix"], tmp_path) == answer
+    out = capsys.readouterr().out
+    assert "Tell the human" not in out
+    assert ("(shortened)" in out) is shortened
+    assert out.startswith("\033[2;36magent: running (in ")
+
+
+def test_loop_counts_each_key_to_rotate_once():
+    loop = _loop_module()
+    first = '- AP002: Rotate the OpenAI API key that starts "sk-p…(len 56)": revoke it'
+    second = (
+        '- AP001: Rotate the Anthropic API key that starts "sk-a…(len 105)": revoke it\n'
+        '- AP005: Rotate the OpenAI API key that starts "sk-p…(len 56)": revoke it'
+    )
+    assert loop.keys_to_rotate(first, second) == [
+        'OpenAI API key "sk-p…(len 56)"',
+        'Anthropic API key "sk-a…(len 105)"',
+    ]
+    assert loop.keys_to_rotate("agentprint fix: CLEAR — nothing to do") == []

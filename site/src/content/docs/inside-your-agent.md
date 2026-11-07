@@ -13,11 +13,11 @@ Together, the hook and the check it runs are the tripwire. See [What `install` c
 
 ## What the agent reads
 
-A 45-second turn, start to finish:
+Under a minute, start to finish:
 
-![A simulated AI agent tries to run npm publish. The real agentprint hook blocks it and hands the agent its brief with masked keys. The agent runs agentprint fix, follows the last step itself, retries, and is allowed through. What is left for the human is to rotate the keys.](/agentprint/agent-loop.gif)
+![A simulated AI agent tries to run npm publish. The real agentprint hook blocks it and hands the agent its brief with masked keys. The agent runs agentprint fix --pack in the package folder and agentprint fix for the machine, retries, and is allowed through. It then names the keys the human has to rotate.](/agentprint/agent-loop.gif)
 
-*The agent is simulated; everything agentprint prints is real. The demo uses fake keys.*
+*The agent is simulated: its own lines are dim and start with `agent:`. Everything else is real agentprint output. The demo uses fake keys.*
 
 When a publish would leak, the agent gets a brief: the verdict first, then fix steps it can do itself, then what only a person can do. This is the brief, shortened:
 
@@ -49,8 +49,9 @@ Use `agentprint install --dry-run` to see the changes and write nothing.
 
 By default a hook never gets in your way: if agentprint hits an internal error, or cannot tell what a publish or push would upload ("could not check"), the command runs with a note. If you would rather stop than risk it, turn on strict mode. The same cases then block, with the reason in your agent's own deny message.
 
-- `agentprint install --strict` writes hooks that pass `--strict`. Run a plain `agentprint install` to go back.
-- Or set `AGENTPRINT_STRICT=1` in the environment your agent runs in, or call `agentprint guard --strict`.
+- `agentprint install --strict` writes hooks that pass `--strict`. This is the reliable way to turn it on. Run a plain `agentprint install` to go back. If a permanent agentprint older than 0.1.1 is on your PATH, its hooks would ignore `--strict`, so `install --strict` has the hooks run this version through `uvx` instead, and says so.
+- Switching strict mode on or off changes the hook command, so **Codex** and **Hermes Agent** see a new hook and keep it off until you approve it again: type `/hooks` in Codex, and accept it in a foreground `hermes chat`.
+- `AGENTPRINT_STRICT=1` (or `agentprint guard --strict` in a hook you wrote yourself) works only where the agent passes its environment on to hooks. Gemini CLI runs hooks with a cleaned-up environment, so the variable does not reach agentprint there. Use `install --strict`.
 
 What strict mode does and does not cover:
 
@@ -59,12 +60,18 @@ What strict mode does and does not cover:
 - An unknown agent name still runs.
 - It is still limited to what agentprint can see: a secret assembled at run time, or one inside an arbitrary script, is not detected.
 
+Blocks to expect in strict mode, and what to do:
+
+- **Build and publish in one command** (`uv build && uv publish`) is always blocked: when the hook runs, nothing is built yet, so there is nothing to check. Run the build and the publish as two commands.
+- **A push from a folder known only when the command runs** is blocked: `cd "$(git rev-parse --show-toplevel)" && git push`, `cd $REPO && git push`, or a loop such as `for r in a b; do (cd $r && git push); done`. Push from the repo folder itself: run `git push` there, or write the folder out (`cd my-repo && git push`), one repo per command.
+- **A workspace publish of more than 30 packages** (`pnpm -r publish` in a large pnpm workspace) is blocked: checking each package would outlast the agent's hook time limit. Publish the packages in smaller groups.
+
 ## Good to know
 
 - **Codex** runs a new hook only after you trust it. Type `/hooks` in Codex once after installing.
 - **Hermes Agent** asks before it runs any new hook, and agentprint never approves its own. Start `hermes chat` once and accept it. Until then, and in gateway or cron runs that never ask, the hook is off. The MCP server still works.
 - **Hooks need macOS or Linux.** On Windows, only the MCP server and the note are installed for now.
-- **agentprint only ever blocks, never approves.** Your agents' own approval rules still apply. If agentprint itself fails, the command runs, with a note that it could not check (unless you turn on strict mode, below).
+- **agentprint only ever blocks, never approves.** Your agents' own approval rules still apply. If agentprint itself fails, the command runs, with a note that it could not check (unless you turn on strict mode, above).
 - **Spotting a publish is best effort.** agentprint reads the command line. It is not a shell. It follows `cd`, `&&`, `bash -c`, package scripts, workspaces and release tools. A publish hidden in a Makefile, a script file or a heredoc can slip past, though the note still tells the agent to check. When agentprint is unsure what would be uploaded, it says "could not check", never "OK".
 
 See which agents are armed with `agentprint status`.

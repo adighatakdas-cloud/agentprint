@@ -10,7 +10,9 @@
   foreground `hermes chat`; gateway, cron, ACP and CI runs never ask, so the hook stays off
   there until approved. agentprint never writes Hermes's approval list itself
   (shell-hooks-allowlist.json): approving code that runs on every command is the human's call.
-  The hook command is the stable launcher path, so an approval survives agentprint upgrades.
+  The hook command is the stable launcher path, so an approval survives agentprint upgrades,
+  but not a switch of strict mode: `--strict` is part of the command, so turning it on or off
+  makes a new (event, command) that Hermes asks about again.
 - MCP: `mcp_servers: {agentprint: {command, args, enabled}}` in the same config.yaml.
   https://hermes-agent.nousresearch.com/docs/reference/mcp-config-reference
 - Ruling (YAML): config.yaml is edited with a round-trip YAML parser (ruamel.yaml). The user's
