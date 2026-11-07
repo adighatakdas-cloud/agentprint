@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from agentprint import commands
+from agentprint import commands, following
 from agentprint.commands import Action, detect
 from tests import timing
 
@@ -583,9 +583,9 @@ def test_files_outside_the_folder_are_never_read(tmp_path, monkeypatch):
     write(tmp_path, "Taskfile.yml", "tasks:\n  release:\n    cmds: [npm publish]\n")
     (project / "link.sh").symlink_to(tmp_path / "outside.sh")
     reads = []
-    load = commands._load
+    load = following._load
     monkeypatch.setattr(
-        commands, "_load", lambda path, name: reads.append(path) or load(path, name)
+        following, "_load", lambda path, name: reads.append(path) or load(path, name)
     )
     for command in [
         "../outside.sh",
@@ -660,7 +660,7 @@ def test_a_script_that_runs_itself_stops(tmp_path):
 
 
 def test_too_many_commands_fall_back_to_a_word_scan(tmp_path, monkeypatch):
-    monkeypatch.setattr(commands, "MAX_STEPS", 1)
+    monkeypatch.setattr(following, "MAX_STEPS", 1)
     write(tmp_path, "Makefile", "release:\n\techo one\n\tnpm publish\n")
     [risky] = detect("make release", tmp_path)
     assert (risky.tool, "deeper in its scripts" in risky.unsure) == ("npm", True)
@@ -669,7 +669,7 @@ def test_too_many_commands_fall_back_to_a_word_scan(tmp_path, monkeypatch):
 def test_each_command_line_starts_a_fresh_reading(tmp_path):
     write(tmp_path, "release.sh", "npm publish\n", 0o755)
     assert detect("./release.sh", tmp_path) == detect("./release.sh", tmp_path)
-    assert commands._READING.get() is None
+    assert following._READING.get() is None
 
 
 # ---- options and corners --------------------------------------------------------------------
