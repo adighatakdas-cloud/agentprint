@@ -63,6 +63,8 @@ uvx agentprint pack      # preflight: what your package would publish
 [Get started](https://adighatakdas-cloud.github.io/agentprint/get-started/) has the details,
 including running from a clone of this repo.
 
+For a team, a [project config and baseline](https://adighatakdas-cloud.github.io/agentprint/config/) accept what you have already reviewed.
+
 ## What it checks
 
 <!-- checks:start -->

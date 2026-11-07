@@ -12,6 +12,7 @@ PAGES = [
     "inside-your-agent",
     "ci",
     "badge",
+    "config",
     "agents",
     "how-it-works",
     "privacy",
