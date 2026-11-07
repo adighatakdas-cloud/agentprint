@@ -158,6 +158,9 @@ def test_sanity_check_fails_loudly(tmp_path):
     with pytest.raises(RuntimeError, match="none of the plain keys"):
         benchmark.sanity_check("t", cases, {plain.id: [(99, 99)]})  # found, but not on the key
     benchmark.sanity_check("t", cases, {plain.id: [plain.lines]})
+    mcp = next(c for c in cases if c.file == ".mcp.json" and c.lines)  # not in a hidden folder
+    with pytest.raises(RuntimeError, match="hidden agent folders"):
+        benchmark.sanity_check("t", [mcp], {mcp.id: [mcp.lines]})
 
 
 def test_spans_cover_the_key_and_the_aws_pair(tmp_path):
@@ -173,8 +176,10 @@ def test_spans_cover_the_key_and_the_aws_pair(tmp_path):
         span = "\n".join(lines[start - 1 : end])
         if c.category.startswith("plain-"):
             assert find_secrets(span), c.id  # the span holds the key
-        if c.category.startswith("plain-") and c.id.endswith("-3"):
-            assert "AWS_SECRET_ACCESS_KEY" in span  # AWS is kind index 3
+        text = "\n".join(lines)
+        if c.id.endswith("-3"):  # AWS is key kind index 3, in every category
+            assert "AWS_SECRET_ACCESS_KEY" in text  # the pair is in the file ...
+            assert "AWS_SECRET_ACCESS_KEY" not in span  # ... but never inside the scored span
         if c.category == "obf-yaml-folded":
             assert end - start >= 2
 

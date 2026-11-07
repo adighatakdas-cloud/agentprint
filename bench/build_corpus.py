@@ -106,27 +106,27 @@ def _j(obj: object) -> str:
 
 
 def history(entries: Entries) -> tuple[str, str]:
-    exports = " ".join(f"{n}={v}" for n, v in entries)
-    lines = [
-        {"display": "fix the failing test in auth_test.py", "timestamp": 1762500000000},
-        {
-            "display": f"export {exports} && npm run dev",
-            "timestamp": 1762500060000,
-            "project": "/Users/dev/shop",
-        },
-        {"display": "now run the linter", "timestamp": 1762500120000},
-    ]
+    lines = [{"display": "fix the failing test in auth_test.py", "timestamp": 1762500000000}]
+    for n, v in entries:  # one prompt per variable, so a paired value sits on its own line
+        lines.append(
+            {
+                "display": f"export {n}={v} && npm run dev",
+                "timestamp": 1762500060000,
+                "project": "/Users/dev/shop",
+            }
+        )
+    lines.append({"display": "now run the linter", "timestamp": 1762500120000})
     return ".claude/history.jsonl", "".join(json.dumps(x, ensure_ascii=False) + "\n" for x in lines)
 
 
 def claude_settings(entries: Entries) -> tuple[str, str]:
-    headers = " ".join(f"-H '{n}: {v}'" for n, v in entries)
+    calls = [f"Bash(curl -s -H '{n}: {v}' https://api.example.com/v1/ping)" for n, v in entries]
     data = {
         "permissions": {
             "allow": [
                 "Bash(git status)",
                 "Bash(npm run test)",
-                f"Bash(curl -s {headers} https://api.example.com/v1/ping)",
+                *calls,
             ]
         }
     }
@@ -310,9 +310,9 @@ SENTINEL = "PAYLOADSENTINEL"
 
 
 def key_span(shape: Shape, names: list[str], payload: str, secret: str | None) -> tuple[int, int]:
-    """1-based line span of the injected key (and its paired secret) in the written file.
+    """1-based line span of the injected key (the key ID only, never its paired secret).
 
-    The file is rendered once with sentinels in place of the values to find their lines, then
+    The file is rendered once with sentinels in place of the values to find the key's lines, then
     with the real values; extra lines the key itself adds (continuation, folded block) extend
     the span's end.
     """
@@ -320,7 +320,7 @@ def key_span(shape: Shape, names: list[str], payload: str, secret: str | None) -
     if secret is not None:
         sentinels.append((names[1], SENTINEL + "1"))
     _, template = shape(sentinels)
-    hits = [i + 1 for i, line in enumerate(template.split("\n")) if SENTINEL in line]
+    hits = [i + 1 for i, line in enumerate(template.split("\n")) if SENTINEL + "0" in line]
     entries: Entries = [(names[0], payload)] + ([(names[1], secret)] if secret is not None else [])
     _, real = shape(entries)
     extra = real.count("\n") - template.count("\n")
@@ -332,14 +332,12 @@ def build(root: Path, seed: int = SEED) -> list[Case]:
     rng = random.Random(seed)
     cases: list[Case] = []
 
-    def add_positive(
-        category: str, n: int, shape: Shape, kind: str, payload: str, pair: bool = False
-    ) -> None:
+    def add_positive(category: str, n: int, shape: Shape, kind: str, payload: str) -> None:
         names = [ENV_NAMES[kind]]
         secret = None
-        if kind == "aws" and pair:
-            # plain cases only, so a hidden key is never rescued by a visible one.
-            # trufflehog's AWS detector needs the secret access key beside the key ID.
+        if kind == "aws":
+            # trufflehog's AWS detector needs a secret access key in the file. It sits on a
+            # different line from the key ID and is outside the scored span.
             names.append("AWS_SECRET_ACCESS_KEY")
             secret = make_secret_access_key(rng)
         entries: Entries = [(names[0], payload)] + ([(names[1], secret)] if secret else [])
@@ -356,7 +354,7 @@ def build(root: Path, seed: int = SEED) -> list[Case]:
 
     for shape_name, shape in SHAPES.items():
         for n, kind in enumerate(KINDS):
-            add_positive(f"plain-{shape_name}", n, shape, kind, make_key(kind, rng), pair=True)
+            add_positive(f"plain-{shape_name}", n, shape, kind, make_key(kind, rng))
     for category, (obfuscate, shape_name) in OBFUSCATIONS.items():
         for n, kind in enumerate(KINDS):
             payload = obfuscate(make_key(kind, rng), rng)

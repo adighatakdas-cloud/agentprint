@@ -11,17 +11,17 @@
     "agentprint": {
       "version": "0.1.0",
       "overall": {
-        "tp": 60,
-        "fn": 24,
+        "tp": 61,
+        "fn": 23,
         "fp": 7,
         "tn": 56,
-        "recall": 0.7143,
-        "precision": 0.8955,
+        "recall": 0.7262,
+        "precision": 0.8971,
         "false_positive_rate": 0.1111,
         "any_hit": {
-          "tp": 60,
-          "recall": 0.7143,
-          "precision": 0.8955
+          "tp": 65,
+          "recall": 0.7738,
+          "precision": 0.9028
         }
       },
       "categories": {
@@ -84,21 +84,21 @@
           "cases": 7,
           "found": 0,
           "recall": 0.0,
-          "any_hit": 0
+          "any_hit": 1
         },
         "obf-line-continuation": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 5,
+          "recall": 0.7143,
+          "any_hit": 6
+        },
+        "obf-split-concat": {
           "kind": "positive",
           "cases": 7,
           "found": 4,
           "recall": 0.5714,
           "any_hit": 4
-        },
-        "obf-split-concat": {
-          "kind": "positive",
-          "cases": 7,
-          "found": 2,
-          "recall": 0.2857,
-          "any_hit": 2
         },
         "obf-split-string": {
           "kind": "positive",
@@ -110,15 +110,15 @@
         "obf-yaml-folded": {
           "kind": "positive",
           "cases": 7,
-          "found": 4,
-          "recall": 0.5714,
+          "found": 3,
+          "recall": 0.4286,
           "any_hit": 4
         },
         "obf-zero-width": {
           "kind": "positive",
           "cases": 7,
-          "found": 4,
-          "recall": 0.5714,
+          "found": 3,
+          "recall": 0.4286,
           "any_hit": 4
         },
         "plain-claude-history": {
@@ -168,17 +168,17 @@
     "gitleaks": {
       "version": "8.30.1",
       "overall": {
-        "tp": 49,
-        "fn": 35,
+        "tp": 46,
+        "fn": 38,
         "fp": 14,
         "tn": 49,
-        "recall": 0.5833,
-        "precision": 0.7778,
+        "recall": 0.5476,
+        "precision": 0.7667,
         "false_positive_rate": 0.2222,
         "any_hit": {
-          "tp": 49,
-          "recall": 0.5833,
-          "precision": 0.7778
+          "tp": 46,
+          "recall": 0.5476,
+          "precision": 0.7667
         }
       },
       "categories": {
@@ -239,16 +239,16 @@
         "obf-base64": {
           "kind": "positive",
           "cases": 7,
-          "found": 7,
-          "recall": 1.0,
-          "any_hit": 7
+          "found": 6,
+          "recall": 0.8571,
+          "any_hit": 6
         },
         "obf-line-continuation": {
           "kind": "positive",
           "cases": 7,
-          "found": 0,
-          "recall": 0.0,
-          "any_hit": 0
+          "found": 1,
+          "recall": 0.1429,
+          "any_hit": 1
         },
         "obf-split-concat": {
           "kind": "positive",
@@ -260,16 +260,16 @@
         "obf-split-string": {
           "kind": "positive",
           "cases": 7,
-          "found": 1,
-          "recall": 0.1429,
-          "any_hit": 1
+          "found": 0,
+          "recall": 0.0,
+          "any_hit": 0
         },
         "obf-yaml-folded": {
           "kind": "positive",
           "cases": 7,
-          "found": 2,
-          "recall": 0.2857,
-          "any_hit": 2
+          "found": 0,
+          "recall": 0.0,
+          "any_hit": 0
         },
         "obf-zero-width": {
           "kind": "positive",
@@ -325,16 +325,16 @@
     "trufflehog": {
       "version": "3.99.8",
       "overall": {
-        "tp": 48,
-        "fn": 36,
+        "tp": 46,
+        "fn": 38,
         "fp": 0,
         "tn": 63,
-        "recall": 0.5714,
+        "recall": 0.5476,
         "precision": 1.0,
         "false_positive_rate": 0.0,
         "any_hit": {
-          "tp": 48,
-          "recall": 0.5714,
+          "tp": 46,
+          "recall": 0.5476,
           "precision": 1.0
         }
       },
@@ -396,16 +396,16 @@
         "obf-base64": {
           "kind": "positive",
           "cases": 7,
-          "found": 5,
-          "recall": 0.7143,
-          "any_hit": 5
+          "found": 6,
+          "recall": 0.8571,
+          "any_hit": 6
         },
         "obf-line-continuation": {
           "kind": "positive",
           "cases": 7,
-          "found": 1,
-          "recall": 0.1429,
-          "any_hit": 1
+          "found": 2,
+          "recall": 0.2857,
+          "any_hit": 2
         },
         "obf-split-concat": {
           "kind": "positive",
@@ -417,16 +417,16 @@
         "obf-split-string": {
           "kind": "positive",
           "cases": 7,
-          "found": 2,
-          "recall": 0.2857,
-          "any_hit": 2
+          "found": 0,
+          "recall": 0.0,
+          "any_hit": 0
         },
         "obf-yaml-folded": {
           "kind": "positive",
           "cases": 7,
-          "found": 2,
-          "recall": 0.2857,
-          "any_hit": 2
+          "found": 0,
+          "recall": 0.0,
+          "any_hit": 0
         },
         "obf-zero-width": {
           "kind": "positive",

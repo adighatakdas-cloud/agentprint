@@ -250,15 +250,18 @@ RUNNERS: dict[str, tuple[Callable[[], str], Callable[[Sequence[Case], Path], Hit
 }
 
 
+HIDDEN_FOLDERS = ("/.claude/", "/.codex/", "/.cursor/", "/.hermes/")
+
+
 def sanity_check(tool: str, cases: Sequence[Case], hits: Hits) -> None:
     """Fail loudly if a tool plainly did not run as intended: it must find at least one plain
-    key, and have reported something inside a hidden folder (.claude, .codex, ...)."""
+    key on its line, and one of those must live in a hidden agent folder (.claude, .codex, ...),
+    which shows the tool really read hidden directories."""
     plain = [c for c in cases if c.category.startswith("plain-") and key_matched(c, hits)]
     if not plain:
         raise RuntimeError(f"{tool} found none of the plain keys; the run is not valid")
-    hidden = [c for c in plain if c.file.startswith(".")]
-    if not hidden:
-        raise RuntimeError(f"{tool} found nothing inside hidden agent folders; run is not valid")
+    if not any(any(h in f"/{c.file}" for h in HIDDEN_FOLDERS) for c in plain):
+        raise RuntimeError(f"{tool} reported nothing inside hidden agent folders; run is not valid")
 
 
 def installed(tool: str) -> bool:
