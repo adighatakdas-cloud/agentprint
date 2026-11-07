@@ -80,6 +80,13 @@ FormatOpt = Annotated[
     typer.Option("--format", "-f", help="Output format. Default: agent inside an AI agent."),
 ]
 PlainOpt = Annotated[bool, typer.Option("--plain", help="No color or animation.")]
+BadgeOpt = Annotated[
+    Path | None,
+    typer.Option(
+        "--badge",
+        help="Also write badge.json and verdict.json (CLEAR or BLOCK, counts only) to this folder.",
+    ),
+]
 FailOnOpt = Annotated[
     FailOn, typer.Option(help="Exit 1 if any finding is at or above this severity.")
 ]
@@ -256,6 +263,23 @@ def _roster_size(home: Path | None) -> int:
     return sum(s.found for s in roster(home.absolute(), {}))
 
 
+def _write_badge(
+    directory: Path | None, command: str, fail_on: FailOn, findings: list[Finding]
+) -> int:
+    """After the normal output: write the badge files. 0, or 2 with a message if it can't."""
+    if directory is None:
+        return 0
+    from . import badge
+
+    try:
+        badge.write(directory, command=command, fail_on=fail_on, findings=findings)
+    except OSError as exc:
+        why = exc.strerror or type(exc).__name__
+        typer.secho(f"error: cannot write the badge to {directory}: {why}", err=True, fg="red")
+        return 2
+    return 0
+
+
 def run_scan_command(
     path: Path,
     home: Path | None,
@@ -263,6 +287,7 @@ def run_scan_command(
     fmt: Format | None,
     fail_on: FailOn,
     plain: bool,
+    badge_dir: Path | None = None,
 ) -> int:
     """`agentprint scan`, returning the exit code (the menu runs it too)."""
     fmt = _auto_format(fmt, Format.agent, Format.table)
@@ -284,7 +309,7 @@ def run_scan_command(
             where = f"{'~' if home is None else _short(str(home))} + {path}"
             header = f"agentprint scan  {where} · roster {_roster_size(home)} · {secs:.2f}s"
     _emit(findings, fmt, fail_on, Moment.scan, out=out, header=header)
-    return exit_code(findings, fail_on)
+    return _write_badge(badge_dir, "scan", fail_on, findings) or exit_code(findings, fail_on)
 
 
 @app.command()
@@ -300,13 +325,20 @@ def scan(
     fmt: FormatOpt = None,
     fail_on: FailOnOpt = FailOn.high,
     plain: PlainOpt = False,
+    badge: BadgeOpt = None,
 ) -> None:
     """Find secrets that AI coding agents left in history and settings files."""
     plain = _top_plain(ctx, plain)
-    raise typer.Exit(run_scan_command(path, home, no_home, fmt, fail_on, plain))
+    raise typer.Exit(run_scan_command(path, home, no_home, fmt, fail_on, plain, badge))
 
 
-def run_pack_command(target: Path, fmt: Format | None, fail_on: FailOn, plain: bool) -> int:
+def run_pack_command(
+    target: Path,
+    fmt: Format | None,
+    fail_on: FailOn,
+    plain: bool,
+    badge_dir: Path | None = None,
+) -> int:
     """`agentprint pack`, returning the exit code (the menu runs it too)."""
     fmt = _auto_format(fmt, Format.agent, Format.table)
     out = themed_console(dict(os.environ), plain=plain) if fmt is Format.table else None
@@ -331,7 +363,7 @@ def run_pack_command(target: Path, fmt: Format | None, fail_on: FailOn, plain: b
         out=out,
         header=header,
     )
-    return exit_code(findings, fail_on)
+    return _write_badge(badge_dir, "pack", fail_on, findings) or exit_code(findings, fail_on)
 
 
 @app.command()
@@ -344,6 +376,7 @@ def pack(
     fmt: FormatOpt = None,
     fail_on: FailOnOpt = FailOn.high,
     plain: PlainOpt = False,
+    badge: BadgeOpt = None,
 ) -> None:
     """Check what a package would publish: agent files and the keys inside them.
 
@@ -351,7 +384,7 @@ def pack(
     Python projects are built with `uv build`, which runs the project's build backend and may
     download it from PyPI: only point it at projects you trust, or pass a built archive.
     """
-    raise typer.Exit(run_pack_command(target, fmt, fail_on, _top_plain(ctx, plain)))
+    raise typer.Exit(run_pack_command(target, fmt, fail_on, _top_plain(ctx, plain), badge))
 
 
 class FixFormat(StrEnum):
