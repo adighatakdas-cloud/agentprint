@@ -100,12 +100,18 @@ _RELEASE_WORD = re.compile(
     re.I,
 )
 # A script's own folder, as scripts spell it: $(dirname "$0"), ${BASH_SOURCE%/*},
-# $(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd), `dirname $0`.
+# $(dirname -- "$(realpath "$0")"), `dirname $0`, and the folder made absolute:
+# $(cd "$(dirname "$0")" && pwd), and
+# $( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd ).
 _SELF = r"\$(?:0|\{0\}|\{BASH_SOURCE(?:\[0\])?\}|BASH_SOURCE(?:\[0\])?)"
-_DIRNAME = rf"\$\(\s*dirname\s+(?:\"{_SELF}\"|{_SELF})\s*\)|`\s*dirname\s+\"?{_SELF}\"?\s*`"
+_REAL = rf"\$\(\s*(?:realpath|g?readlink\s+-[fe])\s+(?:--\s+)?(?:\"{_SELF}\"|{_SELF})\s*\)"
+_ME = rf"(?:\"{_SELF}\"|{_SELF}|\"{_REAL}\"|{_REAL})"
+_DIRNAME = rf"\$\(\s*dirname\s+(?:--\s+)?{_ME}\s*\)|`\s*dirname\s+(?:--\s+)?\"?{_SELF}\"?\s*`"
 _STRIP = r"\$\{(?:0|BASH_SOURCE(?:\[0\])?)%/\*\}"
+_QUIET = r"(?:\s*(?:&>|[12]?>>?)\s*/dev/null|\s*2>&1)*"  # &> /dev/null, >/dev/null 2>&1
 _OWN_FOLDER = re.compile(
-    rf"\$\(\s*cd\s+(?:\"(?:{_DIRNAME}|{_STRIP})\"|{_DIRNAME}|{_STRIP})\s*(?:&&|;)\s*pwd(?:\s+-P)?\s*\)"
+    rf"\$\(\s*cd\s+(?:-[PL]\s+)?(?:--\s+)?(?:\"(?:{_DIRNAME}|{_STRIP})\"|{_DIRNAME}|{_STRIP})"
+    rf"{_QUIET}\s*(?:&&|;)\s*pwd(?:\s+-P)?\s*\)"
     rf"|{_DIRNAME}|{_STRIP}"
 )
 
@@ -255,9 +261,28 @@ def _scan_large(handle, head: bytes, path: Path, name: str) -> _File:
 # ---- what text names ------------------------------------------------------------------------
 
 
+_PARTS = re.compile(r"(\n|;|&&|\|\|?)")  # where one command ends in scanned text
+_DRY_RUN = re.compile(r"(?<![\w-])(?:--dry-run|--preview)(?![\w-])")
+_GIT_PUSH_N = re.compile(r"(?<![\w.-])git(?![\w-]).*(?<![\w-])push(?![\w-]).*(?<![\w-])-n(?![\w-])")
+
+
+def _without_dry_runs(text: str) -> str:
+    """Scanned text without the commands that are dry runs (`npm publish --dry-run`, `git push
+    -n`): those upload nothing, so naming one is not a reason to say "could not check"."""
+    parts = _PARTS.split(text)
+    return "".join(
+        " "
+        if not _PARTS.fullmatch(part) and (_DRY_RUN.search(part) or _GIT_PUSH_N.search(part))
+        else part
+        for part in parts
+    )
+
+
 def _named(text: str) -> list[Hit]:
-    """The publishes and pushes `_NAMED_PUBLISH` finds in text, in order, once each."""
+    """The publishes and pushes `_NAMED_PUBLISH` finds in text, in order, once each (dry runs
+    left out)."""
     hits: list[Hit] = []
+    text = _without_dry_runs(text)
     for match in _NAMED_PUBLISH.finditer(text):
         tool = next(group for group in match.groups() if group)
         hit = (c.Action.push if tool == "git" else c.Action.publish, tool)
@@ -269,7 +294,7 @@ def _named(text: str) -> list[Hit]:
 def _hits(text: str, cwd: Path) -> list[Hit]:
     """Shell text only scanned, not read as commands: named publishes and backstop hits."""
     hits = _named(text)
-    for risky in c._backstop(text, cwd):
+    for risky in c._backstop(_without_dry_runs(text), cwd):
         if (risky.action, risky.tool) not in hits:
             hits.append((risky.action, risky.tool))
     return hits
@@ -314,9 +339,10 @@ def _step(step: recipes.Step, name: str, cwd: Path, depth: int) -> list[c.Risky]
     if not _is_shell(step.program):
         return _flag(_named(step.text), name, cwd, _CODE)
     text, other = recipes.shell_text(step.text)
+    text = recipes.called_only(text)  # a function's body runs only when it is called
     found = [risky for body in other for risky in _flag(_named(body), name, cwd, _CODE)]
     reading = _reading(cwd)
-    if reading.peeking or reading.bytes >= MAX_BYTES:
+    if reading.peeking or reading.bytes + len(text) > MAX_BYTES:  # charged before it is read
         return found + _flag(_hits(text, cwd), name, cwd, _DEEP)
     if depth >= c.MAX_DEPTH or reading.steps >= MAX_STEPS:
         return found + _peek(text, cwd, min(depth, c.MAX_DEPTH))
@@ -340,15 +366,13 @@ def _peek(text: str, cwd: Path, depth: int) -> list[c.Risky]:
 def too_deep(text: str, cwd: Path) -> list[c.Risky]:
     """`commands.detect` past `MAX_DEPTH` (a `bash -c` or package script at the limit)."""
     reading = _reading(cwd)
-    if reading.peeking or reading.bytes >= MAX_BYTES:
-        return _flag(_hits(text, cwd), _fragment(text), cwd, _NESTED)
+    if reading.peeking or reading.bytes + len(text) > MAX_BYTES:
+        # Labelled with what it runs, never with the text: a line can hold a key (NPM_TOKEN=...).
+        return [
+            c.Risky(action, tool, cwd, unsure=_NESTED, label=_what(action, tool))
+            for action, tool in _hits(text, cwd)
+        ]
     return _peek(text, cwd, c.MAX_DEPTH)
-
-
-def _fragment(text: str) -> str:
-    """A command fragment as a label: its first line, shortened."""
-    line = next((part.strip() for part in text.split("\n") if part.strip()), "")
-    return line if len(line) <= 60 else line[:57] + "..."
 
 
 def _own_folder(text: str, folder: PurePath) -> str:
@@ -370,11 +394,17 @@ def _own_folder(text: str, folder: PurePath) -> str:
 
 
 def _script(
-    arg: str, cwd: Path, depth: int, runner: str | None = None, unknown: str = ""
+    arg: str,
+    cwd: Path,
+    depth: int,
+    runner: str | None = None,
+    unknown: str = "",
+    argv: list[str] | None = None,
 ) -> list[c.Risky]:
     """`./release.sh`, `bash scripts/release.sh`, `python release.py`: what the file runs.
 
-    `unknown` is set when an earlier `cd` went somewhere only known at run time."""
+    `unknown` is set when an earlier `cd` went somewhere only known at run time; `argv` is what
+    the script is given, filled in for "$@", $1... (a wrapper: `./with-env.sh npm publish`)."""
     file = _read(arg, cwd)
     if file is None:
         return _lost(arg, cwd, depth, unknown)
@@ -384,17 +414,49 @@ def _script(
     if file.text is None:
         return _unread(file, cwd, program, _is_shell(program))
     reading = _reading(cwd)
-    key = (file.path, cwd, program, depth, reading.peeking)
+    argv = argv or []
+    key = (file.path, cwd, program, depth, reading.peeking, tuple(argv))
     if key not in reading.results:
-        text = _own_folder(file.text, file.path.parent) if _is_shell(program) else file.text
+        text = file.text
+        if _is_shell(program):
+            text = _with_args(_own_folder(text, file.path.parent), argv)
         reading.results[key] = _step(recipes.Step(text, program), file.name, cwd, depth)
     return list(reading.results[key])
 
 
+_POSITIONAL = re.compile(
+    r'"\$[@*]"|"\$\{[@*]\}"|\$\{[@*]\}|\$[@*]|"\$\{?([1-9])\}?"|\$\{?([1-9])\}?|\$#'
+)
+MAX_ARGS_TEXT = 4096  # what a wrapper's "$@" may grow into, per use
+
+
+def _with_args(text: str, argv: list[str]) -> str:
+    """A shell script with "$@", "$*", $1..$9 and $# filled in from the arguments it was run
+    with, so a wrapper that forwards them is read as what it runs. Left alone with no
+    arguments (and inside a function they'd mean something else, so this is a best effort)."""
+    if not argv:
+        return text
+    everything = shlex.join(argv)
+    if len(everything) > MAX_ARGS_TEXT:
+        return text
+
+    def fill(match: re.Match[str]) -> str:
+        if match.group(0) == "$#":
+            return str(len(argv))
+        number = match.group(1) or match.group(2)
+        if number is None:
+            return everything
+        index = int(number) - 1
+        return shlex.quote(argv[index]) if index < len(argv) else "''"
+
+    return _POSITIONAL.sub(fill, text)
+
+
 def _lost(arg: str, cwd: Path, depth: int, unknown: str) -> list[c.Risky]:
-    """A script a followed file runs after a `cd` to a folder only known at run time, which
-    isn't where agentprint looked: "could not check" when it looks like a release."""
-    if not unknown or depth == 0 or c._UNKNOWABLE.search(arg) or os.path.lexists(cwd / arg):
+    """A script run after a `cd` to a folder only known at run time (on the command line or in
+    a followed file), which isn't where agentprint looked: "could not check" when it looks like
+    a release."""
+    if not unknown or c._UNKNOWABLE.search(arg) or os.path.lexists(cwd / arg):
         return []
     if not _looks_like_release(arg):
         return []
@@ -527,9 +589,9 @@ def _make(args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
     loaded = _makefile(cwd, files)
     if not isinstance(loaded, tuple):
         return loaded
-    mf, name, incomplete = loaded
+    mf, name, incomplete, scanned = loaded
     plan = recipes.make_plan(mf, goals, overrides)
-    found: list[c.Risky] = []
+    found: list[c.Risky] = list(scanned)
     unknown = plan.missing + plan.absent  # may be defined in a makefile agentprint did not read
     asked = goals or [mf.default]
     if incomplete and unknown and _looks_like_release(*unknown, *asked):
@@ -538,16 +600,21 @@ def _make(args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
         found.append(c.Risky(c.Action.publish, "make", cwd, unsure=why, label=label))
     reading = _reading(cwd)
     for raw in plan.raw:
-        if reading.peeking or reading.bytes >= MAX_BYTES:  # scan only, with a small expansion
+        left = MAX_BYTES - reading.bytes
+        if reading.peeking or left <= 0:  # scan only, with a small expansion
             found += _flag(_hits(plan.text(raw, limit=4096), cwd), name, cwd, _DEEP)
-        elif text := plan.text(raw):
+        elif text := plan.text(raw, total=left):  # a .ONESHELL step stops growing at the budget
             found += _step(recipes.Step(text), name, cwd, depth)
     return found
 
 
-def _makefile(cwd: Path, files: list[str]) -> tuple[recipes.Makefile, str, bool] | list[c.Risky]:
-    """The makefile(s) and their includes, read once per command line. A list when they can't
-    be followed: empty (missing, outside the folder, not text) or "could not check"."""
+_Loaded = tuple[recipes.Makefile, str, bool, list["c.Risky"]]
+
+
+def _makefile(cwd: Path, files: list[str]) -> _Loaded | list[c.Risky]:
+    """The makefile(s) and their includes, read once per command line: the rules, the name, whether
+    some include was not read, and what a scan of an include too large to follow found. A list
+    when the makefile itself can't be followed: empty (missing, outside, not text) or a scan."""
     reading = _reading(cwd)
     key = ("make", _real(cwd), tuple(files))
     cached = reading.parsed.get(key)
@@ -558,7 +625,8 @@ def _makefile(cwd: Path, files: list[str]) -> tuple[recipes.Makefile, str, bool]
     incomplete = False
     queue = [(path, False) for path in files]
     read = 0
-    result: tuple[recipes.Makefile, str, bool] | list[c.Risky] = []
+    scanned: list[c.Risky] = []  # includes too large to follow: what their scan found
+    result: _Loaded | list[c.Risky] = []
     while queue and read < MAX_INCLUDES:
         path, optional = queue.pop(0)
         file = _read(path, cwd)
@@ -568,8 +636,12 @@ def _makefile(cwd: Path, files: list[str]) -> tuple[recipes.Makefile, str, bool]
             incomplete = incomplete or not optional
             continue
         if file.text is None:
-            mf, result = None, _unread(file, cwd, "make", True)
-            break
+            if mf is None:  # the makefile itself: only its scan
+                result = _unread(file, cwd, "make", True)
+                break
+            incomplete = True  # an include (or a second -f) too large to follow
+            scanned += _unread(file, cwd, "make", True)
+            continue
         before = len(mf.includes) if mf else 0
         mf = recipes.parse_make(file.text, mf)
         name = name or file.name
@@ -583,7 +655,7 @@ def _makefile(cwd: Path, files: list[str]) -> tuple[recipes.Makefile, str, bool]
                     queue.append((word, optional))
         read += 1
     if mf is not None:
-        result = (mf, name, incomplete or bool(queue))
+        result = (mf, name, incomplete or bool(queue), scanned)
     reading.parsed[key] = result
     return result
 

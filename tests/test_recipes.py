@@ -177,3 +177,19 @@ def test_make_targets_named_by_a_variable_are_filled_in():
 def test_just_attribute_with_a_blank_argument_does_not_crash():
     jf = recipes.parse_just('[script(" ")]\n[confirm("")]\nrelease:\n    npm publish\n')
     assert recipes.just_steps(jf, ["release"])[0] == [Step("npm publish", "sh")]
+
+
+def test_only_called_functions_keep_their_bodies():
+    lib = 'build() { make; }\nrelease() {\n  cd "$PKG"\n  npm publish\n}\n'
+    assert "npm publish" not in recipes.called_only(lib) and "make" not in recipes.called_only(lib)
+    assert recipes.called_only(lib).count("\n") == lib.count("\n")  # line numbers stay put
+    kept = recipes.called_only(lib + "release\n")
+    assert "npm publish" in kept and "make" not in kept  # release is called, build is not
+    chain = "pub() { npm publish; }\nship() {\n  pub\n}\nship\n"
+    assert recipes.called_only(chain) == chain  # ship calls pub
+    one_line = "f() { npm publish; }; f"
+    assert recipes.called_only(one_line) == one_line
+    keyword = "function deploy {\n  git push\n}\nfunction other() { echo; }\ndeploy\n"
+    assert "git push" in recipes.called_only(keyword) and "echo" not in recipes.called_only(keyword)
+    broken = "f() { npm publish\n"
+    assert recipes.called_only(broken) == broken  # no closing brace: left alone

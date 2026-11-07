@@ -853,3 +853,28 @@ def test_a_line_shlex_cannot_read_hides_only_itself(tmp_path, after):
     assert tools("./release.sh", tmp_path) == [(P, "npm")]
     write(tmp_path, "release.sh", 'cd sub\necho "unclosed\nnpm publish\n', 0o755)
     assert found("./release.sh", tmp_path) == [(P, "npm", tmp_path / "sub", "")]  # cd carries on
+
+
+def test_a_oneshell_step_is_charged_against_the_byte_budget_before_it_is_read(tmp_path):
+    big = "V2 = " + "x" * 100 + "\nV1 = " + "$(V2)" * 20 + "\nV0 = " + "$(V1)" * 30 + "\n"
+    write(
+        tmp_path,
+        "Makefile",
+        ".ONESHELL:\n" + big + "all:\n" + "\techo $(V0)\n" * 60 + "\tnpm publish\n",
+    )
+    assert timing.best_of(lambda: detect("make", tmp_path), times=1) < timing.bound(2.0)
+    [risky] = detect("make", tmp_path)  # 3.6 MB once filled in: scanned, not parsed, never OK
+    assert (risky.tool, risky.label) == ("npm", "Makefile") and risky.unsure
+    write(tmp_path, "Makefile", ".ONESHELL:\nall:\n\tcd pkg\n\tnpm publish\n")
+    assert found("make", tmp_path) == [(P, "npm", tmp_path / "pkg", "")]  # small: followed
+
+
+def test_a_dry_run_found_by_a_scan_is_not_could_not_check(tmp_path):
+    for i in range(1, 6):
+        write(tmp_path, f"s{i}.sh", f"./s{i + 1}.sh\n", 0o755)
+    write(tmp_path, "s6.sh", "npm publish --dry-run\ngit push -n origin main\n", 0o755)
+    assert detect("./s1.sh", tmp_path) == []  # scanned one level further: dry runs upload nothing
+    write(tmp_path, "s6.sh", "npm publish --dry-run && npm publish\n", 0o755)
+    assert labelled("./s1.sh", tmp_path) == [(P, "npm", deep("npm publish"), "s6.sh")]
+    write(tmp_path, "check.py", "subprocess.run(['npm', 'publish', '--dry-run'])\n")
+    assert detect("python check.py", tmp_path) == []

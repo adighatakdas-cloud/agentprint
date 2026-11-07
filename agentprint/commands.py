@@ -154,7 +154,6 @@ _BACKSTOP = re.compile(
     rf"(?:{_OPTION})*\s+publish\b|(twine)(?:{_OPTION})*\s+upload\b"
     rf"|(git)(?:{_OPTION}(?:{_OPTION_VALUE})?)*\s+push\b)"
 )
-_ANSI_C_QUOTE = re.compile(r"\$'(?:[^'\\]|\\.)*'")  # $'it\'s': shlex can't read the \'
 
 
 def detect(command: str, cwd: Path, _depth: int = 0) -> list[Risky]:
@@ -226,11 +225,10 @@ def _parse_lines(command: str, cwd: Path, depth: int, seen: set) -> list[Risky]:
 
 def _parse_into(command: str, where: _Where, depth: int, seen: set, found: list[Risky]) -> _Where:
     """Add what `command` publishes to `found`; returns where the shell is after it."""
-    text = _FD_DUP.sub(" ", _ANSI_C_QUOTE.sub("''", command).replace("\n", " ; "))
-    text = _AMP_REDIRECT.sub(" > ", text)
-    lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|()")
-    lexer.whitespace_split = True
-    tokens = list(lexer)
+    try:
+        tokens = _tokens(command)
+    except ValueError:  # $'it\'s' is a quote shlex can't read: try once without it
+        tokens = _tokens(_without_ansi_c(command))
     state = where
     stack: list[_Where] = []
     segment: list[str] = []
@@ -247,6 +245,46 @@ def _parse_into(command: str, where: _Where, depth: int, seen: set, found: list[
                 if stack:
                     state = stack.pop()
     return state
+
+
+def _tokens(command: str) -> list[str]:
+    text = _FD_DUP.sub(" ", command.replace("\n", " ; "))
+    text = _AMP_REDIRECT.sub(" > ", text)
+    lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|()")
+    lexer.whitespace_split = True
+    return list(lexer)
+
+
+def _without_ansi_c(command: str) -> str:
+    """`command` with each ANSI-C `$'...'` string outside quotes made `''`. Only a `$'` that is
+    not inside a quote starts one: in `grep 'v1$' x` the `$'` is a regex end and a closing quote."""
+    out: list[str] = []
+    quote = ""
+    i = 0
+    while i < len(command):
+        char = command[i]
+        if quote:
+            if char == "\\" and quote == '"':
+                out.append(command[i : i + 2])
+                i += 2
+                continue
+            quote = "" if char == quote else quote
+        elif char == "\\":
+            out.append(command[i : i + 2])
+            i += 2
+            continue
+        elif command.startswith("$'", i):
+            i += 2
+            while i < len(command) and command[i] != "'":
+                i += 2 if command[i] == "\\" else 1
+            out.append("''")
+            i += 1
+            continue
+        elif char in "'\"":
+            quote = char
+        out.append(char)
+        i += 1
+    return "".join(out)
 
 
 @dataclass(frozen=True)
@@ -276,17 +314,20 @@ def _segment(words: list[str], where: _Where, found: list[Risky], depth: int, se
         return where
     program, args = Path(words[0]).name, words[1:]
     if program in {"cd", "pushd"}:
-        return _chdir(where, args[0] if args else "~")
+        return _chdir(where, _cd_target(args))
     before = len(found)
     if program in SHELLS:
         script = _shell_script(args)
         if script is not None:
             found.extend(detect(script, where.cwd, depth + 1))
         elif (file := following._shell_file_arg(args)) is not None:
-            found.extend(following._script(file, where.cwd, depth, program, where.unknown))
+            rest = args[args.index(file) + 1 :]  # what the script gets as "$@"
+            found.extend(following._script(file, where.cwd, depth, program, where.unknown, rest))
     elif words[0] in {"source", "."}:
         if args:
-            found.extend(following._script(args[0], where.cwd, depth, "sh", where.unknown))
+            found.extend(
+                following._script(args[0], where.cwd, depth, "sh", where.unknown, args[1:])
+            )
     elif program == "eval":
         found.extend(detect(" ".join(args), where.cwd, depth + 1))
     elif program == "git":
@@ -306,7 +347,7 @@ def _segment(words: list[str], where: _Where, found: list[Risky], depth: int, se
     elif following._interpreter(program):
         found.extend(following._interpreted(program, args, where.cwd, depth))
     elif "/" in words[0]:  # ./release.sh, scripts/release, /abs/path/in/project/x
-        found.extend(following._script(words[0], where.cwd, depth, None, where.unknown))
+        found.extend(following._script(words[0], where.cwd, depth, None, where.unknown, args))
     if where.unknown:
         found[before:] = [replace(r, unsure=r.unsure or where.unknown) for r in found[before:]]
     return where
@@ -357,6 +398,16 @@ def _two_word_launcher(head: str, words: list[str]) -> bool:
     if head == "pipx":
         return len(words) > 2 and words[1] == "run"
     return bool(_PYTHON.match(head)) and len(words) > 2 and words[1] == "-m"
+
+
+def _cd_target(args: list[str]) -> str:
+    """The folder in `cd [-L|-P|-e|-@] [--] DIR` (home when none)."""
+    for i, arg in enumerate(args):
+        if arg == "--":
+            return args[i + 1] if i + 1 < len(args) else "~"
+        if arg == "-" or not arg.startswith("-"):
+            return arg
+    return "~"
 
 
 def _chdir(where: _Where, target: str) -> _Where:

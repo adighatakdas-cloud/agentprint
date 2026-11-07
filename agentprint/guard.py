@@ -28,7 +28,8 @@ from .gitcheck import check_push
 from .models import CannotCheck, Finding
 from .pack import PackageListing, PackError, read_archive, read_npm_project
 from .report import FailOn, exit_code, to_agent
-from .sanitize import clean
+from .sanitize import clean, quote
+from .secrets import find_secrets, redact
 
 ARCHIVES = (".whl", ".tar.gz", ".zip", ".tgz")
 DEFAULT_DIST = ("dist/*",)
@@ -148,11 +149,24 @@ def _decide(command: str, risky: list[Risky], fail_on: FailOn, strict: bool = Fa
 
 def _could_not(item: Risky, exc: Exception) -> str:
     """One "could not check" line. When it is about a file or command (`item.label`), it names
-    that and says what to do instead."""
+    that (as a quoted value) and says what to do instead. Labels and reasons can hold text from
+    the command or its files, so every key in them is cut to its redact() stub first."""
+    why = clean(_masked(str(exc)))
     if item.label:
-        return f"agentprint could not check `{clean(item.label)}`: {clean(str(exc))}. {NEXT_STEP}"
+        return f"agentprint could not check {quote(_masked(item.label))}: {why}. {NEXT_STEP}"
     what = "git push" if item.action is Action.push else f"{item.tool} publish"
-    return f"agentprint could not check this {what}: {clean(str(exc))}."
+    return f"agentprint could not check this {what}: {why}."
+
+
+def _masked(text: str) -> str:
+    """`text` with every key `find_secrets` sees replaced by its first 4 characters and length."""
+    out: list[str] = []
+    end = 0
+    for match in sorted(find_secrets(text), key=lambda m: (m.start, -m.end)):
+        if match.start >= end:
+            out += [text[end : match.start], redact(match.value)]
+            end = match.end
+    return "".join([*out, text[end:]])
 
 
 def _built(cwd: Path, patterns: tuple[str, ...]) -> list[PackageListing]:

@@ -6,6 +6,7 @@ import json
 import pytest
 
 from agentprint.guard import STRICT_HINT, evaluate
+from agentprint.secrets import redact
 from tests import fakes
 from tests.test_guard import LEAKY, _tgz
 
@@ -60,7 +61,7 @@ def test_a_script_that_does_not_publish_is_not_our_business(tmp_path):
 
 RELEASE_PY = 'import subprocess\nsubprocess.run(["twine", "upload", "dist/*"])\n'
 COULD_NOT = (
-    "agentprint could not check `scripts/release.py`: it runs `twine upload` from code "
+    'agentprint could not check "scripts/release.py": it runs `twine upload` from code '
     "agentprint does not read as commands. Run the publish or push as its own command, so "
     "agentprint can check it."
 )
@@ -78,7 +79,7 @@ def test_python_release_script_warns_by_default_and_blocks_in_strict_mode(tmp_pa
 def test_a_publish_named_only_in_a_python_comment_is_never_a_block_by_default(tmp_path):
     _script(tmp_path, "build.py", "# CI runs npm publish after this step\nprint('built')\n")
     verdict = evaluate("python build.py", tmp_path)
-    assert not verdict.block and "could not check `build.py`" in verdict.warning
+    assert not verdict.block and 'could not check "build.py"' in verdict.warning
 
 
 def test_a_large_script_that_names_a_publish_warns_or_blocks_in_strict_mode(tmp_path):
@@ -86,7 +87,7 @@ def test_a_large_script_that_names_a_publish_warns_or_blocks_in_strict_mode(tmp_
     default = evaluate("./release.sh", tmp_path)
     assert not default.block
     assert default.warning == (
-        "agentprint could not check `release.sh`: it is larger than 64 KB and names "
+        'agentprint could not check "release.sh": it is larger than 64 KB and names '
         "`npm publish`, so agentprint did not follow it. Run the publish or push as its own "
         "command, so agentprint can check it."
     )
@@ -228,6 +229,14 @@ def test_a_bad_quote_does_not_hide_the_rest_of_a_script(leaky, files):
         'cd "${0%/*}"',
         'cd "$(cd "$(dirname "$0")" && pwd)"',
         'HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\ncd "$HERE"',
+        'cd -- "$(dirname -- "$0")"',
+        'cd -P "$(dirname "$0")"',
+        'cd "$(dirname "$(realpath "$0")")"',
+        'DIR=$(dirname "$(readlink -f "$0")")\ncd "$DIR"',
+        'cd "$(dirname "${0}")"',
+        'cd "$(dirname "$BASH_SOURCE")"',
+        'D=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )\ncd "$D"',
+        'D="$(cd "$(dirname "$0")" >/dev/null 2>&1 && pwd)"\ncd "$D"',
     ],
 )
 def test_cd_to_the_scripts_own_folder(leaky, line):
@@ -252,7 +261,7 @@ def test_a_missing_script_after_an_unknown_cd_is_could_not_check_when_it_looks_l
         },
     )
     verdict = evaluate("./release.sh", root)
-    assert not verdict.block and "could not check `./publish.sh`" in verdict.warning
+    assert not verdict.block and 'could not check "./publish.sh"' in verdict.warning
     assert evaluate("./build.sh", root) is None
 
 
@@ -267,7 +276,7 @@ def test_could_not_check_names_the_file_and_the_next_step():
         Action.publish, "sh", Path("/x"), unsure="agentprint could not open it", label="ship.sh"
     )
     assert _could_not(item, CannotCheck(item.unsure)) == (
-        "agentprint could not check `ship.sh`: agentprint could not open it. Run the publish or "
+        'agentprint could not check "ship.sh": agentprint could not open it. Run the publish or '
         "push as its own command, so agentprint can check it."
     )
     plain = Risky(Action.push, "git", Path("/x"), unsure="its folder is unknown")
@@ -296,3 +305,204 @@ def test_a_script_with_windows_line_ends_is_read_the_same(leaky):
         f"#!/bin/sh\r\n{line}\r\n./publish-npm.sh\r\n".encode()
     )
     assert evaluate("./scripts/release.sh", leaky).block
+
+
+# ---- a `$'` inside an ordinary quote is a regex end, not an ANSI-C string --------------------
+
+CLEAN = {
+    "package/package.json": b'{"name": "demo", "version": "1.0.0"}',
+    "package/index.js": b"1\n",
+}
+
+
+@pytest.mark.parametrize(
+    ("command", "script"),
+    [
+        ("grep -q '1.0.0$' CHANGELOG.md && npm publish demo-1.0.0.tgz --tag 'next'", None),
+        ("./release.sh", "#!/bin/sh\nif grep -q 'release$' notes.txt; then\n"
+         "  npm publish demo-1.0.0.tgz\nfi\necho 'a' 'b'\n"),
+    ],
+    ids=["command-line", "script"],
+)  # fmt: skip
+def test_a_dollar_at_the_end_of_a_quoted_regex_is_just_text(leaky, command, script):
+    if script:
+        _script(leaky, "release.sh", script)
+    assert evaluate(command, leaky).block
+
+
+@pytest.mark.parametrize(
+    ("command", "script"),
+    [
+        ("grep -q 'v1$' CHANGELOG.md && cd pkg && echo 'ok'; npm publish demo-1.0.0.tgz", None),
+        ("./release.sh", "#!/bin/sh\nset -e\ngrep -q 'v1$' CHANGELOG.md && cd pkg && echo 'ok'\n"
+         "npm publish demo-1.0.0.tgz\n"),
+    ],
+    ids=["command-line", "script"],
+)  # fmt: skip
+def test_a_dollar_quote_does_not_swallow_a_cd(tmp_path, command, script):
+    (tmp_path / "pkg").mkdir()
+    _tgz(tmp_path / "demo-1.0.0.tgz", CLEAN)  # the folder it would wrongly check: clean
+    _tgz(
+        tmp_path / "pkg" / "demo-1.0.0.tgz", {**CLEAN, "package/.claude/settings.local.json": LEAKY}
+    )
+    if script:
+        _script(tmp_path, "release.sh", script)
+    assert evaluate(command, tmp_path).block
+
+
+def test_git_push_after_a_quoted_regex_is_read_exactly(tmp_path):
+    from agentprint.commands import Action, detect
+
+    want = [(Action.push, "git", tmp_path, "")]
+    got = detect("grep -c 'x$' a.txt; git push origin 'main'", tmp_path)
+    assert [(r.action, r.tool, r.cwd, r.unsure) for r in got] == want
+    _script(
+        tmp_path,
+        "tag.sh",
+        "#!/bin/sh\ngit tag -l | grep -q '^v1$' || exit 1\ngit push origin 'main'\n",
+    )
+    got = detect("./tag.sh", tmp_path)
+    assert [(r.action, r.tool, r.cwd, r.unsure) for r in got] == want
+
+
+# ---- an include too large to follow does not hide the makefile's own recipes ----------------
+
+DEPS = "".join(f"obj/f{i}.o: src/f{i}.c include/common.h include/util.h\n" for i in range(1500))
+
+
+@pytest.mark.parametrize("include", ["include deps.mk", "-include deps.mk", "sinclude deps.mk"])
+def test_a_large_include_keeps_the_makefiles_own_recipes(leaky, include):
+    _repo(
+        leaky,
+        {
+            "deps.mk": DEPS,
+            "Makefile": f"{include}\nall:\n\tcc -o app main.c\nrelease:\n\t{PUBLISH}",
+        },
+    )
+    assert evaluate("make release", leaky).block
+    assert evaluate("make all", leaky) is None  # and no wolf from the include's own scan
+
+
+def test_a_large_include_or_second_makefile_that_names_a_publish_is_scanned(tmp_path):
+    from agentprint.commands import detect
+
+    _repo(
+        tmp_path,
+        {"deps.mk": DEPS + "ship:\n\tgit push\n", "Makefile": "include deps.mk\nall:\n\techo\n"},
+    )
+    got = detect("make all", tmp_path)
+    assert [(r.tool, r.label) for r in got] == [("git", "deps.mk")] and got[0].unsure
+    _repo(tmp_path, {"a.mk": "release:\n\techo hi\n"})
+    assert [(r.tool, r.label) for r in detect("make -f a.mk -f deps.mk release", tmp_path)] == [
+        ("git", "deps.mk")
+    ]
+
+
+# ---- never print a key ------------------------------------------------------------------------
+
+
+def test_a_key_on_a_line_past_the_depth_limit_is_never_printed(tmp_path):
+    key = fakes.NEW["npm"]
+    files = {f"s{i}.sh": f"./s{i + 1}.sh\n" for i in range(1, 5)}
+    files.update(
+        {
+            "s5.sh": "npm run release\n",
+            "package.json": json.dumps({"scripts": {"release": f"NPM_TOKEN={key} npm publish"}}),
+        }
+    )
+    root = _repo(tmp_path, files)
+    for verdict in (evaluate("./s1.sh", root), evaluate("./s1.sh", root, strict=True)):
+        text = (verdict.warning or "") + verdict.reason
+        assert key not in text and key[4:] not in text and key[:5] not in text
+    assert 'could not check "npm publish": it is nested deeper' in evaluate("./s1.sh", root).warning
+
+
+def test_a_key_in_any_could_not_check_reason_is_cut_to_its_stub(tmp_path):
+    key = fakes.GITHUB
+    verdict = evaluate(f'cd "$HOME/{key}" && npm publish', tmp_path)
+    assert key not in verdict.warning and redact(key) in verdict.warning
+    _repo(tmp_path, {"run.sh": f'cd "$X/{key}"\n./release.sh\n'})
+    verdict = evaluate("./run.sh", tmp_path)
+    assert key not in verdict.warning and redact(key) in verdict.warning
+
+
+SCRIPT_DIR = 'D=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )'
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        SCRIPT_DIR + '\n"$D/publish-npm.sh"',
+        'HERE="$(cd "$(dirname "$0")" && pwd)"\n"$HERE"/publish-npm.sh',
+        '"$(dirname "$0")"/publish-npm.sh',
+        '"${BASH_SOURCE%/*}/publish-npm.sh"',
+        'source "$(dirname "$0")/publish-npm.sh"',
+    ],
+)
+def test_a_sibling_script_named_through_the_scripts_own_folder(leaky, line):
+    root = _repo(
+        leaky,
+        {
+            "scripts/release.sh": f"#!/bin/bash\n{line}\n",
+            "scripts/publish-npm.sh": PUBLISH,  # runs in the caller's folder
+        },
+    )
+    assert evaluate("bash scripts/release.sh", root).block
+
+
+@pytest.mark.parametrize("cd", ["cd -- pkg", "cd -P pkg", "cd -L pkg", "pushd -- pkg"])
+def test_cd_options_come_before_the_folder(tmp_path, cd):
+    from agentprint.commands import Action, detect
+
+    got = detect(f"{cd} && npm publish", tmp_path)
+    assert [(r.action, r.cwd, r.unsure) for r in got] == [(Action.publish, tmp_path / "pkg", "")]
+
+
+def test_a_missing_release_script_after_an_unknown_cd_on_the_command_line(tmp_path):
+    verdict = evaluate('cd "$PKG" && ./publish.sh', tmp_path)
+    assert not verdict.block and 'could not check "./publish.sh"' in verdict.warning
+    assert evaluate('cd "$PKG" && ./publish.sh', tmp_path, strict=True).block
+    assert evaluate('cd "$BUILD" && ./configure', tmp_path) is None  # never cry wolf
+
+
+# ---- wrappers that forward their arguments ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("files", "command"),
+    [
+        ({"with-env.sh": '#!/bin/sh\nset -e\nexport FOO=1\nexec "$@"\n'},
+         "./with-env.sh npm publish demo-1.0.0.tgz"),
+        ({"npmw": '#!/bin/sh\nnpm "$@"\n'}, "./npmw publish demo-1.0.0.tgz"),
+        ({"wrap.sh": '#!/bin/bash\n"$@"\n'}, "bash wrap.sh npm publish demo-1.0.0.tgz"),
+        ({"pub.sh": '#!/bin/sh\nnpm publish "$1"\n'}, "./pub.sh demo-1.0.0.tgz"),
+        ({"run.sh": "#!/bin/sh\nexec $*\n"}, "./run.sh npm publish demo-1.0.0.tgz"),
+    ],
+    ids=["exec-all", "npm-all", "bash-script", "first-arg", "star"],
+)  # fmt: skip
+def test_a_wrapper_is_followed_with_the_arguments_it_is_given(leaky, files, command):
+    _repo(leaky, files)
+    assert evaluate(command, leaky).block
+
+
+def test_a_wrapper_given_nothing_to_publish_stays_quiet(tmp_path):
+    _repo(tmp_path, {"with-env.sh": '#!/bin/sh\nexec "$@"\n'})
+    assert evaluate("./with-env.sh npm test", tmp_path) is None
+    assert evaluate("./with-env.sh", tmp_path) is None
+
+
+# ---- a function runs only when it is called -------------------------------------------------
+
+
+def test_sourcing_a_library_does_not_run_its_functions(tmp_path):
+    lib = 'build() { make; }\nrelease() { cd "$PKG"; npm publish; }\n'
+    _repo(tmp_path, {"scripts/lib.sh": lib})
+    assert evaluate("source scripts/lib.sh && build", tmp_path) is None
+    assert evaluate("source scripts/lib.sh && build", tmp_path, strict=True) is None
+
+
+def test_a_function_the_script_calls_is_read(leaky):
+    script = f"#!/bin/sh\nship() {{\n  {PUBLISH}}}\nlint() {{ git push; }}\nship\n"
+    _repo(leaky, {"release.sh": script})
+    verdict = evaluate("./release.sh", leaky)
+    assert verdict.block and "git push" not in verdict.reason
