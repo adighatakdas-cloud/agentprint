@@ -117,11 +117,18 @@ _AMP_REDIRECT = re.compile(r"&>>?")  # &>file sends both streams to file
 _UNKNOWABLE = re.compile(r"[$`*?]")  # variables, substitutions and globs: known only at run time
 _BACKTICK = re.compile(r"`([^`]*)`")
 _DOLLAR_PAREN = re.compile(r"\$\(([^()]*)\)")
-# Backstop: a publishing word at a command position of the unquoted text.
+# Backstop: a publishing word at a command position of the unquoted text. Linear time even on
+# a 64 KB script: words stop at separators (each separator is a command position of its own),
+# an assignment's value crosses at most four `$(...)`/`${...}`, and nothing backtracks into
+# whitespace; the last newline of a run of blank lines is the command position.
+_WORD = r"[^\s;&|(){}!]"
+_VALUE_CHAR = r"(?:[^\s;&|(){}!$]|\$(?![({]))"
+_SUBSTITUTION = r"(?:\$\([^()\s]{0,64}\)|\$\{[^{}\s]{0,64}\})"
 _COMMAND_POSITION = (
-    r"(?:^|[;&|(){}!\n]|\b(?:do|then|else|elif|if|while|until|exec|xargs|time|nohup|sudo|env"
-    r"|command|eval|watch|corepack|npx|uvx|bunx|pnpx)\s|\btimeout\s+\S+\s)\s*"
-    r"(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:\S*/)?"
+    r"(?:^|[;&|(){}!]|\n(?![ \t]*\n)|\b(?:do|then|else|elif|if|while|until|exec|xargs|time|nohup"
+    r"|sudo|env|command|eval|watch|corepack|npx|uvx|bunx|pnpx)\s|\btimeout\s+\S+\s)\s*+"
+    rf"(?:[A-Za-z_][A-Za-z0-9_]*={_VALUE_CHAR}*+(?:{_SUBSTITUTION}{_VALUE_CHAR}*+){{0,4}}+\s++)*+"
+    rf"(?:{_WORD}*/)?"
 )
 _BACKSTOP = re.compile(
     _COMMAND_POSITION + r"(?:(npm|pnpm|yarn|bun|uv|poetry|hatch|flit|changeset|lerna)"
