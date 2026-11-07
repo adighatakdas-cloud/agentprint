@@ -41,6 +41,7 @@ HOOK_FILES = {
     "copilot": PLUGIN / "copilot" / "hooks.json",
     "gemini": ROOT / "hooks" / "hooks.json",
     "cursor": PLUGIN / "cursor" / "hooks" / "hooks.json",
+    "antigravity": PLUGIN / "antigravity" / "hooks.json",
 }
 
 
@@ -381,3 +382,17 @@ def test_cursor_hook_matcher_only_fires_for_publish_and_push():
     assert re.search(entry["matcher"], "npm publish")
     assert re.search(entry["matcher"], "git push origin main")
     assert not re.search(entry["matcher"], "git stash push")
+
+
+# ---- Antigravity ---------------------------------------------------------------------------------
+
+
+def test_antigravity_plugin():
+    folder = PLUGIN / "antigravity"
+    manifest = _load(folder / "plugin.json")
+    assert manifest["$schema"] == "https://antigravity.google/schemas/v1/plugin.json"
+    assert manifest["name"] == "agentprint" and manifest["version"] == __version__
+    hooks = _load(folder / "hooks.json")["agentprint"]["PreToolUse"]
+    assert hooks[0]["matcher"] == "run_command"
+    rule = (folder / "rules" / "agentprint.md").read_text()
+    assert yaml.safe_load(rule.split("---\n")[1])["trigger"] == "always_on"

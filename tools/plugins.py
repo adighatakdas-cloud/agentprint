@@ -221,6 +221,31 @@ def cursor() -> dict[Path, str]:
     }
 
 
+def antigravity() -> dict[Path, str]:
+    """https://antigravity.google/docs/plugins (manifest). The page names no hook, MCP or rule
+    file, so these mirror the global ~/.gemini/config folder that agentprint install writes."""
+    from agentprint.integrations.antigravity import RULE
+
+    folder = PLUGIN / "antigravity"
+    manifest = {
+        "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+        "name": NAME,
+        "displayName": NAME,
+        "version": VERSION,
+        "description": DESCRIPTION,
+    }
+    rule = RULE.replace(
+        "<!-- Written by `agentprint install`; `agentprint uninstall` deletes this file. -->",
+        f"<!-- Part of the agentprint plugin. {GENERATED} -->",
+    )
+    return {
+        folder / "plugin.json": _json(manifest),
+        folder / "hooks.json": install_text("antigravity", "hook"),
+        folder / "mcp_config.json": _json({"mcpServers": {NAME: mcp_server("antigravity")}}),
+        folder / "rules" / "agentprint.md": rule,
+    }
+
+
 def files() -> dict[Path, str]:
     out: dict[Path, str] = {}
     for part in (
@@ -229,6 +254,7 @@ def files() -> dict[Path, str]:
         copilot,
         gemini,
         cursor,
+        antigravity,
     ):
         out |= part()
     return out
