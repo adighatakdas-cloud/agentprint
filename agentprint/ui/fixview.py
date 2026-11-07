@@ -60,6 +60,8 @@ def _what(row: Row) -> Text:
         return Text(f"{len(row.changes)} files → owner only")
     if row.kind == "lock" and first.old_mode is not None:
         return Text(f"{first.old_mode:04o} → {first.old_mode & ~0o077:04o}, owner only")
+    if row.kind == "lock":  # Windows: an access list, not a mode
+        return Text("access list → owner, SYSTEM and Administrators only")
     return Text(clean(first.shown))
 
 

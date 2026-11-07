@@ -21,6 +21,7 @@ AGENTPRINT = ["C:/Tools/agentprint.exe"]
 @pytest.fixture
 def win(monkeypatch):
     monkeypatch.setattr(platform, "is_windows", lambda: True)
+    monkeypatch.setattr(platform, "_RUN_NOTES", {})
     monkeypatch.setattr(install, "resolve_agentprint", lambda: list(AGENTPRINT))
 
 
@@ -186,6 +187,8 @@ def test_every_integration_has_hook_edits_the_gate_can_see(tmp_path):
 
 
 # ---- what was not checked travels with the result --------------------------------------------
+# AP008 reads Windows access lists now, so a sweep that could read them all has no note; the
+# notes for files it could not check are tested in tests/test_windows_acl.py.
 
 
 @pytest.fixture
@@ -205,15 +208,11 @@ def _cli(*args):
 
 
 @pytest.mark.parametrize("fmt", ["agent", "json", "table"])
-def test_scan_says_permissions_were_not_checked_on_windows(win, proj, fmt):
+def test_scan_on_windows_no_longer_says_permissions_were_not_checked(win, proj, fmt):
     out = _cli("scan", str(proj), "--no-home", "--format", fmt).output
-    assert "not checked" in out.lower() or "not_checked" in out
-    assert "AP008" in out and "Windows" in out
-    if fmt == "json":
-        assert json.loads(out)["not_checked"] == [platform.NOT_CHECKED_WINDOWS]
+    assert "not_checked" not in out and "not checked" not in out.lower()
     if fmt == "agent":
-        assert out.splitlines()[0] == "agentprint: OK"  # line 1 stays the verdict
-        assert f"not_checked: {platform.NOT_CHECKED_WINDOWS}" in out
+        assert out.splitlines()[0] == "agentprint: OK"
 
 
 @pytest.mark.parametrize("fmt", ["agent", "json", "table"])
@@ -224,11 +223,9 @@ def test_scan_on_posix_has_no_not_checked_note(monkeypatch, proj, fmt):
 
 
 @pytest.mark.parametrize("fmt", ["agent", "json", "table"])
-def test_fix_says_permissions_were_not_checked_on_windows(win, proj, fmt):
+def test_fix_on_windows_no_longer_says_permissions_were_not_checked(win, proj, fmt):
     out = _cli("fix", str(proj), "--no-home", "--format", fmt).output
-    assert "AP008" in out and "Windows" in out
-    if fmt == "json":
-        assert json.loads(out)["not_checked"] == [platform.NOT_CHECKED_WINDOWS]
+    assert "not_checked" not in out and "not checked" not in out.lower()
 
 
 def test_fix_on_posix_has_no_not_checked_note(monkeypatch, proj):
@@ -237,12 +234,11 @@ def test_fix_on_posix_has_no_not_checked_note(monkeypatch, proj):
     assert "not_checked" not in json.loads(out)
 
 
-def test_mcp_scan_tool_says_permissions_were_not_checked_on_windows(win, proj):
+def test_mcp_scan_tool_on_windows_no_longer_says_permissions_were_not_checked(win, proj):
     from tests.test_mcp import call
 
     text = call("scan_secrets", path=str(proj))
-    assert text.splitlines()[0] == "agentprint: OK"
-    assert f"not_checked: {platform.NOT_CHECKED_WINDOWS}" in text
+    assert text.splitlines()[0] == "agentprint: OK" and "not_checked" not in text
 
 
 def test_mcp_scan_tool_on_posix_has_no_note(monkeypatch, proj):

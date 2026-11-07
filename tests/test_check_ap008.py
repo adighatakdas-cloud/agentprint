@@ -8,6 +8,7 @@ import sys
 
 import pytest
 
+from agentprint import platform
 from agentprint.agents.base import HomeArtifact
 from agentprint.checks import SCAN_CHECKS
 from agentprint.checks import ap008_readable_by_others as ap008
@@ -235,11 +236,17 @@ def test_sqlite_write_ahead_log_is_checked_too(box):
     assert "state.db-wal" in finding.detail
 
 
-def test_windows_is_skipped(box, monkeypatch):
+def test_windows_judges_the_access_list_not_the_mode(box, monkeypatch):
+    # Mode 0644 means nothing on Windows. With no Windows API to read the access list (as on
+    # this OS), the file is not reported and the sweep says it could not be checked. The
+    # Windows rules themselves: tests/test_winacl.py and tests/test_windows_acl.py.
     f = _file(box / ".w" / "auth.json")
     _open(box / ".w")
     monkeypatch.setattr(ap008, "_is_windows", lambda: True)
+    monkeypatch.setattr(platform, "_RUN_NOTES", {})
     assert AP008.run([_home("codex", Kind.CREDENTIALS, f, box)]) == []
+    [note] = platform.scan_notes()
+    assert note.startswith("AP008 could not check who can read 1 agent file on Windows")
 
 
 def test_hermes_home_with_default_modes_end_to_end(box):

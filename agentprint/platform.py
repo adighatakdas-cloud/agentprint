@@ -1,7 +1,7 @@
 """Which operating system agentprint runs on, in one place so tests can swap it.
 
 Tests monkeypatch `is_windows` (never `os.name`, which breaks pathlib), and callers reach it as
-`platform.is_windows()` at call time. What cannot be checked on Windows yet travels with the result
+`platform.is_windows()` at call time. What a sweep could not check travels with the result
 (scan_notes), so a silent no-op never reads as a clean result.
 """
 
@@ -13,7 +13,6 @@ import sys
 from pathlib import Path, PurePath
 from typing import Any
 
-NOT_CHECKED_WINDOWS = "File permissions (AP008) are not checked on Windows yet."
 NO_HOOKS_WINDOWS = "Hooks are not installed on Windows yet; the MCP server and the note are."
 
 
@@ -40,9 +39,23 @@ def use_utf8_streams() -> None:
                 reconfigure(encoding="utf-8", errors=errors)
 
 
+# What the latest sweep's checks could not look at, by check id (AP008 on Windows: files whose
+# access list could not be read). Each check sets or clears its own note on every run.
+_RUN_NOTES: dict[str, str] = {}
+
+
+def set_run_note(check_id: str, note: str | None) -> None:
+    """A check says what it could not check in this sweep (None: it checked everything)."""
+    if note is None:
+        _RUN_NOTES.pop(check_id, None)
+    else:
+        _RUN_NOTES[check_id] = note
+
+
 def scan_notes() -> tuple[str, ...]:
-    """What a sweep cannot check on this machine; empty on POSIX. Shown in every output format."""
-    return (NOT_CHECKED_WINDOWS,) if is_windows() else ()
+    """What the latest sweep could not check on this machine; empty when it checked everything
+    (always so on POSIX). Shown in every output format."""
+    return tuple(_RUN_NOTES[check_id] for check_id in sorted(_RUN_NOTES))
 
 
 def drive_safe_parts(path: PurePath) -> tuple[str, ...]:
