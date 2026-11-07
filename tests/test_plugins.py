@@ -251,6 +251,22 @@ def test_failing_uvx_fails_open_and_never_blocks(agent, tmp_path):
 
 
 @pytest.mark.posix_only
+def test_strict_mode_reaches_the_guard_through_the_plugin_hook(tmp_path):
+    bin_dir = tmp_path / "bin"
+    _real_guard_uvx(bin_dir)
+    env = {"HOME": str(tmp_path), "PATH": str(bin_dir), "AGENTPRINT_STRICT": "1"}
+    strict = subprocess.run(
+        _hook_command("claude-code"), shell=True, input="not json", capture_output=True,
+        text=True, env=env, timeout=120,
+    )  # fmt: skip
+    decision = json.loads(strict.stdout)["hookSpecificOutput"]
+    assert strict.returncode == 0 and decision["permissionDecision"] == "deny"
+    assert "strict mode" in decision["permissionDecisionReason"]
+    relaxed = _run(_hook_command("claude-code"), tmp_path, str(bin_dir), "not json")
+    assert "permissionDecision" not in relaxed.stdout  # default: fail open, with a warning
+
+
+@pytest.mark.posix_only
 def test_guard_block_exit_becomes_the_agents_exit_2(tmp_path):
     bin_dir = tmp_path / "bin"
     _fake_uvx(bin_dir, f"while read -r _; do :; done; echo blocked; exit {BLOCK_EXIT}")
