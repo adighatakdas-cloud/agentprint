@@ -409,6 +409,16 @@ def test_base64_blob_count_is_capped():
     assert find_hidden(f"{filler} {secret}") == []  # past MAX_BLOBS: not decoded
 
 
+def test_short_base64_shares_the_blob_budget_after_the_long_ones():
+    short = _b64(fakes.AWS)
+    assert len(secrets.hidden_spans(" ".join([short] * 300))) == secrets.MAX_BLOBS
+    # Long tokens are read first, so short ones never take their place in the budget.
+    assert find_hidden(" ".join([short] * 300) + " " + _b64(f"key {KEY}"))[-1].value == KEY
+    # A short token that starts like a key but decodes to binary is skipped.
+    binary = base64.b64encode(b"AKI" + bytes(range(1, 22))).decode()
+    assert binary.startswith(secrets._SHORT_BASE64_LEADS) and find_hidden(binary) == []
+
+
 def test_base64_decodes_at_most_64_kb_per_blob():
     assert secrets.MAX_BLOB_CHARS <= 64 * 1024
     late = _b64("x" * 70_000 + f" {KEY}")
