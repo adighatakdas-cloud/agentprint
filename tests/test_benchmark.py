@@ -46,9 +46,15 @@ def test_labels_are_consistent(tmp_path):
         )  # one file per case
         assert c.positive == (not c.category.startswith("neg-"))
     assert all(len(v) == 1 for v in by_cat.values())  # no category mixes labels
-    for needed in ("zero-width", "split-string", "yaml-folded", "line-continuation", "base64"):
+    for needed in (
+        "zero-width", "split-string", "yaml-folded", "line-continuation", "base64",
+        "quotes-side-by-side",
+    ):  # fmt: skip
         assert f"obf-{needed}" in by_cat
-    for needed in ("git-sha", "uuid", "sha256", "base64-image", "minified-js", "lorem-ipsum"):
+    for needed in (
+        "git-sha", "uuid", "sha256", "base64-image", "minified-js", "lorem-ipsum",
+        "empty-quotes", "short-base64",
+    ):  # fmt: skip
         assert f"neg-{needed}" in by_cat
 
 
