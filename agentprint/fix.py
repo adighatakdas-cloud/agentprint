@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import fnmatch
 import hashlib
 import json
 import os
@@ -27,13 +28,14 @@ import re
 import shlex
 import stat
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from . import sqlite_text, structured
-from .advice import Moment, advise, split_location
+from .advice import Moment, advise, agent_path, split_location
+from .advice import _ignore_line as folder_line
 from .checks.ap005_mcp_inline_secret import _MARKER as MCP_MARKER
 from .checks.ap007_local_not_ignored import git_state
 from .checks.base import safe_snippet
@@ -106,6 +108,9 @@ class Change:
     target: Path | None = None
     # lock: the file's mode when planned.
     old_mode: int | None = None
+    # ignore: when the file does not exist yet, start it as a copy of this file (.npmignore from
+    # .gitignore: npm stops reading .gitignore once .npmignore exists).
+    seed: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -151,18 +156,24 @@ def _digest(data: bytes) -> bytes:
     return hashlib.blake2b(data, key=_DIGEST_KEY, digest_size=32).digest()
 
 
-def plan(findings: list[Finding], *, pack: bool = False) -> Plan:
+def plan(findings: list[Finding], *, pack: bool = False, root: Path | None = None) -> Plan:
     """What `fix` would do about these findings. Reads files, never changes them.
 
-    `pack`: the findings come from `agentprint pack` (advice is worded for a publish)."""
+    `pack`: the findings come from `agentprint pack` (advice is worded for a publish).
+    `root`: with `pack`, the project folder that was checked (not a built archive)."""
     changes: list[Change] = []
     manual: list[Manual] = []
     groups: dict[str, list[Finding]] = {}
     for finding in findings:
         groups.setdefault(finding.check_id, []).append(finding)
     for check_id, group in groups.items():
-        planner = PLANNERS.get(check_id, _leave_to_human)
-        more_changes, more_manual = planner(group, pack)
+        if pack and check_id == "AP006":
+            more_changes, more_manual = _plan_package(group, root)
+        elif pack and check_id == "AP002":
+            more_changes, more_manual = _plan_packaged_secrets(group, root)
+        else:
+            planner = PLANNERS.get(check_id, _leave_to_human)
+            more_changes, more_manual = planner(group, pack)
         changes += more_changes
         manual += more_manual
     return Plan(changes, list(dict.fromkeys(manual)), list(findings))
@@ -662,6 +673,118 @@ def _plan_locks(findings: list[Finding], pack: bool) -> tuple[list[Change], list
 PLANNERS.update({"AP005": _plan_env, "AP007": _plan_ignore, "AP008": _plan_locks})
 
 
+# ---- preflight: AP006 (npm packages) and AP002 inside packaged agent files ---------------------
+
+
+def _npm_source(finding: Finding, root: Path | None) -> str | None:
+    """The member name of a file in an npm project's package, or None when this is not a package
+    fix can reach: a built archive, a Python package, or no project folder."""
+    package, member = split_location(finding.location)
+    if root is None or package is None or not package.endswith(".tgz"):
+        return None
+    if not (root / "package.json").is_file():
+        return None
+    return member
+
+
+def _in_files_list(root: Path, member: str) -> bool:
+    """True when package.json's "files" list would include this path (or can't be read)."""
+    try:
+        files = json.loads((root / "package.json").read_text(encoding="utf-8")).get("files")
+    except (OSError, ValueError, AttributeError):
+        return True  # cannot tell: do not guess
+    if files is None:
+        return False
+    if not isinstance(files, list):
+        return True
+    for entry in files:
+        if not isinstance(entry, str):
+            return True
+        pattern = entry.removeprefix("./").rstrip("/")
+        if (
+            member == pattern
+            or member.startswith(pattern + "/")
+            or fnmatch.fnmatchcase(member, pattern)
+        ):
+            return True
+    return False
+
+
+def _plan_package(findings: list[Finding], root: Path | None) -> tuple[list[Change], list[Manual]]:
+    """AP006: keep the agent file out of an npm package (.npmignore) and out of git (.gitignore).
+    A "files" list is the human's; so is every package that is not a project folder with npm."""
+    changes: dict[tuple[Path, str], Change] = {}
+    manual: list[Manual] = []
+    for finding in findings:
+        member = _npm_source(finding, root)
+        if member is None or root is None:
+            manual.append(_advice(finding, True))
+            continue
+        line = folder_line(agent_path(member))
+        if _in_files_list(root, member):
+            manual.append(
+                Manual(
+                    finding.check_id,
+                    f'package.json has a "files" list that includes {quote(member)}, and '
+                    "agentprint never edits package.json. Remove or narrow the matching entry "
+                    f"so it no longer includes {quote(agent_path(member))}.",
+                )
+            )
+        else:
+            target = root / ".npmignore"
+            changes.setdefault(
+                (target, line),
+                Change(
+                    kind="ignore",
+                    path=target,
+                    line=None,
+                    check_id=finding.check_id,
+                    shown=f"add {safe_snippet(line, 200)} to {safe_snippet(str(target), 200)}",
+                    line_text=line,
+                    target=target,
+                    seed=root / ".gitignore",
+                ),
+            )
+        target = root / ".gitignore"
+        changes.setdefault(
+            (target, line),
+            Change(
+                kind="ignore",
+                path=target,
+                line=None,
+                check_id=finding.check_id,
+                shown=f"add {safe_snippet(line, 200)} to {safe_snippet(str(target), 200)}",
+                line_text=line,
+                target=target,
+            ),
+        )
+    # .npmignore first: it starts as a copy of .gitignore as it is before fix touches it.
+    ordered = sorted(changes.values(), key=lambda c: c.path.name != ".npmignore")
+    return ordered, manual
+
+
+def _plan_packaged_secrets(
+    findings: list[Finding], root: Path | None
+) -> tuple[list[Change], list[Manual]]:
+    """AP002 inside a packaged agent file: the package copy is built from the project file, so
+    mask there (same rules as for a scan) and never touch an archive."""
+    changes: list[Change] = []
+    manual: list[Manual] = []
+    for finding in findings:
+        member = _npm_source(finding, root)
+        source = root / member if root is not None and member is not None else None
+        if source is None or ".." in Path(member or "").parts or not source.is_file():
+            manual.append(_advice(finding, True))
+            continue
+        more_changes, more_manual = _plan_masks([replace(finding, location=str(source))], True)
+        changes += more_changes
+        manual += more_manual
+    merged: dict[tuple[str, Path, int | None], Change] = {}
+    for change in changes:  # one key in two findings of one file: planned once
+        merged.setdefault((change.kind, change.path, change.offsets[0][0]), change)
+    return list(merged.values()), manual
+
+
 # ---- applying --------------------------------------------------------------------------------
 
 
@@ -869,6 +992,14 @@ def _apply_ignore(changes: list[Change], journal: Journal) -> list[Result]:
             return [Result(c, "the ignore file is not a plain file; left as is") for c in changes]
         version = _stat_version(target)
         old = target.read_bytes() if exists else b""
+        seeded = False
+        seed = changes[0].seed
+        if not exists and seed is not None and os.path.isfile(seed):
+            if os.stat(seed).st_size > MAX_BYTES:
+                return [
+                    Result(c, "the file to copy from is too large; left as is") for c in changes
+                ]
+            old, seeded = Path(seed).read_bytes(), True
         present = {line.rstrip(b"\r") for line in old.split(b"\n")}
         eol = b"\r\n" if b"\r\n" in old else b"\n"
         new = old + (eol if old and not old.endswith(b"\n") else b"")
@@ -882,6 +1013,10 @@ def _apply_ignore(changes: list[Change], journal: Journal) -> list[Result]:
             present.add(line)
             new += line + eol
             added.append(Result(change))
+        if seeded and not added:  # the copy already holds every line; it is still the new file
+            added, results = results, []
+            for result in added:
+                result.reason = None
         if not added:
             return results
         text = new.decode("utf-8")
