@@ -87,10 +87,23 @@ def test_attest_step_is_pinned_signs_the_badge_and_skips_private_repos():
     assert attest["with"]["predicate-path"] == "${{ steps.run.outputs.verdict-file }}"
     assert "inputs.attest-badge == 'true'" in attest["if"]
     assert "!github.event.repository.private" in attest["if"]
-    [notice] = _steps_named("Skip attestation")
+    [notice] = _steps_named("Skip attestation on a private")
     assert "github.event.repository.private" in notice["if"]
     assert "inputs.attest-badge == 'true'" in notice["if"]
     assert "::notice" in notice["run"] and "private" in notice["run"]
+
+
+def test_attest_runs_only_on_a_push_to_the_default_branch():
+    [attest] = _steps_named("Attest the badge")
+    cond = attest["if"]
+    assert "inputs.attest-badge == 'true'" in cond
+    assert PUSH_TO_DEFAULT in cond and DEFAULT_REF in cond  # a pull_request can never match
+    assert "pull_request" not in cond
+    [skipped] = _steps_named("Skip attestation outside")
+    assert "inputs.attest-badge == 'true'" in skipped["if"]
+    assert skipped["if"].count("!(") == 1  # the exact negation of the push-to-default rule
+    assert PUSH_TO_DEFAULT in skipped["if"] and DEFAULT_REF in skipped["if"]
+    assert "::notice" in skipped["run"] and "${{" not in skipped["run"]
 
 
 def test_publish_runs_only_on_a_push_to_the_default_branch():

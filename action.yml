@@ -136,15 +136,21 @@ runs:
         sarif_file: ${{ steps.run.outputs.sarif-file }}
         category: agentprint-${{ inputs.command }}
 
-    # Sign badge.json (the verdict is the predicate). Public repositories only: private ones
-    # would need GitHub Enterprise for attestations.
+    # Sign badge.json (the verdict is the predicate). Only on a push to the default branch (same
+    # rule as publishing: a pull request never signs) and only on a public repository: private
+    # ones would need GitHub Enterprise for attestations.
     - name: Attest the badge
-      if: inputs.attest-badge == 'true' && steps.run.outputs.badge-file != '' && !github.event.repository.private
+      if: inputs.attest-badge == 'true' && steps.run.outputs.badge-file != '' && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !github.event.repository.private
       uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
       with:
         subject-path: ${{ steps.run.outputs.badge-file }}
         predicate-type: https://adighatakdas-cloud.github.io/agentprint/badge/v1
         predicate-path: ${{ steps.run.outputs.verdict-file }}
+
+    - name: Skip attestation outside the default branch
+      if: inputs.attest-badge == 'true' && !(github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+      shell: bash
+      run: echo "::notice title=agentprint::attest-badge skipped, the badge is only signed on a push to the default branch"
 
     - name: Skip attestation on a private repository
       if: inputs.attest-badge == 'true' && github.event.repository.private

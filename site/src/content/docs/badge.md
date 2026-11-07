@@ -58,9 +58,9 @@ The action sets two outputs when the scan ran without an error: `badge-file` and
 
 The `agentprint-badge` branch has one commit with the two files. Each publish replaces it, so the history never grows.
 
-### Publishing only happens on the default branch
+### Signing and publishing only happen on the default branch
 
-The publish step runs only on a `push` to your default branch. On a `pull_request`, including one from a fork, nothing is pushed and no write token is used. The log says the step was skipped. The scan still runs and still fails the job as usual.
+The sign and publish steps run only on a `push` to your default branch. On a `pull_request`, including one from a fork, nothing is signed, nothing is pushed and no write token is used. The log says the steps were skipped. The scan still runs and still fails the job as usual. That is why the snippet above can keep `pull_request:`: on those runs the action only scans.
 
 ## Add it to your README
 
