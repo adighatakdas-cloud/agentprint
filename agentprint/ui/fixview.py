@@ -58,6 +58,9 @@ def _what(row: Row) -> Text:
                 " (new file, copied from .gitignore)" if seeded else " (new file)", "ap.dim"
             )
         return text
+    if row.kind == "lock" and first.old_mode is None:  # Windows: an access list, not a mode
+        many = f"{len(row.changes)} files: " if len(row.changes) > 1 else ""
+        return Text(f"{many}access list → other users removed")
     if row.kind == "lock" and len(row.changes) > 1:
         return Text(f"{len(row.changes)} files → owner only")
     if row.kind == "lock" and first.old_mode is not None:

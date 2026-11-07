@@ -21,6 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
+from . import platform
 from .agents import ALL_AGENTS
 from .checks import ap009_source_exposure as ap009
 from .checks.ap004_network_hook import ASK_FIRST as HOOK_ASK_FIRST
@@ -338,7 +339,8 @@ def _agent_file_not_ignored(finding: Finding, moment: Moment) -> Advice:
 
 @adviser("AP008")
 def _readable_by_others(finding: Finding, moment: Moment) -> Advice:
-    # The check's fix is already the exact, shell-quoted chmod for these files.
+    # The check's fix is already the exact command for these files: a chmod, or on Windows an
+    # icacls call (or agentprint fix, for a folder).
     ask = []
     if finding.severity >= Severity.HIGH:
         ask.append(
@@ -459,6 +461,7 @@ def explain(check_id: str) -> str:
     for check in SCAN_CHECKS:
         if getattr(check, "id", None) == check_id:
             severity = getattr(getattr(check, "severity", None), "name", "").lower()
-            return f"{check_id} {check.title} ({severity}). Fix: {check.fix}"
+            fix = getattr(check, "windows_fix", check.fix) if platform.is_windows() else check.fix
+            return f"{check_id} {check.title} ({severity}). Fix: {fix}"
     known = ", ".join(sorted(EXPLAIN))
     return f"agentprint has no check called {quote(check_id)}. Known checks: {known}."
