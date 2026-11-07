@@ -341,14 +341,12 @@ def too_deep(text: str, cwd: Path) -> list[c.Risky]:
     """`commands.detect` past `MAX_DEPTH` (a `bash -c` or package script at the limit)."""
     reading = _reading(cwd)
     if reading.peeking or reading.bytes >= MAX_BYTES:
-        return _flag(_hits(text, cwd), _fragment(text), cwd, _NESTED)
+        # Labelled with what it runs, never with the text: a line can hold a key (NPM_TOKEN=...).
+        return [
+            c.Risky(action, tool, cwd, unsure=_NESTED, label=_what(action, tool))
+            for action, tool in _hits(text, cwd)
+        ]
     return _peek(text, cwd, c.MAX_DEPTH)
-
-
-def _fragment(text: str) -> str:
-    """A command fragment as a label: its first line, shortened."""
-    line = next((part.strip() for part in text.split("\n") if part.strip()), "")
-    return line if len(line) <= 60 else line[:57] + "..."
 
 
 def _own_folder(text: str, folder: PurePath) -> str:

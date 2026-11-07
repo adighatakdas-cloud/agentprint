@@ -6,6 +6,7 @@ import json
 import pytest
 
 from agentprint.guard import STRICT_HINT, evaluate
+from agentprint.secrets import redact
 from tests import fakes
 from tests.test_guard import LEAKY, _tgz
 
@@ -60,7 +61,7 @@ def test_a_script_that_does_not_publish_is_not_our_business(tmp_path):
 
 RELEASE_PY = 'import subprocess\nsubprocess.run(["twine", "upload", "dist/*"])\n'
 COULD_NOT = (
-    "agentprint could not check `scripts/release.py`: it runs `twine upload` from code "
+    'agentprint could not check "scripts/release.py": it runs `twine upload` from code '
     "agentprint does not read as commands. Run the publish or push as its own command, so "
     "agentprint can check it."
 )
@@ -78,7 +79,7 @@ def test_python_release_script_warns_by_default_and_blocks_in_strict_mode(tmp_pa
 def test_a_publish_named_only_in_a_python_comment_is_never_a_block_by_default(tmp_path):
     _script(tmp_path, "build.py", "# CI runs npm publish after this step\nprint('built')\n")
     verdict = evaluate("python build.py", tmp_path)
-    assert not verdict.block and "could not check `build.py`" in verdict.warning
+    assert not verdict.block and 'could not check "build.py"' in verdict.warning
 
 
 def test_a_large_script_that_names_a_publish_warns_or_blocks_in_strict_mode(tmp_path):
@@ -86,7 +87,7 @@ def test_a_large_script_that_names_a_publish_warns_or_blocks_in_strict_mode(tmp_
     default = evaluate("./release.sh", tmp_path)
     assert not default.block
     assert default.warning == (
-        "agentprint could not check `release.sh`: it is larger than 64 KB and names "
+        'agentprint could not check "release.sh": it is larger than 64 KB and names '
         "`npm publish`, so agentprint did not follow it. Run the publish or push as its own "
         "command, so agentprint can check it."
     )
@@ -252,7 +253,7 @@ def test_a_missing_script_after_an_unknown_cd_is_could_not_check_when_it_looks_l
         },
     )
     verdict = evaluate("./release.sh", root)
-    assert not verdict.block and "could not check `./publish.sh`" in verdict.warning
+    assert not verdict.block and 'could not check "./publish.sh"' in verdict.warning
     assert evaluate("./build.sh", root) is None
 
 
@@ -267,7 +268,7 @@ def test_could_not_check_names_the_file_and_the_next_step():
         Action.publish, "sh", Path("/x"), unsure="agentprint could not open it", label="ship.sh"
     )
     assert _could_not(item, CannotCheck(item.unsure)) == (
-        "agentprint could not check `ship.sh`: agentprint could not open it. Run the publish or "
+        'agentprint could not check "ship.sh": agentprint could not open it. Run the publish or '
         "push as its own command, so agentprint can check it."
     )
     plain = Risky(Action.push, "git", Path("/x"), unsure="its folder is unknown")
@@ -387,3 +388,31 @@ def test_a_large_include_or_second_makefile_that_names_a_publish_is_scanned(tmp_
     assert [(r.tool, r.label) for r in detect("make -f a.mk -f deps.mk release", tmp_path)] == [
         ("git", "deps.mk")
     ]
+
+
+# ---- never print a key ------------------------------------------------------------------------
+
+
+def test_a_key_on_a_line_past_the_depth_limit_is_never_printed(tmp_path):
+    key = fakes.NEW["npm"]
+    files = {f"s{i}.sh": f"./s{i + 1}.sh\n" for i in range(1, 5)}
+    files.update(
+        {
+            "s5.sh": "npm run release\n",
+            "package.json": json.dumps({"scripts": {"release": f"NPM_TOKEN={key} npm publish"}}),
+        }
+    )
+    root = _repo(tmp_path, files)
+    for verdict in (evaluate("./s1.sh", root), evaluate("./s1.sh", root, strict=True)):
+        text = (verdict.warning or "") + verdict.reason
+        assert key not in text and key[4:] not in text and key[:5] not in text
+    assert 'could not check "npm publish": it is nested deeper' in evaluate("./s1.sh", root).warning
+
+
+def test_a_key_in_any_could_not_check_reason_is_cut_to_its_stub(tmp_path):
+    key = fakes.GITHUB
+    verdict = evaluate(f'cd "$HOME/{key}" && npm publish', tmp_path)
+    assert key not in verdict.warning and redact(key) in verdict.warning
+    _repo(tmp_path, {"run.sh": f'cd "$X/{key}"\n./release.sh\n'})
+    verdict = evaluate("./run.sh", tmp_path)
+    assert key not in verdict.warning and redact(key) in verdict.warning
