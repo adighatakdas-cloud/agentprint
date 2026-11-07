@@ -229,6 +229,14 @@ def test_a_bad_quote_does_not_hide_the_rest_of_a_script(leaky, files):
         'cd "${0%/*}"',
         'cd "$(cd "$(dirname "$0")" && pwd)"',
         'HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\ncd "$HERE"',
+        'cd -- "$(dirname -- "$0")"',
+        'cd -P "$(dirname "$0")"',
+        'cd "$(dirname "$(realpath "$0")")"',
+        'DIR=$(dirname "$(readlink -f "$0")")\ncd "$DIR"',
+        'cd "$(dirname "${0}")"',
+        'cd "$(dirname "$BASH_SOURCE")"',
+        'D=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )\ncd "$D"',
+        'D="$(cd "$(dirname "$0")" >/dev/null 2>&1 && pwd)"\ncd "$D"',
     ],
 )
 def test_cd_to_the_scripts_own_folder(leaky, line):
@@ -416,3 +424,35 @@ def test_a_key_in_any_could_not_check_reason_is_cut_to_its_stub(tmp_path):
     _repo(tmp_path, {"run.sh": f'cd "$X/{key}"\n./release.sh\n'})
     verdict = evaluate("./run.sh", tmp_path)
     assert key not in verdict.warning and redact(key) in verdict.warning
+
+
+SCRIPT_DIR = 'D=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )'
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        SCRIPT_DIR + '\n"$D/publish-npm.sh"',
+        'HERE="$(cd "$(dirname "$0")" && pwd)"\n"$HERE"/publish-npm.sh',
+        '"$(dirname "$0")"/publish-npm.sh',
+        '"${BASH_SOURCE%/*}/publish-npm.sh"',
+        'source "$(dirname "$0")/publish-npm.sh"',
+    ],
+)
+def test_a_sibling_script_named_through_the_scripts_own_folder(leaky, line):
+    root = _repo(
+        leaky,
+        {
+            "scripts/release.sh": f"#!/bin/bash\n{line}\n",
+            "scripts/publish-npm.sh": PUBLISH,  # runs in the caller's folder
+        },
+    )
+    assert evaluate("bash scripts/release.sh", root).block
+
+
+@pytest.mark.parametrize("cd", ["cd -- pkg", "cd -P pkg", "cd -L pkg", "pushd -- pkg"])
+def test_cd_options_come_before_the_folder(tmp_path, cd):
+    from agentprint.commands import Action, detect
+
+    got = detect(f"{cd} && npm publish", tmp_path)
+    assert [(r.action, r.cwd, r.unsure) for r in got] == [(Action.publish, tmp_path / "pkg", "")]

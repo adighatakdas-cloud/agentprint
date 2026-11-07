@@ -100,12 +100,18 @@ _RELEASE_WORD = re.compile(
     re.I,
 )
 # A script's own folder, as scripts spell it: $(dirname "$0"), ${BASH_SOURCE%/*},
-# $(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd), `dirname $0`.
+# $(dirname -- "$(realpath "$0")"), `dirname $0`, and the folder made absolute:
+# $(cd "$(dirname "$0")" && pwd), and
+# $( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd ).
 _SELF = r"\$(?:0|\{0\}|\{BASH_SOURCE(?:\[0\])?\}|BASH_SOURCE(?:\[0\])?)"
-_DIRNAME = rf"\$\(\s*dirname\s+(?:\"{_SELF}\"|{_SELF})\s*\)|`\s*dirname\s+\"?{_SELF}\"?\s*`"
+_REAL = rf"\$\(\s*(?:realpath|g?readlink\s+-[fe])\s+(?:--\s+)?(?:\"{_SELF}\"|{_SELF})\s*\)"
+_ME = rf"(?:\"{_SELF}\"|{_SELF}|\"{_REAL}\"|{_REAL})"
+_DIRNAME = rf"\$\(\s*dirname\s+(?:--\s+)?{_ME}\s*\)|`\s*dirname\s+(?:--\s+)?\"?{_SELF}\"?\s*`"
 _STRIP = r"\$\{(?:0|BASH_SOURCE(?:\[0\])?)%/\*\}"
+_QUIET = r"(?:\s*(?:&>|[12]?>>?)\s*/dev/null|\s*2>&1)*"  # &> /dev/null, >/dev/null 2>&1
 _OWN_FOLDER = re.compile(
-    rf"\$\(\s*cd\s+(?:\"(?:{_DIRNAME}|{_STRIP})\"|{_DIRNAME}|{_STRIP})\s*(?:&&|;)\s*pwd(?:\s+-P)?\s*\)"
+    rf"\$\(\s*cd\s+(?:-[PL]\s+)?(?:--\s+)?(?:\"(?:{_DIRNAME}|{_STRIP})\"|{_DIRNAME}|{_STRIP})"
+    rf"{_QUIET}\s*(?:&&|;)\s*pwd(?:\s+-P)?\s*\)"
     rf"|{_DIRNAME}|{_STRIP}"
 )
 

@@ -314,7 +314,7 @@ def _segment(words: list[str], where: _Where, found: list[Risky], depth: int, se
         return where
     program, args = Path(words[0]).name, words[1:]
     if program in {"cd", "pushd"}:
-        return _chdir(where, args[0] if args else "~")
+        return _chdir(where, _cd_target(args))
     before = len(found)
     if program in SHELLS:
         script = _shell_script(args)
@@ -395,6 +395,16 @@ def _two_word_launcher(head: str, words: list[str]) -> bool:
     if head == "pipx":
         return len(words) > 2 and words[1] == "run"
     return bool(_PYTHON.match(head)) and len(words) > 2 and words[1] == "-m"
+
+
+def _cd_target(args: list[str]) -> str:
+    """The folder in `cd [-L|-P|-e|-@] [--] DIR` (home when none)."""
+    for i, arg in enumerate(args):
+        if arg == "--":
+            return args[i + 1] if i + 1 < len(args) else "~"
+        if arg == "-" or not arg.startswith("-"):
+            return arg
+    return "~"
 
 
 def _chdir(where: _Where, target: str) -> _Where:
