@@ -11,6 +11,7 @@ import json
 from collections.abc import Mapping
 from pathlib import Path
 
+from . import platform
 from .commands import detect
 from .guard import Verdict, evaluate, strict_block, strict_requested
 from .integrations import ALL_INTEGRATIONS
@@ -25,7 +26,7 @@ NO_FOLDER = "the agent did not say which folder the command runs in"
 def _folder_unknown(command: str, cwd: Path, strict: bool) -> Verdict | None:
     """The payload named no folder: a publish or push "could not be checked" (blocked in strict
     mode); any other command passes as usual."""
-    if not detect(command, cwd):
+    if not detect(command, cwd, windows=platform.is_windows()):
         return None
     if strict:
         return strict_block(f"agentprint could not check this command: {NO_FOLDER}.")

@@ -20,6 +20,23 @@ target built from a variable) the result says so in `unsure`; the guard then rep
 "could not check" instead of "OK". A script shlex can't read as a whole is read line by line.
 Here-documents on the command line itself are not understood yet (their bodies are read as
 commands).
+
+Windows: when the agent runs on Windows (`detect(..., windows=True)`, which the guard passes on
+Windows) or the text has Windows markers (`C:\\` or `.\\` paths, `$env:`, `Set-Location`,
+`npm.cmd`, `cmd /c`, `powershell`; `winshell.looks_windows`), the command line is read as
+PowerShell, and the text of `cmd /c` as cmd (`winshell`): their quoting and escapes, `;` `&&`
+`||` `|`, the `&` and `.` call operators, `cd /d`, `Set-Location -Path`/`-LiteralPath`, `sl`,
+`chdir`, `pushd`/`popd`, `cmd /c` and `powershell`/`pwsh -Command`/`-EncodedCommand`
+(unwrapped like `bash -c`) and `-File`, `Start-Process`, `start`, `Invoke-Expression`, `wsl`,
+`$x = <command>`, and program names as Windows finds them (`npm.cmd`, `uv.exe`,
+`& "C:\\Program Files\\nodejs\\npm.cmd"` are `npm` and `uv`). PowerShell (`.ps1`) and batch
+(`.cmd`, `.bat`) scripts are followed like shell scripts, with `$PSScriptRoot` and `%~dp0` read
+as their folder; on Windows, package.json scripts are read as cmd, the shell npm runs them in.
+A folder from `$env:X` or `%X%`, a `cd` inside `( )` or `{ }` (PowerShell keeps it, a POSIX
+subshell does not), a `cd` PowerShell rejects (`cd /d` before `;`), a program named by a
+variable (`& $npm publish`) or text agentprint can't split (an unclosed quote) gives "could not
+check" for a publish or push, never "OK". POSIX text without Windows markers keeps the POSIX
+reader.
 """
 
 from __future__ import annotations
@@ -28,11 +45,13 @@ import json
 import os
 import re
 import shlex
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
-from . import following
+from . import following, winshell
+from .winshell import CMD, POWERSHELL, SH
 
 
 class Action(StrEnum):
@@ -157,20 +176,47 @@ _BACKSTOP = re.compile(
 _ANSI_C_QUOTE = re.compile(r"\$'(?:[^'\\]|\\.)*'")  # $'it\'s': shlex can't read the \'
 
 
-def detect(command: str, cwd: Path, _depth: int = 0) -> list[Risky]:
-    """Every publish or push in `command`, in order, with the directory each runs in."""
+def detect(
+    command: str,
+    cwd: Path,
+    _depth: int = 0,
+    *,
+    shell: str | None = None,
+    windows: bool = False,
+) -> list[Risky]:
+    """Every publish or push in `command`, in order, with the directory each runs in.
+
+    `shell` is the shell that reads `command` (`sh`, `powershell` or `cmd`) when that is known.
+    Otherwise it is PowerShell when `windows` (the agent runs on Windows) or when the text has
+    Windows markers, and a POSIX shell everywhere else."""
     if following._READING.get() is None:  # the agent's own command line: files stay in cwd
-        token = following._READING.set(following._Reading(following._real(cwd), command))
+        on_windows = windows or winshell.looks_windows(command)
+        reading = following._Reading(following._real(cwd), command, windows=on_windows)
+        token = following._READING.set(reading)
         try:
-            return _detect(command, cwd, _depth)
+            return _detect(command, cwd, _depth, shell or (POWERSHELL if on_windows else SH))
         finally:
             following._READING.reset(token)
-    return _detect(command, cwd, _depth)
+    return _detect(command, cwd, _depth, shell or SH)
 
 
-def _detect(command: str, cwd: Path, depth: int) -> list[Risky]:
+def _on_windows() -> bool:
+    """True when the agent's command line is for Windows: programs are then found as Windows
+    finds them (`npm.cmd`), and package.json scripts run in cmd."""
+    reading = following._READING.get()
+    return reading is not None and reading.windows
+
+
+def _name(word: str) -> str:
+    """The program a command word runs: its file name, or on Windows `winshell.program_name`."""
+    return winshell.program_name(word) if _on_windows() else Path(word).name
+
+
+def _detect(command: str, cwd: Path, depth: int, shell: str = SH) -> list[Risky]:
     if depth > MAX_DEPTH:  # never a silent OK: look once more without following anything
-        return following.too_deep(command, cwd)
+        return following.too_deep(command, cwd, shell)
+    if shell != SH:
+        return _detect_windows(command, cwd, depth, shell)
     seen: set[tuple[Action, str]] = set()  # also counts dry runs, so the backstop skips them
     try:
         found = _parse(command, cwd, depth, seen)
@@ -189,9 +235,12 @@ def _detect(command: str, cwd: Path, depth: int) -> list[Risky]:
     return unique
 
 
-def _backstop(command: str, cwd: Path) -> list[Risky]:
+def _backstop(command: str, cwd: Path, shell: str = SH) -> list[Risky]:
     """A plain word scan, for shapes the parser doesn't know. Quoted text is ignored."""
-    text = re.sub(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", " ", command)
+    if shell == SH:
+        text = re.sub(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", " ", command)
+    else:  # PowerShell or cmd quoting; `npm.cmd` read as `npm`, `C:\x` as `C:/x`
+        text = winshell.plain(winshell.unquoted(command, shell))
     found = []
     for match in _BACKSTOP.finditer(text):
         node_or_py, twine, git = match.groups()
@@ -253,6 +302,7 @@ def _parse_into(command: str, where: _Where, depth: int, seen: set, found: list[
 class _Where:
     cwd: Path
     unknown: str = ""  # set once a `cd` goes somewhere only known at run time
+    pushed: tuple[_Where, ...] = ()  # Windows: where pushd / Push-Location came from (popd)
 
 
 def _strip_redirects(words: list[str]) -> list[str]:
@@ -274,7 +324,7 @@ def _segment(words: list[str], where: _Where, found: list[Risky], depth: int, se
     words = _unwrap(_strip_redirects(words))
     if not words or words[0] in SKIP_SEGMENT:
         return where
-    program, args = Path(words[0]).name, words[1:]
+    program, args = _name(words[0]), words[1:]
     if program in {"cd", "pushd"}:
         return _chdir(where, args[0] if args else "~")
     before = len(found)
@@ -289,22 +339,10 @@ def _segment(words: list[str], where: _Where, found: list[Risky], depth: int, se
             found.extend(following._script(args[0], where.cwd, depth, "sh", where.unknown))
     elif program == "eval":
         found.extend(detect(" ".join(args), where.cwd, depth + 1))
-    elif program == "git":
-        _git(args, where.cwd, found, seen)
-    elif program in NODE:
-        _node(program, args, where.cwd, found, depth, seen)
-    elif program in PYTHON_PUBLISH or program == "twine":
-        _python(program, args, where.cwd, found, seen)
-    elif program in WORKSPACE_RELEASERS or program in ROOT_RELEASERS:
-        _releaser(program, args, where.cwd, found, seen)
-    elif program in following.MAKES:
-        found.extend(following._make(args, where.cwd, depth))
-    elif program == "just":
-        found.extend(following._just(args, where.cwd, depth))
-    elif program in following.TASKS:
-        found.extend(following._task(args, where.cwd))
-    elif following._interpreter(program):
-        found.extend(following._interpreted(program, args, where.cwd, depth))
+    elif program in _POWERSHELLS or (program == "cmd" and _on_windows()):
+        _windows_shell(program, args, where, found, depth)  # pwsh -c '...' in a shell script
+    elif _tool(program, args, where.cwd, found, depth, seen):
+        pass
     elif "/" in words[0]:  # ./release.sh, scripts/release, /abs/path/in/project/x
         found.extend(following._script(words[0], where.cwd, depth, None, where.unknown))
     if where.unknown:
@@ -312,10 +350,36 @@ def _segment(words: list[str], where: _Where, found: list[Risky], depth: int, se
     return where
 
 
-def _unwrap(words: list[str]) -> list[str]:
-    """Drop env-var prefixes, wrappers and shell keywords until the real program is first."""
+def _tool(program: str, args: list[str], cwd: Path, found: list[Risky], depth: int, seen) -> bool:
+    """A publishing tool, or a runner of recipes and scripts: add what it publishes. False when
+    `program` is neither."""
+    if program == "git":
+        _git(args, cwd, found, seen)
+    elif program in NODE:
+        _node(program, args, cwd, found, depth, seen)
+    elif program in PYTHON_PUBLISH or program == "twine":
+        _python(program, args, cwd, found, seen)
+    elif program in WORKSPACE_RELEASERS or program in ROOT_RELEASERS:
+        _releaser(program, args, cwd, found, seen)
+    elif program in following.MAKES:
+        found.extend(following._make(args, cwd, depth))
+    elif program == "just":
+        found.extend(following._just(args, cwd, depth))
+    elif program in following.TASKS:
+        found.extend(following._task(args, cwd))
+    elif following._interpreter(program):
+        found.extend(following._interpreted(program, args, cwd, depth))
+    else:
+        return False
+    return True
+
+
+def _unwrap(words: list[str], name: Callable[[str], str] | None = None) -> list[str]:
+    """Drop env-var prefixes, wrappers and shell keywords until the real program is first.
+    `name` gives the program a word runs (`_name` when not given)."""
+    name = name or _name
     while words:
-        head = Path(words[0]).name
+        head = name(words[0])
         if _ASSIGN.match(words[0]):
             words = words[1:]
         elif head in {"sudo", "doas", "env"}:
@@ -360,6 +424,8 @@ def _two_word_launcher(head: str, words: list[str]) -> bool:
 
 
 def _chdir(where: _Where, target: str) -> _Where:
+    if _on_windows():  # Git Bash: /c/Users/me is C:/Users/me
+        target = re.sub(r"^/([A-Za-z])(?:/|$)", lambda m: f"{m.group(1).upper()}:/", target)
     other_users_home = target.startswith("~") and target != "~" and not target.startswith("~/")
     if target == "-" or _UNKNOWABLE.search(target) or other_users_home:
         why = f"its folder ({target!r}) is only known when the command runs"
@@ -502,8 +568,15 @@ def _run_script(name: str, cwd: Path, depth: int) -> list[Risky]:
     found: list[Risky] = []
     for key in (f"pre{name}", name, f"post{name}"):
         if key in scripts:
-            found.extend(detect(scripts[key], cwd, depth + 1))
+            found.extend(detect(scripts[key], cwd, depth + 1, shell=_script_shell(scripts[key])))
     return found
+
+
+def _script_shell(script: str) -> str:
+    """How a package.json script is read. npm and pnpm run scripts in cmd.exe on Windows, but
+    most are written for sh (`bash -c '...'`, which cmd would split): cmd only for a script
+    with Windows markers (`cd packages\\web`), on Windows."""
+    return CMD if _on_windows() and winshell.looks_windows(script) else SH
 
 
 def _releaser(tool: str, args: list[str], cwd: Path, found: list[Risky], seen) -> None:
@@ -549,3 +622,277 @@ def _git(args: list[str], cwd: Path, found: list[Risky], seen) -> None:
         if {"--dry-run", "-n"} & set(args[i + 1 :]):
             return
         found.append(Risky(Action.push, "git", cwd))
+
+
+# ---- Windows: PowerShell and cmd ------------------------------------------------------------
+
+_POWERSHELLS = {"powershell", "pwsh"}
+_CD_WINDOWS = {"cd", "chdir", "set-location", "sl", "pushd", "push-location"}
+_POPD = {"popd", "pop-location"}
+_STARTS = {"start-process", "saps", "start"}
+_EVALS = {"invoke-expression", "iex"}
+_SCRIPT_FILES = (".ps1", ".cmd", ".bat", ".sh")
+_EXPRESSION = "$(...)"  # stands in for arguments that come from `( ... )`
+_UNKNOWABLE_WINDOWS = re.compile(r"[$`*?]|%[^%\s]*%")  # also cmd's %VAR%
+_DRIVE = re.compile(r"^([A-Za-z]):")
+_PS_ASSIGN = re.compile(r"^(?:\[[^\]]*\])*\$[\w:?{}.-]+$")  # $out, $env:X, [string]$x
+_PS_ASSIGN_OPS = {"=", "+=", "-=", "*=", "/=", "%=", "??="}
+_PS_ASSIGN_JOINED = re.compile(r"^(?:\[[^\]]*\])*\$[\w:]+=(.*)$")  # $out=npm
+_VERBS = {"publish": Action.publish, "upload": Action.publish, "push": Action.push}
+_UNSPLIT = "agentprint could not read this command line exactly"
+_INEXACT = "agentprint could not tell exactly what this runs"
+_GROUP = "it runs after a `cd` inside ( ) or { }, so its folder is only known when it runs"
+_BY_VARIABLE = "the program it runs is named by a variable, only known when the command runs"
+
+
+def _detect_windows(command: str, cwd: Path, depth: int, shell: str) -> list[Risky]:
+    """`_detect` for PowerShell and cmd text."""
+    seen: set[tuple[Action, str]] = set()
+    lexed = winshell.lex(command, shell)
+    found: list[Risky] = []
+    _parse_windows(lexed.tokens, _Where(cwd), depth, seen, shell, found)
+    for inner in lexed.inner:  # "...$(npm publish)...": PowerShell runs it
+        found += detect(inner, cwd, depth + 1, shell=POWERSHELL)
+    if not lexed.complete:  # an unclosed quote: nothing here is certain
+        found = [replace(r, unsure=r.unsure or _UNSPLIT) for r in found]
+    known = seen | {(r.action, r.tool) for r in found}
+    extra = _named_unsure(command, cwd, _UNSPLIT) if not lexed.complete else []
+    for risky in [*extra, *_backstop(command, cwd, shell)]:
+        if (risky.action, risky.tool) not in known:
+            known.add((risky.action, risky.tool))
+            found.append(risky)
+    unique: list[Risky] = []
+    for risky in found:
+        if risky not in unique:
+            unique.append(risky)
+    return unique
+
+
+def _named_unsure(text: str, cwd: Path, why: str) -> list[Risky]:
+    """A publish or push named in text agentprint could not read as commands: never OK."""
+    hits = following._named(winshell.plain(text))
+    return [Risky(action, tool, cwd, unsure=why) for action, tool in hits]
+
+
+def _parse_windows(
+    tokens: list[winshell.Token], where: _Where, depth: int, seen: set, shell: str, found: list
+) -> _Where:
+    """Add what PowerShell or cmd `tokens` publish to `found`; returns where the shell is after.
+
+    A `cd` inside ( ) or { } stays in effect in PowerShell and cmd but not in a POSIX
+    subshell, and a { } block may run once, many times or never: after one, the folder is
+    "only known when it runs"."""
+    state = where
+    stack: list[_Where] = []
+    segment: list[str] = []
+    for token in [*tokens, winshell.Token(";", True)]:
+        if not token.op:
+            segment.append(token.text)
+            continue
+        if token.text == "&" and not segment:  # the call operator: & "C:\x\npm.cmd" publish
+            continue
+        if token.text == "(" and segment:  # npm publish (Get-Item pkg): an argument from code
+            segment.append(_EXPRESSION)
+        state = _segment_windows(segment, state, found, depth, seen, shell, token.text == "&&")
+        segment = []
+        if token.text in ("(", "{"):
+            stack.append(state)
+        elif token.text in (")", "}") and stack:
+            outer = stack.pop()
+            if state != outer:
+                state = replace(outer, unknown=outer.unknown or state.unknown or _GROUP)
+    return state
+
+
+def _segment_windows(
+    words: list[str],
+    where: _Where,
+    found: list[Risky],
+    depth: int,
+    seen,
+    shell: str,
+    chained: bool = False,
+) -> _Where:
+    """One PowerShell or cmd command. `chained`: it is followed by `&&`, so what comes next
+    runs only if it worked. Returns where the shell is after it."""
+    words = _unwrap_windows(words, shell)
+    if not words:
+        return where
+    head, raw = words[0], words[1:]
+    program = winshell.program_name(head)
+    args = [winshell.slashes(word) for word in raw]  # paths as tools and pathlib read them
+    if program in SKIP_SEGMENT:
+        return where
+    if program in _CD_WINDOWS or program in _POPD:
+        return _chdir_windows(where, raw, program, shell, chained)
+    before = len(found)
+    if program in _POWERSHELLS or program == "cmd":
+        _windows_shell(program, raw, where, found, depth)
+    elif program in _EVALS:
+        found.extend(detect(" ".join(raw), where.cwd, depth + 1, shell=POWERSHELL))
+    elif program in _STARTS:
+        _start(raw, where, found, depth, seen, shell)
+    elif program == "wsl":
+        _wsl(raw, where, found, depth)
+    elif program in SHELLS:  # bash -c '...' (Git Bash, WSL's bash.exe)
+        script = _shell_script(raw)
+        if script is not None:
+            found.extend(detect(script, where.cwd, depth + 1, shell=SH))
+        elif (file := following._shell_file_arg(args)) is not None:
+            found.extend(following._script(file, where.cwd, depth, program, where.unknown))
+    elif head in {".", "source"}:  # . .\release.ps1 runs it in this shell
+        if args:
+            found.extend(following._script(args[0], where.cwd, depth, None, where.unknown))
+    elif program == "eval":
+        found.extend(detect(" ".join(raw), where.cwd, depth + 1, shell=SH))
+    elif _UNKNOWABLE_WINDOWS.search(head):
+        found.extend(_by_variable(words, where.cwd))
+    elif _tool(program, args, where.cwd, found, depth, seen):
+        pass
+    elif "/" in winshell.slashes(head) or head.lower().endswith(_SCRIPT_FILES):
+        found.extend(
+            following._script(winshell.slashes(head), where.cwd, depth, None, where.unknown)
+        )
+    if where.unknown:
+        found[before:] = [replace(r, unsure=r.unsure or where.unknown) for r in found[before:]]
+    return where
+
+
+def _unwrap_windows(words: list[str], shell: str) -> list[str]:
+    """`_unwrap`, plus what PowerShell and cmd put before a program: `$out = `, `call`, `@`."""
+    while words:
+        head = words[0]
+        if shell == CMD and head.startswith("@"):  # @npm publish: @ only hides the echo
+            words = [head[1:], *words[1:]] if len(head) > 1 else words[1:]
+        elif _PS_ASSIGN.match(head) and len(words) > 1 and words[1] in _PS_ASSIGN_OPS:
+            words = words[2:]  # $out = npm publish: the command still runs
+        elif (joined := _PS_ASSIGN_JOINED.match(head)) is not None:
+            words = [joined.group(1), *words[1:]] if joined.group(1) else words[1:]
+        elif winshell.program_name(head) == "call":
+            words = words[1:]
+        else:
+            unwrapped = _unwrap(words, winshell.program_name)
+            if unwrapped == words:
+                return words
+            words = unwrapped
+    return words
+
+
+def _by_variable(words: list[str], cwd: Path) -> list[Risky]:
+    """`& $npm publish`, `%NPM% publish`: a program named by a variable, then a publish, upload
+    or push word. Which program that is only shows when it runs: "could not check"."""
+    first = next((word for word in words[1:] if not word.startswith("-")), "")
+    action = _VERBS.get(first.lower())
+    if action is None:
+        return []
+    label = f"{words[0]} {first}"
+    return [Risky(action, words[0], cwd, unsure=_BY_VARIABLE, label=label)]
+
+
+def _unknown(where: _Where, why: str) -> _Where:
+    return replace(where, unknown=where.unknown or why)
+
+
+def _chdir_windows(
+    where: _Where, args: list[str], program: str, shell: str, chained: bool
+) -> _Where:
+    """cd, chdir, Set-Location, sl, pushd, Push-Location; popd and Pop-Location go back."""
+    if program in _POPD:
+        return where.pushed[-1] if where.pushed else where
+    cd = winshell.cd_args(args, shell, program)
+    pushes = program in {"pushd", "push-location"}
+    typed = " ".join([program, *args])
+    if cd.folder is None:  # cmd prints the folder; PowerShell's goes home or stays, by version
+        new = (
+            where
+            if shell == CMD or pushes
+            else _unknown(where, f"`{typed}` goes to a folder only known when it runs")
+        )
+    elif not cd.exact and not chained:  # PowerShell rejects it, then runs what follows here
+        new = _unknown(
+            where, f"PowerShell may reject `{typed}`, so its folder is only known when it runs"
+        )
+    else:  # (followed by &&, what comes next runs only where it worked: in cmd)
+        new = _cd_to(where, cd)
+    return replace(new, pushed=(*where.pushed, where)) if pushes else new
+
+
+def _cd_to(where: _Where, cd: winshell.Cd) -> _Where:
+    folder = cd.folder or ""
+    target = winshell.slashes(folder)
+    other_users_home = target.startswith("~") and target != "~" and not target.startswith("~/")
+    drive = _DRIVE.match(target)
+    if (
+        target in {"-", "+"}
+        or _UNKNOWABLE_WINDOWS.search(target)
+        or other_users_home
+        or re.match(r"^/[A-Za-z](?:/|$)", target)  # /c/x: C:\x to Git Bash, \c\x to PowerShell
+        or (drive and len(target) == 2)  # D: is wherever that drive was last
+    ):
+        return _unknown(where, f"its folder ({folder!r}) is only known when the command runs")
+    if drive and not cd.drive and drive.group(1).upper() != _drive_of(where.cwd):
+        why = f"cmd's `cd` stays on this drive without /d, so its folder ({folder!r}) is unsure"
+        return _unknown(where, why)
+    return _Where(where.cwd / os.path.expanduser(target), where.unknown, where.pushed)
+
+
+def _drive_of(cwd: Path) -> str:
+    return PureWindowsPath(str(cwd)).drive[:1].upper()
+
+
+def _windows_shell(program: str, args: list[str], where: _Where, found: list, depth: int) -> None:
+    """`cmd /c ...`, `powershell -Command ...` (or -EncodedCommand, -File): what they run."""
+    if program == "cmd":
+        script = winshell.cmd_script(args)
+        if script is not None:
+            found.extend(detect(script, where.cwd, depth + 1, shell=CMD))
+        return
+    before = len(found)
+    run = winshell.powershell_run(program, args)
+    here = _chdir_windows(where, [run.folder], "cd", POWERSHELL, True) if run.folder else where
+    if run.code is not None:
+        found.extend(detect(run.code, here.cwd, depth + 1, shell=POWERSHELL))
+        if not run.exact:  # -CommandWithArgs: $args fill the code in
+            found.extend(_named_unsure(run.code, here.cwd, _INEXACT))
+    elif run.file and run.file != "-":
+        file = winshell.slashes(run.file)
+        found.extend(following._script(file, here.cwd, depth, "pwsh", here.unknown))
+    if here.unknown:
+        found[before:] = [replace(r, unsure=r.unsure or here.unknown) for r in found[before:]]
+
+
+def _start(args: list[str], where: _Where, found: list, depth: int, seen, shell: str) -> None:
+    """`Start-Process npm -ArgumentList publish`, `start "" /d pkg npm publish`."""
+    started = winshell.start_process(args, shell)
+    if started is None:
+        found.extend(_named_unsure(" ".join(args), where.cwd, _INEXACT))
+        return
+    words, folder = started
+    here = _chdir_windows(where, [folder], "cd", POWERSHELL, True) if folder else where
+    _segment_windows(words, here, found, depth, seen, shell)
+
+
+def _wsl(args: list[str], where: _Where, found: list, depth: int) -> None:
+    """`wsl [options] [-e|--exec|--] command`: Linux runs it, in the same folder (`--cd`
+    elsewhere makes it unsure)."""
+    folder = ""
+    i = 0
+    while i < len(args):
+        arg = args[i].lower()
+        if arg in {"-e", "--exec", "--"}:
+            i += 1
+            break
+        if arg in {"--cd", "-d", "--distribution", "-u", "--user", "--shell-type"}:
+            folder = args[i + 1] if arg == "--cd" and i + 1 < len(args) else folder
+            i += 2
+        elif arg.startswith("-"):
+            i += 1
+        else:
+            break
+    if i >= len(args):
+        return
+    before = len(found)
+    found.extend(detect(shlex.join(args[i:]), where.cwd, depth + 1, shell=SH))
+    if folder:
+        why = f"its folder ({folder!r}) is a Linux folder agentprint does not map"
+        found[before:] = [replace(r, unsure=r.unsure or why) for r in found[before:]]

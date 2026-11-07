@@ -1,6 +1,10 @@
 """Follow the files a command hands its work to: shell scripts, Makefiles, justfiles, Taskfiles,
 and scripts in other languages.
 
+PowerShell (`.ps1`) and, on Windows, batch (`.cmd`, `.bat`) scripts are read as commands too,
+through the PowerShell and cmd reader (`winshell`), with `$PSScriptRoot` and `%~dp0` read as the
+script's own folder.
+
 `commands` reads the command line; for a command that runs a file it asks this module, which
 reads the file (inside the folder of the agent's command, text only) and sends shell text of up
 to 64 KB back through `commands.detect`. The two call each other, so this module looks
@@ -24,10 +28,10 @@ import shlex
 import stat
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PurePosixPath
 
 from . import commands as c
-from . import recipes
+from . import recipes, winshell
 
 MAX_FILE_BYTES = 64 * 1024  # a file up to this size is read whole and its commands followed
 MAX_SCAN_BYTES = 8 * 1024 * 1024  # a larger one is only scanned for publish words, up to this
@@ -79,11 +83,12 @@ _SHELL_VALUES = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
 # `execSync('git push --tags')`, `git.push()`, `twine.commands.upload`. Bare words like `push`
 # or `np` are too common in ordinary code (`list.push(x)`, `import numpy as np`) to count by
 # themselves, and so is a method call near the tool word (`git ... summary.push(x)`).
+# A Windows program name counts too: `["npm.cmd", "publish"]`, `git.exe push`.
 _NAMED_PUBLISH = re.compile(
     r"(?<![\w.-])(?:(npm|pnpm|yarn|bun|uv|poetry|hatch|flit|changeset|lerna)"
-    r"(?:\.|(?![\w.-]).{0,40}?(?<![\w./-]))publish(?![\w:-])"
+    r"(?:\.(?:cmd|exe|bat|ps1))?(?:\.|(?![\w.-]).{0,40}?(?<![\w./-]))publish(?![\w:-])"
     r"|(twine)(?![\w-]).{0,40}?(?<![\w-])upload(?![\w-])"
-    r"|(git)(?:\.|(?![\w./-]).{0,40}?(?<![\w./-]))push(?![\w-])"
+    r"|(git)(?:\.exe)?(?:\.|(?![\w./-]).{0,40}?(?<![\w./-]))push(?![\w-])"
     r"|(semantic-release|release-it)(?![\w.-])"
     r"|npx\s+(np)(?![\w.-]))",
     re.S,
@@ -139,6 +144,7 @@ class _Reading:
 
     root: Path
     command: str = ""  # the agent's command line
+    windows: bool = False  # the command line is for Windows (`commands.detect`)
     files: dict[Path, _File | None] = field(default_factory=dict)
     steps: int = 0
     bytes: int = 0
@@ -162,8 +168,15 @@ def _reading(cwd: Path) -> _Reading:
     return reading if reading is not None else _Reading(_real(cwd))
 
 
-def _is_shell(program: str) -> bool:
-    return Path(program).name in c.SHELLS
+def _dialect(program: str) -> str | None:
+    """The shell that reads a script `program` runs as commands (sh, PowerShell, cmd); None for
+    other languages."""
+    name = Path(program).name
+    if name in c.SHELLS:
+        return winshell.SH
+    if name in {"pwsh", "powershell"}:
+        return winshell.POWERSHELL
+    return winshell.CMD if name == "cmd" else None
 
 
 def _looks_like_release(*texts: str) -> bool:
@@ -266,10 +279,10 @@ def _named(text: str) -> list[Hit]:
     return hits
 
 
-def _hits(text: str, cwd: Path) -> list[Hit]:
+def _hits(text: str, cwd: Path, shell: str = winshell.SH) -> list[Hit]:
     """Shell text only scanned, not read as commands: named publishes and backstop hits."""
-    hits = _named(text)
-    for risky in c._backstop(text, cwd):
+    hits = _named(text if shell == winshell.SH else winshell.plain(text))
+    for risky in c._backstop(text, cwd, shell):
         if (risky.action, risky.tool) not in hits:
             hits.append((risky.action, risky.tool))
     return hits
@@ -311,38 +324,39 @@ def _unread(file: _File, cwd: Path, runner: str, shell: bool) -> list[c.Risky]:
 def _step(step: recipes.Step, name: str, cwd: Path, depth: int) -> list[c.Risky]:
     """One script or recipe line from file `name`. Shell is read as commands; other languages
     are only scanned for a publish or push they name."""
-    if not _is_shell(step.program):
+    shell = _dialect(step.program)
+    if shell is None:
         return _flag(_named(step.text), name, cwd, _CODE)
-    text, other = recipes.shell_text(step.text)
+    text, other = recipes.shell_text(step.text) if shell == winshell.SH else (step.text, [])
     found = [risky for body in other for risky in _flag(_named(body), name, cwd, _CODE)]
     reading = _reading(cwd)
     if reading.peeking or reading.bytes >= MAX_BYTES:
-        return found + _flag(_hits(text, cwd), name, cwd, _DEEP)
+        return found + _flag(_hits(text, cwd, shell), name, cwd, _DEEP)
     if depth >= c.MAX_DEPTH or reading.steps >= MAX_STEPS:
-        return found + _peek(text, cwd, min(depth, c.MAX_DEPTH))
+        return found + _peek(text, cwd, min(depth, c.MAX_DEPTH), shell)
     reading.steps += 1
     reading.bytes += len(text)
-    return found + c.detect(text, cwd, depth + 1)
+    return found + c.detect(text, cwd, depth + 1, shell=shell)
 
 
-def _peek(text: str, cwd: Path, depth: int) -> list[c.Risky]:
+def _peek(text: str, cwd: Path, depth: int, shell: str = winshell.SH) -> list[c.Risky]:
     """Read `text` once more without following anything it runs: its own commands are checked;
     the scripts, recipes and package scripts it runs are only scanned for a publish or push."""
     reading = _reading(cwd)
     reading.peeking = True
     reading.bytes += len(text)
     try:
-        return c._detect(text, cwd, depth)
+        return c._detect(text, cwd, depth, shell)
     finally:
         reading.peeking = False
 
 
-def too_deep(text: str, cwd: Path) -> list[c.Risky]:
+def too_deep(text: str, cwd: Path, shell: str = winshell.SH) -> list[c.Risky]:
     """`commands.detect` past `MAX_DEPTH` (a `bash -c` or package script at the limit)."""
     reading = _reading(cwd)
     if reading.peeking or reading.bytes >= MAX_BYTES:
-        return _flag(_hits(text, cwd), _fragment(text), cwd, _NESTED)
-    return _peek(text, cwd, c.MAX_DEPTH)
+        return _flag(_hits(text, cwd, shell), _fragment(text), cwd, _NESTED)
+    return _peek(text, cwd, c.MAX_DEPTH, shell)
 
 
 def _fragment(text: str) -> str:
@@ -378,17 +392,30 @@ def _script(
     file = _read(arg, cwd)
     if file is None:
         return _lost(arg, cwd, depth, unknown)
-    program = runner or recipes.interpreter(
-        file.text if file.text is not None else file.first_line, file.name
+    program = (
+        runner
+        or _batch(file.name, cwd)
+        or recipes.interpreter(file.text if file.text is not None else file.first_line, file.name)
     )
+    shell = _dialect(program)
     if file.text is None:
-        return _unread(file, cwd, program, _is_shell(program))
+        return _unread(file, cwd, program, shell is not None)
     reading = _reading(cwd)
     key = (file.path, cwd, program, depth, reading.peeking)
     if key not in reading.results:
-        text = _own_folder(file.text, file.path.parent) if _is_shell(program) else file.text
+        text = file.text
+        if shell == winshell.SH:
+            text = _own_folder(text, file.path.parent)
+        elif shell is not None:
+            text = winshell.own_folder(text, file.path.parent.as_posix(), shell)
         reading.results[key] = _step(recipes.Step(text, program), file.name, cwd, depth)
     return list(reading.results[key])
+
+
+def _batch(name: str, cwd: Path) -> str | None:
+    """cmd, for a `.cmd` or `.bat` file run on Windows (elsewhere sh would read it)."""
+    windows = _reading(cwd).windows and PurePosixPath(name).suffix.lower() in {".cmd", ".bat"}
+    return "cmd" if windows else None
 
 
 def _lost(arg: str, cwd: Path, depth: int, unknown: str) -> list[c.Risky]:

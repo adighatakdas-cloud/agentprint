@@ -7,6 +7,9 @@ npm projects are listed with `npm pack --dry-run --ignore-scripts`, Python publi
 through the already-built files they upload. By default any internal error, or a publish or push
 it cannot check, lets the command through with a warning saying so. In strict mode
 (`AGENTPRINT_STRICT=1` or `guard --strict`) those cases block instead.
+
+On Windows the command line is read as PowerShell (and the text of `cmd /c` as cmd):
+`commands.detect` with `windows=True`.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from pathlib import Path
 
 import yaml
 
+from . import platform
 from .advice import Moment
 from .checks import PACKAGE_WANT, check_package
 from .commands import NODE, ROOT_RELEASERS, WORKSPACE_RELEASERS, Action, Risky, detect
@@ -90,13 +94,23 @@ def strict_block(why: str) -> Verdict:
 
 
 def evaluate(
-    command: str, cwd: Path, fail_on: FailOn = FailOn.high, strict: bool = False
+    command: str,
+    cwd: Path,
+    fail_on: FailOn = FailOn.high,
+    strict: bool = False,
+    *,
+    windows: bool | None = None,
+    shell: str | None = None,
 ) -> Verdict | None:
     """None when the command neither publishes nor pushes.
 
-    With `strict`, an internal error or a publish/push that cannot be checked blocks."""
+    With `strict`, an internal error or a publish/push that cannot be checked blocks.
+    `windows` says whether the agent runs on Windows (by default, whether agentprint does), and
+    `shell` names the shell that runs the command (`sh`, `powershell`, `cmd`) when the agent's
+    hook says; together they choose how the command line is read (`commands.detect`)."""
     try:
-        risky = detect(command, cwd)
+        on_windows = platform.is_windows() if windows is None else windows
+        risky = detect(command, cwd, shell=shell, windows=on_windows)
     except Exception as exc:  # noqa: BLE001 - a parser bug must never block work
         return _failed(exc, strict and bool(_LOOKS_RISKY.search(command)))
     if not risky:
