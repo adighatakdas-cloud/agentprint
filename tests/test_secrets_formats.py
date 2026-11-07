@@ -140,3 +140,55 @@ def test_publishing_tokens_come_before_the_generic_rule():
     ids = [r.id for r in RULES]
     assert ids.index("npm") < ids.index("generic")
     assert ids.index("pypi") < ids.index("generic")
+
+
+# ---- the prefilter, hidden long tokens, and the count ----------------------------------------
+
+
+def test_prefilter_never_changes_what_is_found():
+    from agentprint import secrets
+
+    both = {**{k: v for k, v in fakes.NEW.items()}}
+    for key in both.values():
+        plain = f"x = '{key}' # end"
+        with_filter = [(m.rule_id, m.value) for m in secrets.find_secrets(plain)]
+        # the same rules with every prefilter off
+        off = tuple(
+            secrets.replace(r, needs=(), starts=())
+            for r in secrets.RULES  # type: ignore[attr-defined]
+        )
+        without = [(m.rule_id, m.value) for m, _, _ in secrets._matches(plain, off)]
+        assert with_filter == without
+        assert len(with_filter) == 1
+
+
+@pytest.mark.parametrize("spell", [str.upper, str.lower, str.title, str.swapcase])
+def test_context_name_matches_in_any_case(spell):
+    for rule_id, (name, key) in fakes.CONTEXT.items():
+        found = find_secrets(f"{spell(name)}={key}")
+        assert [m.rule_id for m in found] == [rule_id], (rule_id, spell)
+
+
+def test_generic_prefilter_keeps_generic_results():
+    assert [m.rule_id for m in find_secrets(fakes.GENERIC_LINE)] == ["generic"]
+    line = f"curl -H 'Authorization: BEARER {fakes.GENERIC_VALUE}'"
+    assert [m.rule_id for m in find_secrets(line)] == ["generic"]
+
+
+def test_hidden_pypi_and_1password_tokens_of_realistic_length_are_found():
+    from agentprint.secrets import find_secrets_deep
+
+    for name in ("pypi", "onepassword"):
+        key = fakes.NEW[name]
+        cut = len(key) // 2
+        text = f"X={key[:cut]}​{key[cut:]}"
+        assert [m.value for m in find_secrets_deep(text)] == [key], name
+
+
+def test_hidden_token_far_past_the_context_window_is_a_documented_miss():
+    from agentprint.secrets import find_secrets_deep
+
+    key = fakes.NEW["onepassword"] + "FAKE" * 400  # about 1900 characters
+    cut = len(key) // 2
+    text = f"X={key[:cut]}​{key[cut:]}"
+    assert all(m.rule_id != "onepassword" or m.value != key for m in find_secrets_deep(text))

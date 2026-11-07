@@ -80,7 +80,7 @@ including running from a clone of this repo.
 <!-- checks:end -->
 
 Keys are found by pattern and are never used or sent anywhere: Anthropic, OpenAI, GitHub, AWS,
-Stripe, Slack and Google, publishing tokens (npm, PyPI, GitLab, Docker Hub), AI providers (Hugging
+Stripe, Slack and Google, then 27 newer rules (and Slack `xapp-` tokens), publishing tokens (npm, PyPI, GitLab, Docker Hub), AI providers (Hugging
 Face, Groq, OpenRouter, xAI, Perplexity, Replicate), developer platforms (Supabase, Cloudflare,
 DigitalOcean, Linear, Notion, Shopify, Atlassian, Postman, SendGrid, Doppler, 1Password), and
 DeepSeek, Twilio, Discord and Telegram only next to the provider's name. A generic "secret-looking
