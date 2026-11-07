@@ -1115,6 +1115,7 @@ def apply(p: Plan, home: Path) -> Outcome:
 # ---- undo ------------------------------------------------------------------------------------
 
 _JOURNAL_NAME = re.compile(r"\d{8}T\d{6}Z\.json")
+NOTHING_TO_UNDO = "There is nothing to undo"  # how undo()'s answer starts when there is no journal
 _KEY_GONE = {
     "mask": "a masked key in {path} can't be put back: the key is gone, by design",
     "env": "the key that was in {path} ({shown}) can't be put back: the key is gone, by design",
@@ -1160,7 +1161,7 @@ def undo(home: Path) -> tuple[list[str], list[str]]:
     folder = home / JOURNAL_DIR
     names = sorted(p for p in folder.glob("*.json") if _JOURNAL_NAME.fullmatch(p.name))
     if not names:
-        return [], [f"There is nothing to undo: no fix journal in {quote(str(folder))}."]
+        return [], [f"{NOTHING_TO_UNDO}: no fix journal in {quote(str(folder))}."]
     path = names[-1]
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
