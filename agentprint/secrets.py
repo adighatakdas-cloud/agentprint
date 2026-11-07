@@ -1,8 +1,9 @@
 """Secret detection by pattern. Matches are never validated against any service.
 
 `find_secrets` reads text as it is. `find_secrets_deep` also finds keys hidden on purpose: cut
-by invisible characters, split into joined string literals, folded over lines (backslash
-continuations, YAML block scalars) or base64-encoded. See `find_hidden` for how, and its limits.
+by invisible characters, split into joined string literals or by an empty quoted string, folded
+over lines (backslash continuations, YAML block scalars) or base64-encoded. See `find_hidden`
+for how, and its limits.
 """
 
 from __future__ import annotations
@@ -354,11 +355,12 @@ def redact(value: str) -> str:
 # ---- keys hidden on purpose -------------------------------------------------------------------
 #
 # A key can be written so that no plain pattern sees it: cut by invisible characters, split into
-# string literals joined by an operator, folded over lines (backslash continuations, YAML block
-# scalars), or base64-encoded. `find_hidden` undoes each trick on a copy of the text (a "view")
-# and runs the same rules over it. A view drops the characters that hide a key (the "joins") and
-# keeps a map back to the text, so a hidden key is placed at its first character. Only matches
-# that span a join are reported: anything else was plain text all along.
+# string literals joined by an operator or side by side, cut by an empty quoted string, folded
+# over lines (backslash continuations, YAML block scalars), or base64-encoded (a token under 40
+# characters only when it is one whole key). `find_hidden` undoes each trick on a copy of the
+# text (a "view") and runs the same rules over it. A view drops the characters that hide a key
+# (the "joins") and keeps a map back to the text, so a hidden key is placed at its first
+# character. Only matches that span a join are reported: anything else was plain text all along.
 #
 # The same tricks written inside a JSON string (a transcript line) are escaped (\u200b, \", \n);
 # such a string is decoded and read again. Every step is linear in the text and capped below.
@@ -442,6 +444,15 @@ _CHAINS = (
 )
 _PIECE = re.compile(_LITERAL)
 
+# An empty quoted string inside a word: a shell reads abc""def and abc''def as abcdef, and
+# "abc""def" is two literals side by side. Only between letters, digits, `_`, `-` or `.`, so
+# `x = ""`, f("", "") and a CSV "" escape next to a space or a quote are left alone. A run of
+# them (abc""''def) is one join.
+_WORD_CHAR = r"[A-Za-z0-9_.\-]"
+_EMPTY_QUOTES = tuple(
+    re.compile(rf"{q}(?<={_WORD_CHAR}{q})(?:\"\"|'')*+(?={_WORD_CHAR})") for q in ('""', "''")
+)
+
 _CONTINUATION = re.compile(r"\\\r?\n[ \t]*+")
 
 # The end of a YAML block scalar header ("key: |", "key: >-", "- |2"), with an optional comment;
@@ -458,6 +469,13 @@ _FOLD = re.compile(r"[ \t\r]*+\n[ \t\r\n]*+")
 _BASE64_CHARS = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
 _BASE64_MASK = bytes(ord("A") if b in _BASE64_CHARS else ord(".") for b in range(256))
 _MIN_BASE64 = 40
+# A shorter token (24 to 39 characters, so 18 to 29 bytes) is read only when it is one whole
+# key. The only keys that short are AWS key IDs, Slack tokens and short GitLab tokens (a test
+# checks every rule's shortest match). A key's first three characters encode to the token's
+# first four, so only a token that starts like the base64 of one of these is decoded.
+_MIN_SHORT_BASE64 = 24
+_SHORT_KEY_STARTS = ("AKI", "ASI", "xox", "xap", "glp")
+_SHORT_BASE64_LEADS = tuple(base64.b64encode(s.encode()).decode() for s in _SHORT_KEY_STARTS)
 _NOT_LEAD = re.compile(r"[^A-Za-f]")  # base64 of ASCII text starts each 4 characters with A-f
 _UPPER = re.compile(r"[A-Z]")
 _LOWER = re.compile(r"[a-z]")
@@ -466,12 +484,14 @@ _CONTROL_BYTES = bytes(b for b in range(32) if b not in b"\t\n\r") + b"\x7f"
 # A double-quoted string with at least one backslash escape (JSON, and YAML and TOML too).
 _ESCAPED_STRING = re.compile(r'"[^"\\\n]*+(?:\\.[^"\\\n]*+)++"')
 # The tricks above as they look inside such a string: an escaped invisible character, an escaped
-# backslash-newline, escaped quotes joined by an operator or a space, the escaped newline that
-# ends a YAML block header.
+# backslash-newline, escaped quotes joined by an operator or a space, two escaped quotes inside
+# a word (abc\"\"def: "a""b" side by side, or an empty string), the escaped newline that ends a
+# YAML block header.
 _JSON_HINT = re.compile(
     r"\\(?:u(?:00[aA][dD]|180[eE]|200[b-fB-F]|202[a-eA-E]|206[0-46-9]|[fF][eE][fF][fF])"
     r"|\\\\n"
     r'|"[ \t]*+\+[ \t]*+\\"|"[ \t]++(?:\.\.?+[ \t]++)?+\\"'
+    rf'|"\\"(?<={_WORD_CHAR}\\"\\")(?={_WORD_CHAR})'
     r"|n(?:(?<=[:-] [|>]\\n)|(?<=[:-] [|>][1-9+-]\\n)))"
 )
 
@@ -503,6 +523,13 @@ def _split(text: str) -> Iterator[Join]:
                 if previous is not None:
                     yield previous.end() - 1, piece.start() + 1, "split"
                 previous = piece
+
+
+def _emptied(text: str) -> Iterator[Join]:
+    """Each run of empty quoted strings inside a word."""
+    for pattern in _EMPTY_QUOTES:
+        for m in pattern.finditer(text):
+            yield m.start(), m.end(), "split"
 
 
 def _continued(text: str) -> Iterator[Join]:
@@ -557,7 +584,7 @@ def _folded(text: str) -> Iterator[Join]:
             yield fold.start(), fold.end(), "folded"
 
 
-_COLLECTORS = (_invisible, _split, _continued, _folded)
+_COLLECTORS = (_invisible, _split, _emptied, _continued, _folded)
 
 
 def _windows(text: str, joins: list[Join]) -> Iterator[tuple[int, int, list[Join]]]:
@@ -723,11 +750,13 @@ def _decode(head: str) -> str | None:
     return data.decode("utf-8", errors="replace")
 
 
-def _base64_tokens(text: str) -> Iterator[tuple[int, int]]:
-    """(start, end) of each whole base64 token of at least _MIN_BASE64 characters (padding
-    included). A token may follow a JSON escape such as \\n; other escapes rule it out."""
-    mask = text.encode("ascii", "replace").translate(_BASE64_MASK)
-    run = b"A" * _MIN_BASE64
+def _base64_tokens(
+    text: str, mask: bytes, shortest: int = _MIN_BASE64, longest: int | None = None
+) -> Iterator[tuple[int, int]]:
+    """(start, end) of each whole base64 token of `shortest` characters or more, and fewer than
+    `longest` (padding not counted, but included in the span). `mask` is the text's base64
+    mask. A token may follow a JSON escape such as \\n; other escapes rule it out."""
+    run = b"A" * shortest
     pos = 0
     for _ in range(MAX_RUNS):
         start = mask.find(run, pos)
@@ -740,12 +769,13 @@ def _base64_tokens(text: str) -> Iterator[tuple[int, int]]:
                 continue
             start += 1
         pad = len(text[end : end + 3]) - len(text[end : end + 3].lstrip("="))
-        if pad < 3 and end - start >= _MIN_BASE64:
+        if pad < 3 and shortest <= end - start and (longest is None or end - start < longest):
             yield start, end + pad
 
 
 def _in_base64(text: str, budget: Budget) -> Iterator[SecretMatch]:
-    for start, end in _base64_tokens(text):
+    mask = text.encode("ascii", "replace").translate(_BASE64_MASK)
+    for start, end in _base64_tokens(text, mask):
         if budget.blobs <= 0:
             return
         head = text[start : min(end, start + MAX_BLOB_CHARS + 2)]
@@ -757,6 +787,20 @@ def _in_base64(text: str, budget: Budget) -> Iterator[SecretMatch]:
             continue
         for found in find_secrets(decoded):
             yield SecretMatch(found.rule_id, found.name, found.value, start, end, "base64")
+    # Shorter tokens, after the long ones so they never take a long one's place in the budget.
+    for start, end in _base64_tokens(text, mask, _MIN_SHORT_BASE64, _MIN_BASE64):
+        if budget.blobs <= 0:
+            return
+        if not text.startswith(_SHORT_BASE64_LEADS, start):
+            continue
+        budget.blobs -= 1
+        decoded = _decode(text[start:end])
+        if decoded is None:
+            continue
+        key = decoded.removesuffix("\n").removesuffix("\r")  # `echo key | base64` adds one
+        found = find_secrets(key)
+        if len(found) == 1 and found[0].value == key:  # the whole text is one key
+            yield SecretMatch(found[0].rule_id, found[0].name, key, start, end, "base64")
 
 
 def _string_around(text: str, at: int, floor: int) -> tuple[int, int] | None:

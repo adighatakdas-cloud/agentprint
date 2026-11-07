@@ -171,6 +171,65 @@ def test_base64_after_a_json_newline_escape():
     assert _only(line).value == KEY
 
 
+@pytest.mark.parametrize(
+    "piece",
+    [
+        f'{A}""{B}',  # shell: an empty string inside a word
+        f"{A}''{B}",
+        f"{A}\"\"''{B}",  # a run of them
+    ],
+)
+def test_empty_quotes_inside_a_word(piece):
+    text = f"export ANTHROPIC_KEY={piece} && npm run dev"
+    match = _only(text)
+    assert (match.value, match.obfuscation) == (KEY, "split")
+    assert (match.start, match.end) == (text.index(A), text.index(B) + len(B))
+
+
+# Base64 shorter than 40 characters is read only when it is one whole key. These are the keys
+# short enough: their base64 is 24 to 39 characters, padding aside.
+SHORT_KEYS = {
+    "aws": fakes.AWS,
+    "aws with a newline": fakes.AWS + "\n",  # what `echo KEY | base64` encodes
+    "slack": fakes.SLACK,
+    "gitlab": fakes.NEW["gitlab"],
+}
+
+
+@pytest.mark.parametrize("name", SHORT_KEYS)
+@pytest.mark.parametrize("template", ["echo {} | base64 -d", '{{"K_B64": "{}"}}', "data={}", "{}"])
+def test_short_base64_of_one_whole_key(name, template):
+    blob = _b64(SHORT_KEYS[name])
+    assert 24 <= len(blob.rstrip("=")) < 40
+    text = template.format(blob)
+    match = _only(text)
+    assert (match.value, match.obfuscation) == (SHORT_KEYS[name].rstrip("\n"), "base64")
+    assert (match.start, match.end) == (text.index(blob), text.index(blob) + len(blob))
+
+
+def test_short_base64_after_a_json_newline_escape():
+    blob = _b64(fakes.AWS)
+    line = json.dumps({"display": f"decode this:\n{blob}\nthanks"})
+    assert (_only(line).value, _only(line).obfuscation) == (fakes.AWS, "base64")
+
+
+def test_every_key_that_short_base64_can_hold_is_read():
+    # The keys whose base64 can be under 40 characters (29 characters or fewer) are the rules a
+    # short token's first four characters are checked against. A new rule that short must be
+    # added there, or its short base64 would be missed.
+    import re._parser as sre_parser  # the regex engine's own parser: a pattern's shortest match
+
+    short = {
+        r.id
+        for r in secrets.RULES
+        if r.group == 0 and sre_parser.parse(r.pattern.pattern).getwidth()[0] <= 29
+    }
+    assert short == {"aws", "slack", "gitlab"}
+    for key in (fakes.AWS, fakes.SLACK, fakes.NEW["gitlab"], "AS" + fakes.AWS[2:]):
+        assert key.startswith(secrets._SHORT_KEY_STARTS)
+        assert [m.value for m in find_hidden(_b64(key))] == [key]
+
+
 # ---- the same tricks inside JSON strings (transcripts, chat logs) ----------------------------
 
 
@@ -198,6 +257,22 @@ def test_yaml_block_inside_a_json_string():
 def test_continuation_inside_a_json_string():
     line = json.dumps({"content": f"export K={A}\\\n{B}"})
     assert _only(line).value == KEY
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        f'const k = "{A}""{B}";',  # side by side with no space: \"a\"\"b\" once escaped
+        f"const k = '{A}''{B}';",
+        f'export K={A}""{B} && npm run dev',  # an empty string inside a word
+        f"export K={A}''{B} && npm run dev",
+    ],
+)
+def test_side_by_side_and_empty_quotes_inside_a_json_string(code):
+    line = "first line\n" + json.dumps({"type": "assistant", "content": code}) + "\n"
+    match = _only(line)
+    assert (match.value, match.obfuscation) == (KEY, "split")
+    assert line.count("\n", 0, match.start) == 1
 
 
 # ---- what is reported, and what is not -------------------------------------------------------
@@ -249,6 +324,34 @@ def test_ordinary_text_hides_nothing(text):
     assert find_hidden(text) == []
 
 
+# Look-alikes of the three newer shapes: empty strings next to each other, CSV's "" escapes,
+# empty strings inside words that join into no key, and short base64 that is not one whole key.
+LOOK_ALIKES = {
+    "json with empty strings": json.dumps({"a": "", "b": ["", ""], "c": {"d": ""}}),
+    "json of json with empty strings": json.dumps({"c": json.dumps({"a": "", "b": ["", ""]})}),
+    "code with empty strings": 'x = ""; f("", ""); y = b"".join(z) + \'\' + ""\n',
+    "escaped code with empty strings": json.dumps({"content": 'x = "" + ""; s = f""; t = r\'\''}),
+    "csv escapes": '"name","quote"\n"bob","he said ""hi"" to me"\n"5""10","it\'\'s"\n',
+    "csv escapes in a json string": json.dumps({"csv": '"a","b ""quoted"" c"\n"5""10"'}),
+    "triple quotes": "\"\"\"A docstring.\"\"\"\ndef f():\n    return '''x'''\n",
+    "sql escapes": "INSERT INTO t VALUES ('it''s', 'O''Brien', 'token''s value');",
+    "short base64 of text": _b64("hello world, how are you"),
+    "short base64 that starts like a key": _b64("AKIA is not a key at all"),
+    "short base64 of a word like a key": _b64("xoxo, hugs and kisses!"),
+    "short base64 of a key and more": _b64("k=" + fakes.AWS),
+    "short base64 of more than a key": _b64(fakes.AWS + " x"),
+    "short base64 of part of a key": _b64(fakes.NEW["gitlab"][:-3]),
+    "base64 shorter than 24": _b64(fakes.AWS[:15]),
+}
+
+
+@pytest.mark.parametrize("name", LOOK_ALIKES)
+def test_look_alikes_of_the_newer_shapes_hide_nothing(name):
+    text = LOOK_ALIKES[name]
+    assert find_secrets_deep(text) == []
+    assert secrets.hidden_spans(text) == []
+
+
 def test_a_key_already_visible_inside_a_block_is_not_hidden():
     text = f"KEY: |\n  {KEY}\n"
     assert [m.obfuscation for m in find_secrets_deep(text)] == [None]
@@ -277,6 +380,8 @@ PLAIN_WINS = {
     ),
     "continuation right after a key": (f"export K={fakes.OPENAI}\\\n--verbose\n", [fakes.OPENAI]),
     "invisible character right after a key": (f"{fakes.OPENAI}{ZWSP}more\n", [fakes.OPENAI]),
+    "two plain literals with no space": (f'k = "{KEY}""{fakes.GITHUB}"\n', [KEY, fakes.GITHUB]),
+    "empty quotes right after a key": (f'export K={fakes.OPENAI}""more\n', [fakes.OPENAI]),
 }
 
 
@@ -336,6 +441,19 @@ HOSTILE = {
     "joins among AWS-shaped ids": lambda: ('"x" + "y" ' + (fakes.AWS + " ") * 30) * 8_000,
     "invisible characters among AWS-shaped ids": lambda: (fakes.AWS + ZWSP) * 240_000,
     "split keys back to back": lambda: f'"{A}" + "{B}"; ' * 40_000,
+    # The newer shapes: empty quotes inside words, escaped ones in JSON, short base64.
+    "empty quotes in every word": lambda: 'a""' * 1_666_666,
+    "empty single quotes in every word": lambda: "a''" * 1_666_666,
+    "one long run of empty quotes": lambda: "a" + "\"\"''" * 1_249_999 + '""b',
+    "escaped empty quotes in one string": lambda: '{"d": "' + 'a\\"\\"' * 1_000_000 + '"}',
+    "escaped empty quotes in many strings": lambda: '"a\\"\\"b" ' * 500_000,
+    "empty quotes among AWS-shaped ids": lambda: (
+        (fakes.AWS[:8] + '""' + fakes.AWS[8:] + " ") * 200_000
+    ),
+    "short base64 leads": lambda: (" ".join(secrets._SHORT_BASE64_LEADS) + " ") * 200_000,
+    "short base64 runs with a lead": lambda: (_b64("AKI") + "A" * 26 + " ") * 160_000,
+    "short base64 runs without one": lambda: ("abcdefghijklmnopqrstuvwxyz0123" + " ") * 160_000,
+    "short base64 of keys": lambda: (_b64(fakes.AWS) + " ") * 170_000,
 }
 
 
@@ -401,6 +519,36 @@ def test_check_finds_base64_and_invisible_kinds(tmp_path):
         f"GitHub token: {redact(fakes.GITHUB)} (hidden: base64)",
         f"AWS access key ID: {redact(fakes.AWS)} (hidden: invisible characters)",
     }
+
+
+def test_history_check_reports_the_newer_shapes_on_their_lines(tmp_path):
+    f = tmp_path / "history.jsonl"
+    g = fakes.GITHUB
+    lines = [
+        {"display": "fix the failing test"},
+        {"display": f'export CLAUDE_K={A}""{B} && npm run dev'},
+        {"display": f'const t = "{g[:9]}""{g[9:]}";'},
+        {"display": f"export AWS_ACCESS_KEY_ID=$(echo {_b64(fakes.AWS)} | base64 -d)"},
+    ]
+    f.write_text("".join(json.dumps(x) + "\n" for x in lines))
+    found = sorted(
+        (x.line, x.detail) for x in AP001.run([Artifact("claude-code", Kind.HISTORY, f)])
+    )
+    assert found == [
+        (2, _hidden_detail(KEY, "split string")),
+        (3, f"GitHub token: {redact(g)} (hidden: split string)"),
+        (4, f"AWS access key ID: {redact(fakes.AWS)} (hidden: base64)"),
+    ]
+    text = f.read_text()
+    assert KEY not in text and g not in text and fakes.AWS not in text  # all hidden, none plain
+
+
+def test_settings_check_reports_a_short_base64_key(tmp_path):
+    f = tmp_path / "settings.local.json"
+    allow = [f"Bash(curl -H 'X-Key: {_b64(fakes.NEW['gitlab'])}' https://example.com)"]
+    f.write_text(json.dumps({"permissions": {"allow": allow}}))
+    [finding] = AP002.run([Artifact("claude-code", Kind.SETTINGS, f)])
+    assert finding.detail == f"GitLab token: {redact(fakes.NEW['gitlab'])} (hidden: base64)"
 
 
 def test_check_finds_a_hidden_key_past_the_first_chunk(tmp_path, monkeypatch):
@@ -481,6 +629,31 @@ def test_safe_snippet_redacts_every_copy_of_a_base64_key(plain_first):
     assert shown.count(redact(KEY)) == 3
 
 
+@pytest.mark.parametrize("plain_first", [True, False])
+def test_a_key_plain_and_in_short_base64_is_reported_once_and_redacted_twice(plain_first):
+    blob = _b64(fakes.AWS)
+    text = f"{fakes.AWS} {blob} {blob}" if plain_first else f"{blob} {blob} {fakes.AWS}"
+    assert [(m.value, m.obfuscation) for m in find_secrets_deep(text)] == [(fakes.AWS, None)]
+    shown = safe_snippet(text, 2000)
+    assert blob not in shown and fakes.AWS not in shown
+    assert shown.count(redact(fakes.AWS)) == 3
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f'x = {A}""{B}; y = {A}""{B}',
+        f"x = {A}''{B}; echo {KEY}",
+        json.dumps({"content": f'k = "{A}""{B}"; again "{A}""{B}"'}),
+        f"echo {_b64(fakes.AWS)} and {_b64(fakes.AWS)}",
+    ],
+)
+def test_safe_snippet_redacts_every_copy_of_the_newer_shapes(text):
+    shown = safe_snippet(text, 2000)
+    assert A not in shown and B not in shown and _b64(fakes.AWS) not in shown
+    assert redact(KEY) in shown or shown.count(redact(fakes.AWS)) == 2
+
+
 def test_rotate_text_names_the_key_without_the_hidden_note(tmp_path):
     f = tmp_path / "history.jsonl"
     f.write_text(f'"{A}" + "{B}"\n')
@@ -512,6 +685,25 @@ def test_fix_leaves_a_hidden_key_to_the_human(tmp_path):
     outcome = fix.apply(p, home)
     assert outcome.applied == [] and path.read_text() == original
     assert KEY not in repr(p) and A not in repr(p)
+
+
+@pytest.mark.parametrize(
+    ("display", "how"),
+    [
+        (f'export K={A}""{B}', "split string"),
+        (f'k = "{A}""{B}"', "split string"),
+        (f"echo {_b64(fakes.AWS)} | base64 -d", "base64"),
+    ],
+)
+def test_fix_leaves_the_newer_shapes_to_the_human(tmp_path, display, how):
+    original = json.dumps({"display": display}) + "\n"
+    home, path = _history_home(tmp_path, original)
+    p = fix.plan(scan(home, None))
+    assert p.changes == []
+    [item] = [m for m in p.todo if m.check_id == "AP001"]
+    assert "hidden" in item.text and how in item.text
+    fix.apply(p, home)
+    assert path.read_text() == original
 
 
 def test_fix_masks_the_plain_key_and_leaves_the_hidden_one(tmp_path):
