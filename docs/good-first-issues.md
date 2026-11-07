@@ -39,16 +39,18 @@ EOF
 
 ## 3. Hooks on Windows
 
-The hook launcher is a POSIX shell script (`~/.agentprint/bin/agentprint-hook`), so on Windows
-`install` adds only the MCP server and the instructions note (enforced in `install.py` through
-`agentprint/platform.py`, and covered by `tests/test_windows_gate.py`).
+On Windows, `install` adds hooks through a PowerShell launcher
+(`~/.agentprint/bin/agentprint-hook.ps1`) for Claude Code, Codex, Copilot CLI and Cursor, the
+agents whose docs say how a hook runs on Windows. The others get only the MCP server and the
+instructions note there (`Integration.windows_hooks`; tests in `tests/test_windows_gate.py`,
+`tests/test_windows_hooks.py` and, on Windows, `tests/test_launcher_windows.py`).
 
-- **Where:** `launcher_script()` and `Launch` in `agentprint/install.py` and
-  `agentprint/integrations/base.py`.
-- **Done when:** Windows gets a PowerShell (or `.cmd`) launcher with the same rules: exit 0
-  with the agent's own "allow" on any failure, block only on a clear verdict. Start with one
-  agent whose Windows hook format is documented (Claude Code or Codex), and keep the POSIX path
-  unchanged.
+- **Where:** the agent's module in `agentprint/integrations/`, and `Launch.windows_command()` /
+  `Launch.powershell_command()` in `agentprint/integrations/base.py`.
+- **Done when:** one more agent gets Windows hooks after someone confirms on a real Windows
+  machine which shell runs its hook command and how the hook input arrives: its `edits()`
+  write a Windows entry when `launch.windows` is set, `windows_hooks=True`, and a Windows-only
+  test runs the entry the way the agent does. Keep the POSIX entry unchanged.
 
 ## 4. Qwen Code: from scan-only to a full agent
 
