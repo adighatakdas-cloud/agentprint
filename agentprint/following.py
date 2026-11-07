@@ -24,7 +24,7 @@ import shlex
 import stat
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from . import commands as c
 from . import recipes
@@ -215,7 +215,7 @@ def _load(path: Path, name: str) -> _File | None:
             if b"\0" in head:
                 return None  # a compiled program, not a script
             if len(head) <= MAX_FILE_BYTES:
-                return _File(path, name, head.decode("utf-8", "replace").removeprefix("﻿"))
+                return _File(path, name, _text(head))
             return _scan_large(handle, head, path, name)
     except OSError:
         return _File(path, name, None, "unreadable")
@@ -224,11 +224,17 @@ def _load(path: Path, name: str) -> _File | None:
             os.close(fd)
 
 
+def _text(data: bytes) -> str:
+    """File bytes as text: UTF-8 (bad bytes replaced), no BOM, and Windows CRLF line ends as LF,
+    since everything that reads it goes line by line."""
+    return data.decode("utf-8", "replace").removeprefix("\ufeff").replace("\r\n", "\n")
+
+
 def _scan_large(handle, head: bytes, path: Path, name: str) -> _File:
     """Scan a file too large to follow, 64 KB at a time with an overlap, up to 8 MB."""
     named: list[Hit] = []
     bare = ""
-    first_line = head[:4096].decode("utf-8", "replace").removeprefix("﻿").split("\n", 1)[0]
+    first_line = _text(head[:4096]).split("\n", 1)[0]
     total, chunk, tail = len(head), head, ""
     while chunk:
         text = tail + chunk.decode("utf-8", "replace")
@@ -345,10 +351,13 @@ def _fragment(text: str) -> str:
     return line if len(line) <= 60 else line[:57] + "..."
 
 
-def _own_folder(text: str, folder: Path) -> str:
+def _own_folder(text: str, folder: PurePath) -> str:
     """A shell script with `$(dirname "$0")` and friends replaced by its own folder, and the
-    variables set to that folder (`ROOT="$(cd "$(dirname "$0")/.." && pwd)"`) filled in."""
-    where = str(folder)
+    variables set to that folder (`ROOT="$(cd "$(dirname "$0")/.." && pwd)"`) filled in.
+
+    The folder is written with forward slashes (`C:/Users/me/proj` on Windows, which Git Bash
+    takes too): a backslash in shell text is an escape, so `cd $(dirname $0)` would lose them."""
+    where = folder.as_posix()
     text = _OWN_FOLDER.sub(lambda _: where, text)
     assigned = re.findall(
         r"(?m)^[ \t]*(?:export[ \t]+|readonly[ \t]+|local[ \t]+|declare[ \t]+)?([A-Za-z_]\w*)="

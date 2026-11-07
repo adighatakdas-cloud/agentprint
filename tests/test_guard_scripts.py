@@ -274,3 +274,25 @@ def test_could_not_check_names_the_file_and_the_next_step():
     assert _could_not(plain, CannotCheck(plain.unsure)) == (
         "agentprint could not check this git push: its folder is unknown."
     )
+
+
+def test_own_folder_is_written_with_forward_slashes_for_a_windows_path():
+    from pathlib import PureWindowsPath
+
+    from agentprint.following import _own_folder
+
+    folder = PureWindowsPath(r"C:\Users\me\proj\scripts")
+    text = 'cd $(dirname $0)\nHERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\ncd "$HERE"\n'
+    assert _own_folder(text, folder) == (
+        'cd C:/Users/me/proj/scripts\nHERE="C:/Users/me/proj/scripts"\n'
+        'cd "C:/Users/me/proj/scripts"\n'
+    )
+
+
+def test_a_script_with_windows_line_ends_is_read_the_same(leaky):
+    line = 'HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\r\ncd "$HERE"'
+    _repo(leaky, {"scripts/publish-npm.sh": "npm publish ../demo-1.0.0.tgz\n"})
+    (leaky / "scripts" / "release.sh").write_bytes(
+        f"#!/bin/sh\r\n{line}\r\n./publish-npm.sh\r\n".encode()
+    )
+    assert evaluate("./scripts/release.sh", leaky).block
