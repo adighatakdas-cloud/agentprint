@@ -415,9 +415,10 @@ def _script(
 
 
 def _lost(arg: str, cwd: Path, depth: int, unknown: str) -> list[c.Risky]:
-    """A script a followed file runs after a `cd` to a folder only known at run time, which
-    isn't where agentprint looked: "could not check" when it looks like a release."""
-    if not unknown or depth == 0 or c._UNKNOWABLE.search(arg) or os.path.lexists(cwd / arg):
+    """A script run after a `cd` to a folder only known at run time (on the command line or in
+    a followed file), which isn't where agentprint looked: "could not check" when it looks like
+    a release."""
+    if not unknown or c._UNKNOWABLE.search(arg) or os.path.lexists(cwd / arg):
         return []
     if not _looks_like_release(arg):
         return []

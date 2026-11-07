@@ -456,3 +456,10 @@ def test_cd_options_come_before_the_folder(tmp_path, cd):
 
     got = detect(f"{cd} && npm publish", tmp_path)
     assert [(r.action, r.cwd, r.unsure) for r in got] == [(Action.publish, tmp_path / "pkg", "")]
+
+
+def test_a_missing_release_script_after_an_unknown_cd_on_the_command_line(tmp_path):
+    verdict = evaluate('cd "$PKG" && ./publish.sh', tmp_path)
+    assert not verdict.block and 'could not check "./publish.sh"' in verdict.warning
+    assert evaluate('cd "$PKG" && ./publish.sh', tmp_path, strict=True).block
+    assert evaluate('cd "$BUILD" && ./configure', tmp_path) is None  # never cry wolf
