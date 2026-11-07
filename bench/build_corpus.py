@@ -69,6 +69,116 @@ def make_key(kind: str, rng: random.Random) -> str:
     raise ValueError(kind)
 
 
+HEX = "0123456789abcdef"
+LOWER_DIGITS = string.ascii_lowercase + string.digits
+
+
+def _hex_body(rng: random.Random, n: int) -> str:
+    """Hex has no F-A-K-E, so the marker is `deadbeef`, then random hex."""
+    return ("deadbeef" + "".join(rng.choice(HEX) for _ in range(n)))[:n]
+
+
+def make_new_key(kind: str, rng: random.Random) -> str:
+    """Fake keys in the formats added in 0.1.1, grouped in NEW_FAMILIES. Same rules as make_key."""
+    b = _body
+    if kind == "npm":
+        return "npm" + "_" + b(rng, ALNUM, 36)
+    if kind == "pypi":
+        return "py" + "pi-" + "AgEIcHlwaS5vcmc" + b(rng, URLSAFE, 120)
+    if kind == "gitlab":
+        return "gl" + "pat-" + b(rng, URLSAFE, 20)
+    if kind == "dockerhub":
+        return "dckr" + "_pat_" + b(rng, URLSAFE, 27)
+    if kind == "huggingface":
+        return "hf" + "_" + b(rng, string.ascii_letters, 34)
+    if kind == "groq":
+        return "gs" + "k_" + b(rng, ALNUM, 52)
+    if kind == "openrouter":
+        return "sk-" + "or-v1-" + _hex_body(rng, 64)
+    if kind == "xai":
+        return "xa" + "i-" + b(rng, ALNUM + "_", 80)
+    if kind == "perplexity":
+        return "pp" + "lx-" + b(rng, ALNUM, 48)
+    if kind == "replicate":
+        return "r8" + "_" + b(rng, URLSAFE, 37)
+    if kind == "supabase":
+        return "sb" + "p_" + _hex_body(rng, 40)
+    if kind == "cloudflare":
+        return "cf" + "ut_" + b(rng, ALNUM, 40) + _hex_body(rng, 8)
+    if kind == "digitalocean":
+        return "do" + "p_v1_" + _hex_body(rng, 64)
+    if kind == "linear":
+        return "lin" + "_api_" + b(rng, ALNUM, 40)
+    if kind == "notion":
+        return (
+            "nt" + "n_" + "".join(rng.choice(string.digits) for _ in range(11)) + b(rng, ALNUM, 35)
+        )
+    if kind == "shopify":
+        return "sh" + "pat_" + _hex_body(rng, 32)
+    if kind == "atlassian":
+        return "ATA" + "TT3" + b(rng, URLSAFE, 186)
+    if kind == "postman":
+        return "PM" + "AK-" + _hex_body(rng, 24) + "-" + _hex_body(rng, 34)
+    if kind == "sendgrid":
+        return "S" + "G." + b(rng, URLSAFE, 22) + "." + b(rng, URLSAFE, 43)
+    if kind == "doppler":
+        return "dp" + ".pt." + b(rng, ALNUM, 43)
+    if kind == "onepassword":
+        return "ops" + "_eyJ" + b(rng, ALNUM, 300)
+    if kind == "slack-app":
+        return (
+            "xa"
+            + "pp-1-A"
+            + b(rng, UPPER_DIGITS, 10)
+            + "-"
+            + "".join(rng.choice(string.digits) for _ in range(11))
+            + "-"
+            + "".join(rng.choice(LOWER_DIGITS) for _ in range(32))
+        )
+    if kind == "google-oauth":
+        return "GOC" + "SPX-" + b(rng, URLSAFE, 28)
+    if kind == "deepseek":
+        return "sk" + "-" + _hex_body(rng, 32)
+    if kind == "twilio":
+        return "S" + "K" + _hex_body(rng, 32)
+    if kind == "discord":
+        return "M" + b(rng, URLSAFE, 24) + "." + b(rng, URLSAFE, 6) + "." + b(rng, URLSAFE, 30)
+    if kind == "telegram":
+        return "".join(rng.choice(string.digits) for _ in range(9)) + ":AA" + b(rng, URLSAFE, 33)
+    raise ValueError(kind)
+
+
+# Key families added in 0.1.1, one positive category each: publishing tokens, AI providers,
+# developer platforms, and the formats that match only next to the provider's name.
+NEW_FAMILIES: dict[str, tuple[str, ...]] = {
+    "plain-publishing": ("npm", "pypi", "gitlab", "dockerhub"),
+    "plain-ai-providers": (
+        "huggingface",
+        "groq",
+        "openrouter",
+        "xai",
+        "perplexity",
+        "replicate",
+    ),  # fmt: skip
+    "plain-dev-platforms": (
+        "supabase",
+        "cloudflare",
+        "digitalocean",
+        "linear",
+        "notion",
+        "shopify",
+        "atlassian",
+        "postman",
+        "sendgrid",
+        "doppler",
+        "onepassword",
+        "slack-app",
+        "google-oauth",
+    ),  # fmt: skip
+    "plain-context-only": ("deepseek", "twilio", "discord", "telegram"),
+}
+
+
 def make_secret_access_key(rng: random.Random) -> str:
     """The paired AWS secret access key (40 chars, FAKE first) that scanners look for."""
     return _body(rng, ALNUM + "/+", 40)
@@ -84,6 +194,25 @@ ENV_NAMES = {
     "slack": "SLACK_BOT_TOKEN",
     "google": "GOOGLE_API_KEY",
 }
+
+
+ENV_NAMES.update(
+    {
+        "npm": "NPM_TOKEN", "pypi": "PYPI_TOKEN", "gitlab": "GITLAB_TOKEN",
+        "dockerhub": "DOCKER_PAT", "huggingface": "HF_TOKEN", "groq": "GROQ_API_KEY",
+        "openrouter": "OPENROUTER_API_KEY", "xai": "XAI_API_KEY",
+        "perplexity": "PERPLEXITY_API_KEY", "replicate": "REPLICATE_API_TOKEN",
+        "supabase": "SUPABASE_ACCESS_TOKEN", "cloudflare": "CLOUDFLARE_API_TOKEN",
+        "digitalocean": "DIGITALOCEAN_TOKEN", "linear": "LINEAR_API_KEY",
+        "notion": "NOTION_TOKEN", "shopify": "SHOPIFY_ACCESS_TOKEN",
+        "atlassian": "ATLASSIAN_API_TOKEN", "postman": "POSTMAN_API_KEY",
+        "sendgrid": "SENDGRID_API_KEY", "doppler": "DOPPLER_TOKEN",
+        "onepassword": "OP_SERVICE_ACCOUNT_TOKEN", "slack-app": "SLACK_APP_TOKEN",
+        "google-oauth": "GOOGLE_CLIENT_SECRET", "deepseek": "DEEPSEEK_API_KEY",
+        "twilio": "TWILIO_API_KEY", "discord": "DISCORD_BOT_TOKEN",
+        "telegram": "TELEGRAM_BOT_TOKEN",
+    }
+)  # fmt: skip
 
 
 @dataclass(frozen=True)
@@ -363,6 +492,11 @@ def build(root: Path, seed: int = SEED) -> list[Case]:
         for n in range(7):
             path, text = _negative_file(category, make(rng), shape_name)
             write(Case(f"{category}-{n}", category, False, path), text)
+
+    # Appended last so the random draws for every earlier case stay as they were.
+    for category, family in NEW_FAMILIES.items():
+        for n, kind in enumerate(family):
+            add_positive(category, n, history, kind, make_new_key(kind, rng))
 
     manifest = [
         {
