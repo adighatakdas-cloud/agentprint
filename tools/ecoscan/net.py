@@ -229,6 +229,7 @@ class Http:
     def _send(self, method, url, headers, body, max_bytes, tally) -> Response:
         host = urlsplit(url).netloc
         problem = ""
+        attempt = 0
         for attempt in range(self.max_retries + 1):
             self.limiter.wait(host)
             try:

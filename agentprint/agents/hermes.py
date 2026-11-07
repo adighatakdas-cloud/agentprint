@@ -26,7 +26,15 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
-from .base import artifacts, dig, from_home, hook_commands, is_blanket_command, mcp_servers
+from .base import (
+    artifacts,
+    dig,
+    from_home,
+    hook_commands,
+    is_blanket_command,
+    matches_any,
+    mcp_servers,
+)
 
 NAME = "hermes"
 
@@ -70,6 +78,15 @@ def _glob(base: Path, pattern: str) -> list[Path]:
         return []
 
 
+# History that is only a record (fix masks keys there): the message databases, gateway sessions
+# and logs, in the main folder and in each profile. skills/, cron/ (scheduled jobs), memories/
+# and SOUL.md are read back as instructions, so fix leaves keys there alone.
+_RECORDS = (
+    re.compile(r"(^|/)\.hermes/(profiles/[^/]+/)?(state|response_store)\.db$"),
+    re.compile(r"(^|/)\.hermes/(profiles/[^/]+/)?(sessions|logs)/"),
+)
+
+
 class Hermes:
     name = NAME
     package_rules = (
@@ -110,6 +127,9 @@ class Hermes:
 
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         return iter(())
+
+    def pure_history(self, path: Path) -> bool:
+        return matches_any(path, _RECORDS)
 
     def read_config(self, artifact: Artifact) -> AgentConfig:
         if artifact.path.name != "config.yaml":

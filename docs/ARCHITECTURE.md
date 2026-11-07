@@ -10,7 +10,8 @@ own formats. agentprint separates **where files are** (one module per agent) fro
 risky** (one module per check). A third layer, **integrations**, plugs agentprint into each
 agent: it reads the agent's hook messages and answers in the agent's own format. All of it
 produces the same thing, a list of findings, which are already redacted and are printed for a
-person (a table) or for an AI agent (a verdict, fix steps, and what to ask the human).
+person (grouped by severity, ending on BLOCK or CLEAR) or for an AI agent (a verdict, fix
+steps, and what to ask the human). Who is running it decides which (`ui/detect.py`).
 
 ## The picture
 
@@ -26,7 +27,8 @@ person (a table) or for an AI agent (a verdict, fix steps, and what to ask the h
     reply out)        (per agent)   pack.py / gitcheck.py ─────────────────────┤
                                                                                ▼
  agent's MCP call ──► mcp_server.py ─► the same checks ──────────► advice.py  fix_steps, ask_human
-                                                                   report.py  table | json | agent
+                                                                   report.py  json | agent
+                                                                   ui/        a person's screens
                                                                    sarif.py   GitHub code scanning
                                                                    sanitize.py on every scanned string
 
@@ -42,6 +44,8 @@ person (a table) or for an AI agent (a verdict, fix steps, and what to ask the h
   `credentials`;
 - how to read its config (`read_config`): which settings let it act without asking (grants),
   which hooks it runs, and which MCP servers it starts;
+- which of its history files are only records (`pure_history`), so `agentprint fix` may mask a
+  key there, and which it reads back as instructions or config;
 - which of its files must never ship in a package (`package_rules`).
 
 `agents/scan_only.py` holds 15 lighter agents that are only package rules and project files.
@@ -77,13 +81,21 @@ isn't a publish or a push passes straight through without any check.
 
 **Output.** `advice.py` turns each finding into `fix_steps` (what the agent can do itself) and
 `ask_human` (what only a person can do, like rotating a key at the provider, with the link).
-`report.py` renders a table, JSON or the agent format; `sarif.py` writes SARIF for GitHub.
+`report.py` renders JSON and the agent format; `sarif.py` writes SARIF for GitHub.
+
+**`ui/` (a person's screens).** `detect.py` tells a person, an AI agent and CI apart: an agent
+(found by an env marker such as `CLAUDECODE`) gets `--format agent` from a plain `scan` or
+`pack`, and never color, animation or the menu; a pipe gets a person's layout without color.
+`results.py` draws the findings grouped by severity, the fixes and BLOCK or CLEAR;
+`welcome.py`, `sweep.py` and `menu.py` are what a bare `agentprint` shows; `layout.py` fits
+lines to the terminal; every color lives in `theme.py`.
 
 ## Two paths through the code
 
 **`agentprint scan`:** `cli.py` → `scanner.discover()` asks every agent module for its files
 in your home and the project → every check in `checks/__init__.py` runs over that list →
-duplicate claims are dropped → findings are sorted, most severe first → `report.py` prints them.
+duplicate claims are dropped → findings are sorted, most severe first → `ui/results.py` prints
+them for a person, `report.py` for an AI agent.
 
 **An agent about to run `npm publish`:** the agent runs its hook → the hook runs
 `~/.agentprint/bin/agentprint-hook`, which runs `agentprint guard --agent <name>` → `hook.py`

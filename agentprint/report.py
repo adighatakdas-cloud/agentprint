@@ -7,20 +7,11 @@ from enum import StrEnum
 from pathlib import Path
 
 from rich.console import Console
-from rich.markup import escape
-from rich.table import Table
 
 from . import __version__
 from .advice import Moment, advise
 from .models import Finding, Severity
 from .sanitize import clean, quote, safe_step
-
-STYLE = {
-    Severity.CRITICAL: "bold red",
-    Severity.HIGH: "red",
-    Severity.MEDIUM: "yellow",
-    Severity.LOW: "cyan",
-}
 
 
 class FailOn(StrEnum):
@@ -68,26 +59,16 @@ def _short(location: str) -> str:
     return "~" + location[len(home) :] if location.startswith(home) else location
 
 
-def print_table(findings: list[Finding], console: Console) -> None:
-    if not findings:
-        console.print("[green]No findings.[/green] Nothing risky in the places agentprint checks.")
-        return
-    table = Table()
-    for column in ("Severity", "ID", "Agent", "Where", "What"):
-        table.add_column(column)
-    for f in findings:
-        where = clean(_short(f.location)) + (f":{f.line}" if f.line else "")
-        what = clean(f.detail) + (f" (×{f.count})" if f.count > 1 else "")
-        severity = f.severity.name.lower()
-        table.add_row(
-            f"[{STYLE[f.severity]}]{severity}[/]", f.check_id, f.agent, escape(where), escape(what)
-        )
-    console.print(table)
-    console.print("[bold]How to fix[/bold]")
-    for check_id, fix in sorted({(f.check_id, f.fix) for f in findings}):
-        console.print(f"  {check_id}: {escape(safe_step(fix))}")
-    counts = ", ".join(f"{n} {s}" for s, n in summary(findings).items() if n)
-    console.print(f"{len(findings)} findings ({counts}). Secrets are shown redacted.")
+def print_table(
+    findings: list[Finding],
+    console: Console,
+    fail_on: FailOn = FailOn.high,
+    header: str | None = None,
+) -> None:
+    """The human view: findings grouped by severity, the fixes, then BLOCK or CLEAR."""
+    from .ui.results import render  # ui.results builds on this module
+
+    render(findings, console, fail_on=fail_on, header=header)
 
 
 def exit_code(findings: list[Finding], fail_on: FailOn) -> int:

@@ -6,17 +6,26 @@ file). `ask_human` is what only the human can do, such as rotating a key in a pr
 Checks plug in here, not in the report code: register an adviser for a check id with
 `@adviser("AP0xx")`. A check with no adviser falls back to its one-line `fix` hint.
 Every value taken from scanned content goes through `sanitize.quote()`.
+
+`advise(..., person=True)` words the same advice for a person reading `agentprint fix`'s plan:
+without what is said only to an AI agent (NO_LEAK, "The agent cannot do this"), and with
+rotating as the reader's own step. An adviser that takes no `person` argument is the same for
+both.
 """
 
 from __future__ import annotations
 
+import inspect
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
 from .agents import ALL_AGENTS
+from .checks import ap009_source_exposure as ap009
+from .checks.ap004_network_hook import ASK_FIRST as HOOK_ASK_FIRST
 from .checks.ap005_mcp_inline_secret import _MARKER as MCP_MARKER
+from .checks.ap005_mcp_inline_secret import ASK_FIRST as MCP_ASK_FIRST
 from .models import Finding, Severity
 from .sanitize import clean, quote, safe_step
 from .secrets import RULES
@@ -36,7 +45,8 @@ class Advice:
     ask_human: list[str] = field(default_factory=list)
 
 
-Adviser = Callable[[Finding, Moment], Advice]
+# (finding, moment) -> Advice; an adviser may also take `person` (a keyword, default False).
+Adviser = Callable[..., Advice]
 ADVISERS: dict[str, Adviser] = {}
 
 # Where to revoke and replace each kind of key. Checked 2026-11-05 against:
@@ -61,6 +71,8 @@ ROTATE_AT: dict[str, str] = {
 _RULE_BY_NAME = {rule.name: rule.id for rule in RULES}
 _PACKAGE_SUFFIXES = (".tgz", ".tar.gz", ".whl", ".zip")
 NO_LEAK = "Never print, echo, copy or reuse the key's value while doing this."
+# How the person-worded AP004 step starts instead of the check's own (agent) sentence.
+HOOK_PERSON_FIRST = "If you did not add this hook, delete it."
 
 
 def adviser(check_id: str) -> Callable[[Adviser], Adviser]:
@@ -71,12 +83,20 @@ def adviser(check_id: str) -> Callable[[Adviser], Adviser]:
     return register
 
 
-def advise(finding: Finding, moment: Moment) -> Advice:
+def advise(finding: Finding, moment: Moment, *, person: bool = False) -> Advice:
     """Fix steps and ask_human items, each shown whole and unchanged or replaced by SAFE_STEP.
     A check's fix can embed shell-quoted scanned paths: shortening or cleaning it could break
-    the quoting and run part of a hostile file name, so it is never edited."""
+    the quoting and run part of a hostile file name, so it is never edited.
+
+    `person`: worded for a person who reads the steps and does them (agentprint fix's human
+    view), not for an AI agent. The agent wording (the default) is what every report shows."""
     fn = ADVISERS.get(finding.check_id)
-    raw = fn(finding, moment) if fn else Advice([finding.fix], [])
+    if fn is None:
+        raw = Advice([finding.fix], [])
+    elif person and _takes_person(fn):
+        raw = fn(finding, moment, person=True)
+    else:
+        raw = fn(finding, moment)
     return Advice(
         [safe_step(step) for step in raw.fix_steps],
         [safe_step(step) for step in raw.ask_human],
@@ -84,6 +104,13 @@ def advise(finding: Finding, moment: Moment) -> Advice:
 
 
 # ---- helpers ---------------------------------------------------------------------------------
+
+
+def _takes_person(fn: Adviser) -> bool:
+    try:
+        return "person" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def split_location(location: str) -> tuple[str | None, str]:
@@ -115,66 +142,102 @@ def _where(finding: Finding) -> str:
     return f"{quote(finding.location)}{line}"
 
 
-def _rotate(finding: Finding) -> list[str]:
+def rotate_text(finding: Finding, *, person: bool = False) -> str:
+    """Rotate this finding's key, and where. For an AI agent it says the agent cannot do this;
+    for a person (`person`) it is simply their step."""
     name, _, shown = finding.detail.partition(": ")
     rule_id = _RULE_BY_NAME.get(name)
     url = ROTATE_AT.get(rule_id or "")
     key = f"the {clean(name)} that starts {quote(shown)}"
+    if person:
+        tail = "Treat the old key as public."
+    else:
+        tail = "The agent cannot do this; treat the old key as public."
     if url:
-        return [
-            f"Rotate {key}: revoke it and create a new one at {url}. The agent cannot do this; "
-            "treat the old key as public."
-        ]
-    return [
-        f"Rotate {key} with the service that issued it (agentprint can't tell which). The agent "
-        "cannot do this; treat the old key as public."
-    ]
+        return f"Rotate {key}: revoke it and create a new one at {url}. {tail}"
+    return f"Rotate {key} with the service that issued it (agentprint can't tell which). {tail}"
+
+
+def _rotate(finding: Finding, person: bool = False) -> list[str]:
+    return [rotate_text(finding, person=person)]
+
+
+def _no_leak(step: str, person: bool) -> str:
+    """A step that handles a key: an AI agent is also told never to show or reuse it."""
+    return step if person else f"{step} {NO_LEAK}"
 
 
 # ---- advisers --------------------------------------------------------------------------------
 
 
 @adviser("AP001")
-def _history_secret(finding: Finding, moment: Moment) -> Advice:
+def _history_secret(finding: Finding, moment: Moment, person: bool = False) -> Advice:
     return Advice(
         [
-            f"In {_where(finding)}, replace the key with the text REDACTED, or delete the file if "
-            "that history is not needed. " + NO_LEAK,
+            _no_leak(
+                f"In {_where(finding)}, replace the key with the text REDACTED, or delete the "
+                "file if that history is not needed.",
+                person,
+            ),
         ],
-        _rotate(finding),
+        _rotate(finding, person),
     )
 
 
 @adviser("AP002")
-def _settings_secret(finding: Finding, moment: Moment) -> Advice:
+def _settings_secret(finding: Finding, moment: Moment, person: bool = False) -> Advice:
     package, member = split_location(finding.location)
     if package is not None:
         source = quote(agent_path(member))
         steps = [
-            f"Delete the key from the source file {source} in the project (line {finding.line}); "
-            "the package copy is built from it. Load the key from an environment variable "
-            "instead. " + NO_LEAK,
+            _no_leak(
+                f"Delete the key from the source file {source} in the project (line "
+                f"{finding.line}); the package copy is built from it. Load the key from an "
+                "environment variable instead.",
+                person,
+            ),
             "Also keep that file out of the package (see the matching AP006 finding).",
         ]
     elif moment is Moment.push:
         steps = [
-            f"Delete the key from {_where(finding)}, load it from an environment variable "
-            "instead, and commit the change. " + NO_LEAK,
+            _no_leak(
+                f"Delete the key from {_where(finding)}, load it from an environment variable "
+                "instead, and commit the change.",
+                person,
+            ),
             "The key stays in earlier commits, so rotating it (ask_human) is what makes it safe.",
         ]
     else:
         steps = [
-            f"Delete the key from {_where(finding)} and load it from an environment variable "
-            "instead (set it in your shell profile or a secret manager). " + NO_LEAK,
+            _no_leak(
+                f"Delete the key from {_where(finding)} and load it from an environment variable "
+                "instead (set it in your shell profile or a secret manager).",
+                person,
+            ),
         ]
-    return Advice(steps, _rotate(finding))
+    return Advice(steps, _rotate(finding, person))
+
+
+@adviser("AP004")
+def _network_hook(finding: Finding, moment: Moment, person: bool = False) -> Advice:
+    # The check's own fix is the step. It asks the human first, which a person reads as their
+    # own question: "If you did not add this hook, delete it."
+    if person and HOOK_ASK_FIRST in finding.fix:
+        return Advice([finding.fix.replace(HOOK_ASK_FIRST, HOOK_PERSON_FIRST, 1)])
+    return Advice([finding.fix])
 
 
 @adviser("AP005")
-def _mcp_inline_secret(finding: Finding, moment: Moment) -> Advice:
+def _mcp_inline_secret(finding: Finding, moment: Moment, person: bool = False) -> Advice:
     # The check's own fix already names this agent's way to read the key from the environment.
+    # It starts by telling the agent to ask the human to rotate; a person gets rotating as a
+    # step of its own, after it.
     key_part = finding.detail.partition(MCP_MARKER)[0]
-    return Advice([finding.fix], _rotate(replace(finding, detail=key_part)))
+    step = finding.fix
+    if person and step.startswith(MCP_ASK_FIRST):
+        rest = step.removeprefix(MCP_ASK_FIRST)
+        step = rest[:1].upper() + rest[1:]
+    return Advice([step], _rotate(replace(finding, detail=key_part), person))
 
 
 @adviser("AP006")
@@ -229,6 +292,58 @@ def _readable_by_others(finding: Finding, moment: Moment) -> Advice:
     return Advice([finding.fix], ask)
 
 
+OPEN_SOURCE_ASK = (
+    "Decide whether this package is meant to be open source; if it is, give it an open-source "
+    "licence (an SPDX id such as MIT) and the medium and high prints go away."
+)
+SPDX_ASK = (
+    "If it is open source, use an SPDX licence id (such as MIT or Apache-2.0) as the licence, "
+    "or as one OR choice next to the custom one."
+)
+GUESS_ASK = "Decide whether this package is meant to be open source."
+# When "closed source" is only a guess (no licence found, or not readable): how to state one.
+_STATE_LICENCE = {
+    ap009.NPM_MISSING: 'add a license field (for example "license": "MIT") to package.json',
+    ap009.PYPI_MISSING: (
+        'add its licence to the package metadata (for example license = "MIT" in the [project] '
+        "table of pyproject.toml)"
+    ),
+}
+_STATE_ANY = (
+    'make sure it states its licence (a "license" field in package.json, or license in the '
+    "[project] table of pyproject.toml)"
+)
+
+
+@adviser("AP009")
+def _rebuildable_source(finding: Finding, moment: Moment, person: bool = False) -> Advice:
+    # The check's fix for each kind names the build settings (tsc sourceMap, esbuild
+    # --sources-content, Vite build.sourcemap, webpack devtool). Nothing here edits a build
+    # config. Only the check's own words in the detail are read: the example path after them
+    # comes from the package.
+    step = finding.fix if finding.fix in ap009.FIXES else ap009.MAP_FIX
+    why = ap009.reason(finding.detail)
+    if ap009.PRIVATE in why or finding.severity is Severity.LOW:
+        # An open-source package's maps, or a private registry: a note, and its fix (already
+        # worded as optional by the check) is the whole advice. Nothing to ask the human.
+        return Advice([step])
+    if any(guess in why for guess in ap009.GUESSED):
+        # "Closed" is a guess: a licence may be the whole fix, so it comes before the build.
+        how = next((h for g, h in _STATE_LICENCE.items() if g in why), _STATE_ANY)
+        first = (
+            f"If this package is open source, {how}: that is the whole fix, and the medium and "
+            "high prints go away."
+        )
+        if not person:
+            first += " If you cannot tell, ask the human before changing the build."
+        steps = [first, f"If it is not open source: {step[0].lower()}{step[1:]}"]
+        return Advice(steps, [GUESS_ASK])
+    ask = [OPEN_SOURCE_ASK]
+    if ap009.CUSTOM_ID in why:
+        ask.append(SPDX_ASK)
+    return Advice([step], ask)
+
+
 # ---- explanations (agentprint mcp: explain_finding) ------------------------------------------
 
 EXPLAIN: dict[str, str] = {
@@ -252,6 +367,24 @@ EXPLAIN: dict[str, str] = {
         "package you are about to publish, where anyone can download it. Fix: exclude it "
         "(.npmignore or the package.json files list for npm; the build tool's exclude list for "
         "Python), add it to .gitignore, and check again. Rotate any key it held."
+    ),
+    "AP009": (
+        "AP009 Package lets an AI rebuild your source (high/medium/low). The package you are "
+        "about to publish holds source maps with your original source, source maps that give "
+        "away your file layout, original .ts/.vue/.svelte source next to the compiled files, or "
+        "AI instruction files. Nobody can stop reverse engineering of code you ship; this shows "
+        "what hands an AI your source or a map of it. Severity depends on the licence. Closed "
+        "source (high and medium prints): no licence, UNLICENSED, SEE LICENSE IN, a proprietary "
+        "marker, or an SPDX expression whose every OR choice is a custom LicenseRef id. Open "
+        "source: only maps that hold the full original source are mentioned, as a low note; "
+        "nothing is wrong, and sourcesContent can be turned off if that was not meant. A package "
+        "whose package.json publishConfig.registry is a private registry gets low notes only. "
+        "Fix for closed source: turn off source maps or their sourcesContent in the build (tsc "
+        "sourceMap/inlineSources, esbuild --sources-content=false, Vite build.sourcemap, webpack "
+        "devtool), or keep the files out with .npmignore, the package.json files list or the "
+        "Python build tool's exclude list. When no licence was found, ask the human first: if "
+        "the package is open source, adding a licence (an SPDX id such as MIT) is the whole fix "
+        "and the medium and high prints go away."
     ),
     "AP007": (
         "AP007 Personal agent file not gitignored (low). A personal agent file is neither "

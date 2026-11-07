@@ -1,0 +1,519 @@
+/* Landing page: Hero.astro, Terminal.astro and index.mdx. Colors come from brand.css tokens only.
+   Spacing steps: 4 8 12 16 24 32 48 64 96 px. Every selector is scoped to the landing. */
+
+/* Frame: content 1180 px wide, the header's logo and icons on the same edges. */
+:root[data-has-hero]:not([data-has-sidebar]) {
+  --sl-content-width: 73.75rem;
+}
+@media (min-width: 50rem) {
+  :root[data-has-hero] header.header {
+    padding-inline: max(var(--sl-nav-pad-x), (100% - var(--sl-content-width)) / 2);
+  }
+}
+
+/* 1. Hero: copy left, terminal right from 1120 px; stacked below. Two columns start only where
+   the terminal column holds all 80 columns at the 11 px floor (tests/test_landing.py checks it). */
+.ap-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  gap: 2.5rem;
+  padding-block: 1.5rem 1rem;
+}
+@media (min-width: 70rem) {
+  .ap-hero {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.36fr);
+    align-items: start;
+    gap: 3rem;
+    padding-block: 3rem 1.5rem;
+  }
+}
+
+.ap-hero-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+}
+.ap-hero-copy > * {
+  margin: 0;
+}
+.ap-eyebrow {
+  font: 400 0.8125rem/1.5 var(--sl-font-mono);
+  color: var(--ap-dim);
+}
+.ap-hero h1 {
+  margin-top: 1rem;
+  font-family: var(--sl-font);
+  font-weight: 600;
+  font-size: clamp(2rem, 4vw, 3.25rem);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--ap-strong);
+  text-wrap: balance;
+}
+@media (min-width: 70rem) {
+  /* The eyebrow sits on the terminal title's baseline: same 36 px row, under the same 1 px edge. */
+  .ap-hero .ap-eyebrow {
+    margin-top: 1px;
+    line-height: 2.25rem;
+  }
+  .ap-hero h1 {
+    margin-top: 0.5rem;
+  }
+}
+.ap-hero .ap-lede {
+  margin-top: 1.5rem;
+  max-width: 34rem;
+  font-size: 1.125rem;
+  line-height: 1.6;
+  color: var(--ap-text);
+  text-wrap: pretty;
+}
+.ap-hero .ap-install {
+  margin-top: 2rem;
+  width: 100%;
+  max-width: 34rem;
+}
+.ap-install .expressive-code .frame {
+  box-shadow: none;
+}
+.ap-hero .ap-actions {
+  margin-top: 1.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.ap-btn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding: 0 1.25rem;
+  border: 1px solid var(--ap-border);
+  border-radius: 8px;
+  font: 600 0.9375rem/1 var(--sl-font);
+  color: var(--ap-text);
+  text-decoration: none;
+}
+.ap-btn:hover {
+  border-color: var(--ap-dim);
+  color: var(--ap-strong);
+}
+.ap-btn-primary,
+.ap-btn-primary:hover {
+  border-color: var(--ap-amber);
+  background: var(--ap-amber);
+  color: var(--ap-ground);
+}
+.ap-btn-primary:hover {
+  background: color-mix(in srgb, var(--ap-amber) 86%, var(--ap-strong));
+}
+
+/* The terminal. 80 columns are 48em in JetBrains Mono (600/1000 advance): the font scales
+   between 11 and 13 px so all 80 fit the panel when there is room, else the panel scrolls. */
+.ap-term {
+  container-type: inline-size;
+  min-width: 0;
+  /* Stacked, the panel is never wider than 80 columns at 13 px: no empty band on the right. */
+  max-width: min(100%, calc(48 * 13px + 2.5rem + 12px + 2px));
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--ap-border);
+  border-radius: 10px;
+  background: var(--ap-ground);
+  color: var(--ap-text);
+}
+.ap-term-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  height: 2.25rem;
+  padding-inline: 1rem 0.25rem;
+  border-bottom: 1px solid var(--ap-border);
+  background: var(--ap-panel);
+  font: 400 0.75rem/1 var(--sl-font-mono);
+  color: var(--ap-dim);
+}
+.ap-term-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ap-term-replay {
+  height: 100%;
+  padding-inline: 0.75rem;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--ap-dim);
+  cursor: pointer;
+}
+.ap-term-replay:hover {
+  color: var(--ap-text);
+}
+.ap-term-replay[hidden] {
+  display: none;
+}
+/* The panel clips to its rounded corners, so focus rings draw inside. */
+.ap-term-replay:focus-visible,
+.ap-term-screen:focus-visible {
+  outline-offset: -2px;
+}
+.ap-term-screen {
+  max-width: 100%;
+  overflow: auto;
+  max-height: calc(34 * 1.15em + 2rem);
+  margin: 0;
+  padding: 1rem 1.25rem;
+  border: 0;
+  border-radius: 0;
+  background: var(--ap-ground);
+  color: var(--ap-text);
+  font: 400 13px/1.15 "JetBrains Mono", ui-monospace, monospace;
+  font-size: clamp(11px, (100cqi - 2.5rem - 12px) / 48, 13px);
+  font-variant-ligatures: none;
+  font-feature-settings: "calt" 0, "liga" 0;
+  white-space: pre;
+  tab-size: 8;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ap-border) transparent;
+}
+@media (max-width: 40rem) {
+  .ap-term-screen {
+    max-height: calc(26 * 1.15em + 1.5rem);
+    padding: 0.75rem;
+    font-size: 11px;
+  }
+}
+/* The brief is plain text with long lines: it wraps inside the panel. The rest keeps the grid. */
+.ap-blk-agent {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* One block per line (no newline between them) with a hanging indent from --ap-ind. */
+.ap-blk-agent .ap-ln {
+  display: block;
+  padding-left: var(--ap-ind, 0);
+  text-indent: calc(-1 * var(--ap-ind, 0));
+}
+/* Mascot cells: a box exactly one column wide and one line tall, painted instead of the glyph
+   (which stays in the text for copying). Boxes snap to whole pixels, so rows and columns meet
+   with no gap or seam at any font size. */
+.ap-px {
+  display: inline-block;
+  height: 1.15em;
+  vertical-align: top;
+  overflow: hidden;
+  -webkit-text-fill-color: transparent;
+}
+.ap-px-full {
+  background-image: linear-gradient(currentColor, currentColor);
+}
+.ap-px-top {
+  background-image: linear-gradient(currentColor 50%, transparent 50%);
+}
+.ap-px-bottom {
+  background-image: linear-gradient(transparent 50%, currentColor 50%);
+}
+@media (forced-colors: active) {
+  .ap-px {
+    -webkit-text-fill-color: currentColor;
+  }
+}
+.ap-prompt,
+.ap-caption {
+  color: var(--ap-dim);
+}
+.ap-typed {
+  color: var(--ap-strong);
+}
+.ap-noise {
+  color: var(--ap-faint);
+}
+.ap-edge {
+  color: var(--ap-red);
+}
+.ap-off {
+  visibility: hidden;
+}
+.ap-cursor {
+  display: inline-block;
+  width: 0.6em;
+  height: 1.15em;
+  vertical-align: top;
+  background: var(--ap-dim);
+}
+/* Typing uncovers the command one column at a time; the text itself never changes. */
+.ap-typing .ap-typed {
+  display: inline-block;
+  width: calc(var(--typed, 0) * 1ch);
+  height: 1.15em;
+  vertical-align: top;
+  overflow: hidden;
+}
+/* The sweep draws on a layer over the welcome, whose real lines wait underneath. */
+.ap-blk-welcome {
+  display: inline-block;
+  position: relative;
+  vertical-align: top;
+}
+.ap-sweep {
+  position: absolute;
+  inset: 0;
+}
+/* Printed, or with reduced motion, the panel is the real run whatever state the script left. */
+@media print, (prefers-reduced-motion: reduce) {
+  .ap-term .ap-off {
+    visibility: visible;
+  }
+  .ap-term .ap-sweep,
+  .ap-term .ap-cursor {
+    display: none;
+  }
+  .ap-term .ap-typing .ap-typed {
+    display: inline;
+    width: auto;
+  }
+}
+@media print {
+  /* A terminal prints as a terminal, even with background graphics off: its text is light. */
+  .ap-term {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .ap-term-replay {
+    display: none;
+  }
+  .ap-term-screen {
+    max-height: none;
+    overflow: visible;
+  }
+}
+
+/* 2-5. The sections under the hero. */
+.ap-landing {
+  padding-block: 1.5rem 2rem;
+}
+.ap-landing > * {
+  margin: 0;
+}
+.ap-landing > * + * {
+  margin-top: 4rem;
+}
+.ap-landing a {
+  color: var(--ap-amber);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+}
+.ap-landing a:hover {
+  color: var(--ap-strong);
+}
+
+.ap-works {
+  padding-block: 1.25rem;
+  border-block: 1px solid var(--ap-border);
+  text-align: center;
+  text-wrap: balance;
+  font: 400 0.8125rem/1.8 var(--sl-font-mono);
+  color: var(--ap-dim);
+}
+.ap-works-label {
+  margin-inline-end: 2ch;
+  color: var(--ap-text);
+}
+.ap-agent {
+  white-space: nowrap;
+}
+@media (max-width: 47.4375rem) {
+  .ap-works-label {
+    display: block;
+    margin-inline-end: 0;
+  }
+}
+
+.ap-cards {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+}
+@media (min-width: 47.5rem) {
+  .ap-cards {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1.5rem;
+  }
+}
+.ap-card {
+  display: flex;
+  flex-direction: column;
+  padding: 1.5rem;
+  border: 1px solid var(--ap-border);
+  border-radius: 10px;
+  background: var(--ap-panel);
+}
+.ap-card > * {
+  margin: 0;
+}
+.ap-card-name {
+  font: 700 1rem/1.5 var(--sl-font-mono);
+  color: var(--ap-amber);
+}
+.ap-card-cmd {
+  font: 400 0.8125rem/1.5 var(--sl-font-mono);
+  color: var(--ap-dim);
+}
+.ap-card-text {
+  padding-top: 1rem;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--ap-text);
+}
+.ap-landing .ap-card-link {
+  margin-top: auto;
+  padding-top: 1.5rem;
+  font-size: 0.9375rem;
+}
+
+.ap-prints-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem 2rem;
+  margin-bottom: 1.5rem;
+}
+.ap-prints-head > * {
+  margin: 0;
+}
+.ap-prints h2 {
+  font: 600 1.75rem/1.2 var(--sl-font);
+  letter-spacing: -0.01em;
+  color: var(--ap-strong);
+}
+.ap-prints-head p {
+  font-size: 0.9375rem;
+  color: var(--ap-dim);
+}
+.ap-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+}
+.ap-table th,
+.ap-table td {
+  padding: 0.875rem 1.5rem 0.875rem 0;
+  border-bottom: 1px solid var(--ap-border);
+  text-align: start;
+  vertical-align: baseline;
+}
+.ap-table th {
+  padding-top: 0;
+  padding-bottom: 0.75rem;
+  font: 400 0.75rem/1.5 var(--sl-font-mono);
+  color: var(--ap-dim);
+}
+.ap-table td {
+  color: var(--ap-text);
+}
+.ap-table th:first-child,
+.ap-table td:first-child {
+  width: 5rem;
+  font-family: var(--sl-font-mono);
+  white-space: nowrap;
+}
+.ap-table th:last-child,
+.ap-table td:last-child {
+  width: 13rem;
+  padding-right: 0;
+}
+.ap-table td:last-child {
+  font: 400 0.8125rem/1.5 var(--sl-font-mono);
+  color: var(--ap-dim);
+}
+@media (min-width: 47.5rem) {
+  .ap-table th:last-child,
+  .ap-table td:last-child {
+    width: 1%;
+    white-space: nowrap;
+  }
+}
+/* Phones: each row is a stack, the ID and severity on top and what it finds below. */
+@media (max-width: 47.4375rem) {
+  .ap-table,
+  .ap-table tbody {
+    display: block;
+  }
+  .ap-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .ap-table tr {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.25rem 1rem;
+    padding-block: 1rem;
+    border-bottom: 1px solid var(--ap-border);
+  }
+  .ap-table tr:first-child {
+    border-top: 1px solid var(--ap-border);
+  }
+  .ap-table td,
+  .ap-table td:first-child,
+  .ap-table td:last-child {
+    display: block;
+    width: auto;
+    padding: 0;
+    border: 0;
+  }
+  .ap-table td:last-child {
+    grid-area: 1 / 2;
+    text-align: end;
+  }
+  .ap-table td:nth-child(2) {
+    grid-area: 2 / 1 / 3 / 3;
+  }
+}
+.ap-sev-critical,
+.ap-sev-high,
+.ap-sev-medium,
+.ap-sev-low {
+  font-weight: 700;
+}
+.ap-sev-critical {
+  color: var(--ap-red);
+}
+.ap-sev-high {
+  color: var(--ap-high);
+}
+.ap-sev-medium {
+  color: var(--ap-medium);
+}
+.ap-sev-low {
+  color: var(--ap-low);
+}
+
+.ap-privacy {
+  padding: 1.25rem 1.5rem;
+  border: 1px solid var(--ap-border);
+  border-radius: 10px;
+  text-align: center;
+  color: var(--ap-text);
+}
+.ap-privacy code {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: 400 0.875em var(--sl-font-mono);
+  color: var(--ap-amber);
+}
+.ap-privacy a {
+  margin-inline-start: 0.5rem;
+  white-space: nowrap;
+}

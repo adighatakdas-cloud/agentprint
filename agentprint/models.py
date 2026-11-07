@@ -47,6 +47,11 @@ class Finding:
     fix: str
     count: int = 1
 
+    def __post_init__(self) -> None:
+        # Not a dataclass field, so it never reaches to_dict() or the reports: the exact files
+        # a check wants changed (AP008), for `agentprint fix` to use instead of re-deriving them.
+        self.paths: tuple[Path, ...] = ()
+
     def to_dict(self) -> dict:
         data = asdict(self)
         data["severity"] = self.severity.name.lower()

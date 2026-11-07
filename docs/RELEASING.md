@@ -70,9 +70,16 @@ Do these once, before the first tag. Step 2 is a decision, the rest are clicks.
    `-alpha.1`, `b1` → `-beta.1`, `.dev0` → `-dev.0`). A test fails if the two don't match.
    npm pre-releases are published under the `next` tag, so `npx agentprint-cli` never picks them.
 
-   **First release only:** in the same change, take the "Works after the first release" notes and
-   the pre-release **Status** line out of `README.md` (it becomes the PyPI and npm page), and make
-   sure `docs/demo.gif` has been rendered and committed (Actions → Demo GIF).
+   Also set `AGENTPRINT_VERSION` in `.github/workflows/badge.yml` (the reusable badge workflow
+   installs that exact release from PyPI, and fetches its publish script from the same tag) to the
+   same plain version, for example `0.1.0`. A test fails if it differs from `__version__`.
+
+   Then run `uv run python -m tools.gen_docs` and commit what it changes. The landing page's
+   welcome fragment shows `__version__`, so without this the drift test fails CI on the release PR.
+
+   **First release only:** in the same change, delete the `> **Pre-release:**` line from
+   `README.md` (it becomes the PyPI and npm page), and make sure `docs/demo.gif` has been
+   rendered and committed (Actions → Demo GIF).
 2. Merge that change into `main` through a pull request, and wait for CI to pass.
 3. Tag the merged commit and push the tag:
 
@@ -82,10 +89,14 @@ Do these once, before the first tag. Step 2 is a decision, the rest are clicks.
    git push origin v0.1.0
    ```
 
+   Note the full 40-character commit SHA (`git rev-parse v0.1.0^{commit}`). Step 6 publishes it.
+
 4. Watch *Actions → Release*. Approve the `pypi` and `npm` steps if you set reviewers.
 5. Check it worked: `uvx agentprint==0.1.0 --version` and `npx agentprint-cli@0.1.0 --version`
    (use the npm name you chose).
-6. Optional: on GitHub, *Releases → Draft a new release* from the tag. Tick *Publish this Action
+6. On GitHub, *Releases → Draft a new release* from the tag, and write the release commit SHA in
+   the notes (`Release commit: <40-char SHA>`). People verifying a badge signed by agentprint pass
+   it as `--signer-digest`. Optional: tick *Publish this Action
    to the GitHub Marketplace* to list the Action there.
 
 ## When something fails

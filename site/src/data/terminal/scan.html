@@ -1,0 +1,31 @@
+<span style="color: #6f8397; text-decoration-color: #6f8397">agentprint scan  ~ + . · roster 3 · 0.38s</span>
+
+<span style="color: #ff3b4e; text-decoration-color: #ff3b4e; font-weight: bold">critical  </span><span style="color: #6f8397; text-decoration-color: #6f8397">2</span>
+  <span style="color: #6f8397; text-decoration-color: #6f8397">AP002</span>  <span style="font-weight: bold">~/code/my-app/.claude/settings.local.json:4</span>
+         OpenAI API key: <span style="color: #ffb020; text-decoration-color: #ffb020">sk-p…(len 56)</span><span style="color: #6f8397; text-decoration-color: #6f8397"> masked</span>
+  <span style="color: #6f8397; text-decoration-color: #6f8397">AP005</span>  <span style="font-weight: bold">~/.claude.json:10</span>
+         GitHub token: <span style="color: #ffb020; text-decoration-color: #ffb020">ghp_…(len 40)</span><span style="color: #6f8397; text-decoration-color: #6f8397"> masked</span> in MCP server &#x27;github&#x27;
+         (env.GITHUB_TOKEN)
+
+<span style="color: #ff7a2f; text-decoration-color: #ff7a2f; font-weight: bold">high      </span><span style="color: #6f8397; text-decoration-color: #6f8397">1</span>
+  <span style="color: #6f8397; text-decoration-color: #6f8397">AP001</span>  <span style="font-weight: bold">~/.claude/history.jsonl:1</span>
+         Anthropic API key: <span style="color: #ffb020; text-decoration-color: #ffb020">sk-a…(len 105)</span><span style="color: #6f8397; text-decoration-color: #6f8397"> masked</span>
+
+<span style="color: #e9c46a; text-decoration-color: #e9c46a; font-weight: bold">medium    </span><span style="color: #6f8397; text-decoration-color: #6f8397">1</span>
+  <span style="color: #6f8397; text-decoration-color: #6f8397">AP003</span>  <span style="font-weight: bold">~/.claude/settings.json:4</span>
+         permissions.allow grants &quot;Bash(*)&quot;: the agent acts without asking
+
+<span style="color: #6f8397; text-decoration-color: #6f8397">Fix</span>
+<span style="color: #6f8397; text-decoration-color: #6f8397">  1  AP002</span>  Rotate this key, remove it from the settings file, and load it from
+            an environment variable instead.
+<span style="color: #6f8397; text-decoration-color: #6f8397">  2  AP005</span>  Ask the human to rotate this key at its provider (an AI agent
+            can&#x27;t). Then replace the value with &quot;${GITHUB_TOKEN}&quot; (Claude Code
+            expands environment variables in .mcp.json and ~/.claude.json), then
+            export GITHUB_TOKEN in the shell that starts Claude Code.
+<span style="color: #6f8397; text-decoration-color: #6f8397">  3  AP001</span>  Rotate this key with its provider, then delete or redact the history
+            file.
+<span style="color: #6f8397; text-decoration-color: #6f8397">  4  AP003</span>  Delete this entry from permissions.allow and allow only the commands
+            you need, e.g. &quot;Bash(npm run test *)&quot;. (A bare &quot;*&quot; allow rule is
+            ignored by Claude Code and is not flagged.)
+
+<span style="color: #050b14; text-decoration-color: #050b14; background-color: #ff3b4e; font-weight: bold"> BLOCK </span>  4 prints · 2 critical · 1 high · 1 medium · keys masked

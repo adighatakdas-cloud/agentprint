@@ -10,7 +10,16 @@ this invocation ... for automation") is the documented way to run it unattended.
 import pytest
 
 from tests.live import harness
-from tests.live.runner import AgentCLI, assert_blocked, assert_ran, run, uninstall_leaves_nothing
+from tests.live.runner import (
+    AgentCLI,
+    assert_blocked,
+    assert_help_not_menu,
+    assert_ran,
+    assert_scan_output,
+    run,
+    shell_probe,
+    uninstall_leaves_nothing,
+)
 
 pytestmark = pytest.mark.live
 
@@ -60,3 +69,29 @@ def test_clean_action_runs(tmp_path, action):
     outcome = run(CODEX, tmp_path, action, leaky=False)
     assert_ran(outcome, action)
     assert uninstall_leaves_nothing(CODEX, outcome.home) == []
+
+
+# What Codex's shell shows the commands it runs, started from a color terminal with color
+# forced on (harness.color_terminal; harness.PROBE prints names only).
+# Codex sets NO_COLOR itself; CODEX_SANDBOX_NETWORK_DISABLED only under a network-off sandbox,
+# which this run bypasses.
+SHELL = {
+    "markers": ["CODEX_THREAD_ID"],
+    "color": ["NO_COLOR", "FORCE_COLOR", "GITHUB_ACTIONS"],
+    "stdin_tty": False,
+    "stdout_tty": False,
+}
+
+
+def test_the_shell_shows_the_agent_marker(tmp_path):
+    assert shell_probe(run(CODEX, tmp_path, "probe", leaky=False)) == SHELL
+
+
+def test_scan_output_is_plain_text_for_the_model(tmp_path):
+    outcome = run(CODEX, tmp_path, "scan", leaky=False)
+    assert_scan_output(outcome, agent_format=bool(SHELL["markers"]))
+
+
+def test_bare_agentprint_does_not_hang(tmp_path):
+    outcome = run(CODEX, tmp_path, "bare", leaky=False)
+    assert_help_not_menu(outcome)

@@ -1,0 +1,42 @@
+name: Bug report
+description: agentprint did something wrong, crashed, or missed something it should find.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Never paste a real key, token or password**, not even a redacted
+        one from your own machine. If the bug is a security problem in agentprint itself, don't
+        file it here: use private reporting (see [SECURITY.md](https://github.com/adighatakdas-cloud/agentprint/blob/main/SECURITY.md)).
+  - type: dropdown
+    id: command
+    attributes:
+      label: Command
+      options: [scan, pack, install / uninstall, guard (agent hook), mcp, GitHub Action, pre-commit hook, other]
+    validations:
+      required: true
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent involved (if any)
+      options: [None, Claude Code, Codex, Cursor, Gemini CLI, Windsurf, Devin, OpenCode, GitHub Copilot, Hermes Agent, Antigravity, Other]
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+      description: The command you ran and what you saw. Replace anything private with fake values.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The smallest set of fake files that shows the problem (file names, nesting, key names; fake values only).
+  - type: input
+    id: version
+    attributes:
+      label: Versions
+      description: Output of `agentprint --version`, your operating system, and the agent's version if one is involved.
+      placeholder: agentprint 0.1.0, macOS 14, Claude Code 2.1.318
+    validations:
+      required: true

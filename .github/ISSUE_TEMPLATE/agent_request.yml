@@ -1,0 +1,46 @@
+name: Add or update an agent
+description: Ask for a new AI coding agent, or report that an agent changed where or how it stores files.
+labels: [agent]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Each agent is one file in `agentprint/agents/`. If you want to add it yourself,
+        [CONTRIBUTING.md](https://github.com/adighatakdas-cloud/agentprint/blob/main/CONTRIBUTING.md)
+        walks through it. Describe file **structure** only (names, nesting, key names). Never paste
+        real values from your own files.
+  - type: input
+    id: agent
+    attributes:
+      label: Agent name and version
+      placeholder: Qwen Code 0.9.2
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Request
+      options: [New agent, Existing agent changed its files, Hook / MCP / install support for an existing agent]
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Where it keeps its files
+      description: History, settings, permission lists, MCP config, credentials. Paths and key names only.
+      placeholder: |
+        ~/.qwen/settings.json  (keys: mcpServers, permissions.allow)
+        <project>/.qwen/history.jsonl
+    validations:
+      required: true
+  - type: textarea
+    id: docs
+    attributes:
+      label: Links
+      description: The agent's docs on its config files, hooks or MCP setup.
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contributing
+      options:
+        - label: I'd like to open the pull request for this myself.

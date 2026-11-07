@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from agentprint.ui.detect import AGENT_MARKERS
 from tests import fakes
 
 # tools/ (research scripts) is not shipped in the source package; skip its tests there.
@@ -21,6 +22,13 @@ if not (Path(__file__).resolve().parent.parent / "tools").is_dir():
 def _no_gemini_cli_home(monkeypatch):
     """GEMINI_CLI_HOME moves ~/.gemini; a developer's own setting must not leak into tests."""
     monkeypatch.delenv("GEMINI_CLI_HOME", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_agent_env(monkeypatch):
+    """Tests often run inside an AI agent; they must not depend on the shell's markers."""
+    for name in (*AGENT_MARKERS, "AGENTPRINT_THEME", "COLORFGBG"):
+        monkeypatch.delenv(name, raising=False)
 
 
 def _write(path: Path, text: str) -> None:

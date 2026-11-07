@@ -5,7 +5,7 @@ question: **how many recently published npm and PyPI packages ship files written
 coding agents, and how many of those files contain strings shaped like API keys?**
 
 This page describes how the scan works. It holds no results. To run a shard of a scan
-round yourself, read [docs/VOLUNTEER_SCAN.md](../../docs/VOLUNTEER_SCAN.md).
+round yourself, read [the census page](https://adighatakdas-cloud.github.io/agentprint/census/).
 
 ## Ground rules
 

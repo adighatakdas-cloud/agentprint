@@ -1,4 +1,4 @@
-"""Volunteer research scan. See docs/VOLUNTEER_SCAN.md.
+"""Volunteer research scan. See https://adighatakdas-cloud.github.io/agentprint/census/.
 
 python -m tools.ecoscan window npm|pypi [--packages N]             print a round's bounds
 python -m tools.ecoscan run npm|pypi --window FROM:TO --shard K/N --out DIR

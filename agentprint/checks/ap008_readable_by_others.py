@@ -139,6 +139,17 @@ def _paths(artifact: Artifact) -> list[Path]:
     return paths
 
 
+def exposed_paths(
+    artifact: Artifact, cache: dict[Path, os.stat_result | None] | None = None
+) -> list[Path]:
+    """The files of this artifact (and its SQLite sidecars) that others can read: the exact list
+    the check reports, which `agentprint fix` locks."""
+    if _is_windows() or not _in_scope(artifact):
+        return []
+    cache = {} if cache is None else cache
+    return [path for path in _paths(artifact) if _exposure(path, cache) is not None]
+
+
 def _who(items: list[_Exposed]) -> str:
     found = {c for item in items for c in item.classes}
     if found == {"group", "others"}:
@@ -164,9 +175,9 @@ class ReadableByOthers:
             if not _in_scope(artifact):
                 continue
             folder = _data_folder(artifact)
-            for path in _paths(artifact):
+            for path in exposed_paths(artifact, cache):
                 exposure = _exposure(path, cache)
-                if exposure is None:
+                if exposure is None:  # changed since the line above
                     continue
                 key = (folder.absolute(), True) if folder else (path.absolute(), False)
                 groups.setdefault(key, []).append(_Exposed(path, artifact, *exposure))
@@ -190,7 +201,7 @@ class ReadableByOthers:
         else:
             command, plain = f"chmod go-rwx {target}", _PLAIN_FILE
             detail = f"{label} is readable by {who} "
-        return Finding(
+        finding = Finding(
             check_id=self.id,
             severity=(
                 Severity.HIGH
@@ -205,6 +216,8 @@ class ReadableByOthers:
             fix=command if _SAFE_PATH.fullmatch(str(target)) else plain,
             count=len(items),
         )
+        finding.paths = tuple(item.path for item in items)
+        return finding
 
 
 CHECK = ReadableByOthers()

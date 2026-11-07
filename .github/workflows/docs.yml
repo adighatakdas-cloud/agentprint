@@ -1,0 +1,76 @@
+name: Docs
+
+on:
+  pull_request:
+    paths:
+      - "site/**"
+      - "tools/gen_brand.py"
+      - "tools/gen_docs.py"
+      - "docs/brand/**"
+      - ".github/workflows/docs.yml"
+  push:
+    branches: [main]  # any path: the coverage badge stays fresh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ASTRO_TELEMETRY_DISABLED: "1"
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: Run the tests with coverage
+        # A flaky test must not stop the site deploying; the old coverage badge stays.
+        continue-on-error: true
+        working-directory: .
+        run: uv run --locked pytest -m "integration or not integration" --cov=agentprint --cov-report=json:coverage.json
+      - name: Write the coverage badge
+        working-directory: .
+        run: |
+          if [ -f coverage.json ]; then
+            uv run --locked python -m tools.coverage_badge coverage.json site/public/coverage.json
+          else
+            echo "no coverage.json (tests did not finish); keeping the published badge"
+          fi
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm run audit-dist
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site/dist
+
+  deploy:
+    needs: build
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && !github.event.repository.private
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

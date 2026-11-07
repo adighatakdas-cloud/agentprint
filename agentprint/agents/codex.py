@@ -14,7 +14,7 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, Grant, HookCommand, Kind, PackageRule, Severity
 from ..structured import load
-from .base import artifacts, from_home, hook_commands, mcp_servers
+from .base import artifacts, from_home, hook_commands, matches_any, mcp_servers
 
 NAME = "codex"
 
@@ -54,6 +54,14 @@ def _notify(data: dict[str, Any]) -> tuple[HookCommand, ...]:
     if isinstance(notify, list) and notify:
         return (HookCommand("notify", " ".join(str(part) for part in notify)),)
     return ()
+
+
+# History that is only a record (fix masks keys there): typed prompts, session transcripts and
+# files attached to prompts.
+_RECORDS = (
+    re.compile(r"(^|/)\.codex/history\.jsonl$"),
+    re.compile(r"(^|/)\.codex/(sessions|archived_sessions|attachments)/"),
+)
 
 
 class Codex:
@@ -98,6 +106,9 @@ class Codex:
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         base = root / ".codex"
         yield from artifacts(NAME, Kind.SETTINGS, base / "config.toml", base / "hooks.json")
+
+    def pure_history(self, path: Path) -> bool:
+        return matches_any(path, _RECORDS)
 
     def read_config(self, artifact: Artifact) -> AgentConfig:
         name = artifact.path.name

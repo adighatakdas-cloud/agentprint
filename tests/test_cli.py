@@ -38,7 +38,7 @@ def test_scan_never_prints_a_full_key(fake_home, fake_project):
 def test_scan_clean_project_without_home_exits_zero(tmp_path):
     result = runner.invoke(app, ["scan", str(tmp_path), "--no-home"])
     assert result.exit_code == 0
-    assert "No findings" in result.output
+    assert "CLEAR" in result.output
 
 
 def test_fail_on_none_always_exits_zero(fake_home, fake_project):

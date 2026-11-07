@@ -1,0 +1,65 @@
+[
+  {
+    "id": "AP001",
+    "title": "Secret in agent history",
+    "severity": "high",
+    "summary": "An API key sits in an agent's history, transcript, paste cache, edit backups or chat database.",
+    "slug": "ap001"
+  },
+  {
+    "id": "AP002",
+    "title": "Secret in agent settings",
+    "severity": "critical",
+    "summary": "An API key sits in an agent settings or allowlist file, or inside an agent file in a package or push.",
+    "slug": "ap002"
+  },
+  {
+    "id": "AP003",
+    "title": "Over-broad agent permission",
+    "severity": "medium",
+    "summary": "An over-broad permission lets the agent run any command or skip every prompt, such as Bash(*) or bypassPermissions.",
+    "slug": "ap003"
+  },
+  {
+    "id": "AP004",
+    "title": "Agent hook calls the network",
+    "severity": "medium",
+    "summary": "An agent hook calls the network, with curl, wget, nc, a pipe into a shell, or a URL.",
+    "slug": "ap004"
+  },
+  {
+    "id": "AP005",
+    "title": "Secret inline in MCP server config",
+    "severity": "critical",
+    "summary": "An API key is written inline in an MCP server entry (env, headers, args, command or URL).",
+    "slug": "ap005"
+  },
+  {
+    "id": "AP006",
+    "title": "Agent file would ship in package",
+    "severity": "high, medium or low, by file",
+    "summary": "An agent file, such as .claude/settings.local.json, would ship in your npm or PyPI package.",
+    "slug": "ap006"
+  },
+  {
+    "id": "AP007",
+    "title": "Personal agent file not gitignored",
+    "severity": "low",
+    "summary": "A personal agent file, such as CLAUDE.local.md, is in a git repo but not gitignored, or is already committed.",
+    "slug": "ap007"
+  },
+  {
+    "id": "AP008",
+    "title": "Agent data readable by other users",
+    "severity": "medium; high for key stores",
+    "summary": "Agent history, settings or a key store can be read by other users on this machine (macOS and Linux).",
+    "slug": "ap008"
+  },
+  {
+    "id": "AP009",
+    "title": "Package lets an AI rebuild your source",
+    "severity": "high to low by licence; no licence, UNLICENSED, SEE LICENSE IN, proprietary or only LicenseRef- choices count as closed; low for a private registry",
+    "summary": "Source maps, original source or AI instruction files in your package hand an AI your code.",
+    "slug": "ap009"
+  }
+]

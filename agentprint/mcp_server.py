@@ -41,8 +41,10 @@ def build_server() -> MCPServer:
 
     @server.tool()
     def check_package(path: str = ".") -> str:
-        """Check what publishing a package would ship: AI agent files (.claude/, .codex/, ...)
-        and any API keys inside them. Call before npm/pnpm/yarn/bun publish, uv publish, twine
+        """Check what publishing a package would ship: AI agent files (.claude/, .codex/, ...),
+        any API keys inside them, and what lets an AI rebuild your source (source maps,
+        original source, AI instruction files; AP009, judged by the package's licence).
+        Call before npm/pnpm/yarn/bun publish, uv publish, twine
         upload or poetry/hatch/flit publish. `path` is the package folder (with package.json)
         or a built file (.tgz, .whl, .tar.gz, .zip); for a Python project folder the built
         files in its dist/ are checked. Prefer an absolute path. Result line 1 is

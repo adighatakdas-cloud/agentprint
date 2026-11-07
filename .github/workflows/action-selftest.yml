@@ -69,6 +69,29 @@ jobs:
           command: pack
           path: ${{ runner.temp }}/fx/does-not-exist
 
+      - id: badge
+        uses: ./
+        with:
+          command: scan
+          path: ${{ runner.temp }}/fx/clean-repo
+          badge-dir: ${{ runner.temp }}/badge
+          publish-badge: dry-run
+
+      - name: Check the badge files
+        env:
+          BADGE_FILE: ${{ steps.badge.outputs.badge-file }}
+          VERDICT_FILE: ${{ steps.badge.outputs.verdict-file }}
+        run: |
+          test -f "$BADGE_FILE" && test -f "$VERDICT_FILE"
+          test "$(jq -r .message "$BADGE_FILE")" = CLEAR
+          test "$(jq -r .verdict "$VERDICT_FILE")" = CLEAR
+          echo "ok   badge: CLEAR, files written"
+          # A step's log can't be read from another step, so run the same dry-run again here.
+          out="$(AP_BADGE_DIR="$(dirname "$BADGE_FILE")" AP_PUBLISH_MODE=dry-run \
+            bash scripts/publish-badge.sh)"
+          echo "$out"
+          grep -q "dry-run, would commit" <<<"$out"
+
       - name: Check exit codes, step results and SARIF
         env:
           PACK_CLEAN: ${{ steps.pack-clean.outputs.exit-code }}/${{ steps.pack-clean.outcome }}

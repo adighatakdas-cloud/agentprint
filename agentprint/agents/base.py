@@ -5,7 +5,7 @@ from __future__ import annotations
 import functools
 import os
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -39,12 +39,21 @@ def from_home(
 
 
 class Agent(Protocol):
-    name: str
-    package_rules: tuple[PackageRule, ...]
+    @property
+    def name(self) -> str: ...
+    @property
+    def package_rules(self) -> tuple[PackageRule, ...]: ...
 
-    def discover_home(self, home: Path) -> Iterator[Artifact]: ...
+    def discover_home(self, home: Path, /) -> Iterator[Artifact]: ...
 
     def discover_project(self, root: Path) -> Iterator[Artifact]: ...
+
+    def pure_history(self, path: Path) -> bool:
+        """True if this history file of the agent's is only a record: a transcript, chat log,
+        paste cache, prompt history or backup of an edited file, which the agent never reads
+        back as instructions or config. `agentprint fix` masks keys only in these. A key in a
+        skill, rule, memory or scheduled job is in use, so it stays with the human."""
+        ...
 
     def read_config(self, artifact: Artifact) -> AgentConfig:
         """Grants, hooks and MCP servers in one of this agent's config files. Never raises;
@@ -65,6 +74,12 @@ def gemini_folder(home: Path) -> Path:
     """
     root = os.environ.get("GEMINI_CLI_HOME")
     return (Path(root) if root else home) / ".gemini"
+
+
+def matches_any(path: Path, patterns: Iterable[re.Pattern[str]]) -> bool:
+    """True if one of the patterns is found in the path, written with forward slashes."""
+    text = path.as_posix()
+    return any(pattern.search(text) for pattern in patterns)
 
 
 def dig(data: Any, *keys: str) -> Any:

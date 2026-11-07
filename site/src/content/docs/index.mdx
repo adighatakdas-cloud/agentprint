@@ -1,0 +1,79 @@
+---
+title: agentprint
+description: Offline audit of what AI coding agents leave behind on a machine and in published packages.
+template: splash
+head:
+  - tag: title
+    content: "agentprint: the security check your AI coding agent runs for you"
+editUrl: false
+hero:
+  title: The security check your AI coding agent runs for you.
+  tagline: agentprint finds the API keys, risky permissions and agent files that AI coding agents leave behind, and stops your agent before a publish or push would leak them.
+---
+
+import agents from "../../data/agents.json";
+import checks from "../../data/checks.json";
+import "../../styles/landing.css";
+
+export const SEVERITY = /\b(critical|high|medium|low)\b/;
+
+export const severity = (text) =>
+  text.split(SEVERITY).map((part, i) => (i % 2 ? <span class={`ap-sev-${part}`}>{part}</span> : part));
+
+export const CARDS = [
+  {
+    name: "Sweep",
+    command: "agentprint scan",
+    text: "Checks your home folder and this project for keys in agent history and settings, over-broad permissions, hooks that call the network, and agent files other users can read.",
+    href: "/agentprint/get-started/",
+    link: "Get started",
+  },
+  {
+    name: "Preflight",
+    command: "agentprint pack",
+    text: "Checks what your npm or PyPI package would publish, and fails before an agent file or a key ships with it.",
+    href: "/agentprint/ci/",
+    link: "Use it in CI",
+  },
+  {
+    name: "Tripwire",
+    command: "agentprint install",
+    text: "Arms every AI coding agent it finds: a publish or git push that would leak is stopped, and the agent gets the fix steps.",
+    href: "/agentprint/inside-your-agent/",
+    link: "Inside your AI agent",
+  },
+];
+
+<div class="not-content ap-landing">
+  <p class="ap-works"><span class="ap-works-label">Works inside</span> {agents.map((name, i) => [i ? " " : "", <span class="ap-agent">{name}{i < agents.length - 1 ? " ·" : ""}</span>])}</p>
+  <div class="ap-cards">
+    {CARDS.map((c) => (
+      <section class="ap-card">
+        <h2 class="ap-card-name">{c.name}</h2>
+        <p class="ap-card-cmd">{c.command}</p>
+        <p class="ap-card-text">{c.text}</p>
+        <a class="ap-card-link" href={c.href}>{c.link} <span aria-hidden="true">→</span></a>
+      </section>
+    ))}
+  </div>
+  <section class="ap-prints" aria-labelledby="prints-it-finds">
+    <div class="ap-prints-head">
+      <h2 id="prints-it-finds">Prints it finds</h2>
+      <p>Every print has a severity. By default, one at high or above means BLOCK. <a href="/agentprint/checks/">All checks <span aria-hidden="true">→</span></a></p>
+    </div>
+    {/* Roles keep it a table for screen readers when phones lay the rows out as stacks. */}
+    <table class="ap-table" role="table">
+      <thead role="rowgroup"><tr role="row"><th role="columnheader" scope="col">ID</th><th role="columnheader" scope="col">What it finds</th><th role="columnheader" scope="col">Severity</th></tr></thead>
+      <tbody role="rowgroup">
+        {checks.map((c) => (
+          <tr role="row">
+            <td role="cell"><a href={`/agentprint/checks/${c.slug}/`}>{c.id}</a></td>
+            <td role="cell">{c.summary}</td>
+            <td role="cell">{severity(c.severity)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </section>
+  <p class="ap-privacy">Offline. No telemetry. No account. Keys are masked: <code>sk-a…(len 105)</code>. <a href="/agentprint/privacy/">Privacy <span aria-hidden="true">→</span></a></p>
+</div>

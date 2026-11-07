@@ -58,13 +58,18 @@ synthetic. Note in the agent module where and when you checked the layout (for e
      read them;
    - `read_config(artifact)`: the grants, hooks and MCP servers in a settings file. It must
      never raise; return an empty `AgentConfig()` for anything it doesn't understand.
-     `agents/base.py` has shared helpers (`hook_commands`, `mcp_servers`, `is_blanket_command`).
+     `agents/base.py` has shared helpers (`hook_commands`, `mcp_servers`, `is_blanket_command`);
+   - `pure_history(path)`: True for a history file that is only a record (a transcript, chat
+     log, paste cache or prompt history). `agentprint fix` masks keys only in these; a skill,
+     rule, memory or scheduled job the agent reads back must return False. `matches_any` in
+     `agents/base.py` checks a path against a list of patterns.
    Start the module with a docstring linking the docs you followed. `agents/gemini.py` is a
    good short example.
 2. Add one line to `ALL_AGENTS` in `agentprint/agents/__init__.py`. Every check picks it up.
 3. Add fake files for it in `tests/conftest.py` and a `tests/test_agent_<agent>.py` that checks
    which files are found, what `read_config` returns, and that a scan reports the planted keys.
-4. Add the agent to the tables in `README.md` and `docs/supported-agents.md`.
+4. Add the agent to `site/src/content/docs/agents.md` and `site/check-notes/ap003.md`, then run
+   `uv run python -m tools.gen_docs` (it rewrites the site's agent data and landing text).
 
 **Only package rules?** If agentprint doesn't read the agent's home folder yet, add one
 `_agent(...)` entry to `agentprint/agents/scan_only.py` instead.
@@ -93,12 +98,31 @@ synthetic. Note in the agent module where and when you checked the layout (for e
 2. Register it in `agentprint/checks/__init__.py`.
 3. Add an adviser in `agentprint/advice.py` (`@adviser("APNNN")`) that splits the fix into
    `fix_steps` (what an AI agent can do) and `ask_human` (what only a person can do).
-4. Fixture-backed tests for what it finds and what it must not flag, and a row in the README's
-   checks table.
+4. Fixture-backed tests for what it finds and what it must not flag.
+5. Write the check's page text in `site/check-notes/apNNN.md` (copy an existing note for the
+   frontmatter), then run `uv run python -m tools.gen_docs`. That generates the check's page
+   on the docs site and its row in the README's checks table. Without the note, `gen_docs`
+   fails with `FileNotFoundError`.
 
 Text taken from scanned files (paths, names, values) is untrusted: show it through
 `sanitize.clean()` / `quote()`, and never put it into a shell command unless every character is
 known safe (see AP008).
+
+## Docs and generated files
+
+The README is short; the user docs live on the docs site.
+
+- User docs: `site/src/content/docs/` (Markdown). Check prose: `site/check-notes/`.
+- Generated, never edit by hand: `site/src/content/docs/checks/`, the checks table between the
+  `<!-- checks:start -->` markers in `README.md`, `site/src/data/`, and `docs/brand/` plus
+  `site/src/assets/` logos.
+- After changing a check, a check note, an agent, the scan or fix views, the demo world
+  (`demo/build_demo.py`, which the landing terminal is drawn from) or `__version__`, run
+  `uv run python -m tools.gen_docs`. After changing the mascot, run
+  `uv run python -m tools.gen_brand`. Add `--check` to either to see whether files are current;
+  CI fails on drift.
+- Build the site: `cd site && corepack enable && pnpm install --frozen-lockfile && pnpm build &&
+  pnpm run audit-dist`. Preview with `pnpm preview`.
 
 ## Commits and pull requests
 

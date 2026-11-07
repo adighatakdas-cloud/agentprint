@@ -8,17 +8,40 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
 import sys
 from pathlib import Path
 
+from agentprint.install import resolve_agentprint
+from agentprint.ui.detect import AGENT_MARKERS
 from tests import fakes
 
 DUMMY_KEY = "sk-test-dummy"
 PUBLISH = "npm publish"
 PUSH = "git push"
+# agentprint itself, launched the way `agentprint install` launches it in agents' hooks.
+SCAN = shlex.join(resolve_agentprint()) + " scan --no-home ."
+BARE = shlex.join(resolve_agentprint())
+
+# Settings that switch color on or off in a shell (names only are ever printed).
+COLOR_VARS = ("CI", "NO_COLOR", "FORCE_COLOR", "CLICOLOR_FORCE", "TTY_COMPATIBLE",
+              "GITHUB_ACTIONS", "PY_COLORS")  # fmt: skip
+PROBE_TAG = "agentprint-probe"
+# What the agent's shell looks like to a program it runs: the NAMES of the agent markers and
+# color settings that are set (never a value: a key could be there), and whether stdin and
+# stdout are terminals. The tag is split in the code so the command itself never matches.
+_PROBE_CODE = (  # double quotes only, so the shell quoting stays one plain '...'
+    "import os, sys; "
+    f"m = {json.dumps(AGENT_MARKERS)}; c = {json.dumps(COLOR_VARS)}; "
+    'n = lambda keys: ",".join(k for k in keys if os.environ.get(k)); '
+    "t = lambda s: int(s is not None and s.isatty()); "
+    f'print("{PROBE_TAG[:10]}" + "{PROBE_TAG[10:]}", "markers=" + n(m), "color=" + n(c), '
+    '"stdin_tty=%d" % t(sys.stdin), "stdout_tty=%d" % t(sys.stdout))'
+)
+PROBE = shlex.join([sys.executable, "-c", _PROBE_CODE])
 
 NPM_SHIM = """#!{python}
 # Fake npm for live tests: `npm pack --dry-run --json` lists the folder (as agentprint's
@@ -135,6 +158,15 @@ def agent_env(home: Path, bin_dir: Path, tool_dirs: list[Path], **extra: str) ->
     _login_shell_files(home, bin_dir)
     env.update(extra)
     return env
+
+
+def color_terminal(env: dict[str, str]) -> dict[str, str]:
+    """The agent started from a color terminal with color forced on: no CI, no NO_COLOR, a
+    color TERM, FORCE_COLOR (some people's shells) and GITHUB_ACTIONS (every Actions job; typer
+    forces color under it). The worst case for escape codes: whatever agentprint prints now
+    depends only on its own detection (the agent's marker, or a pipe)."""
+    plain = {k: v for k, v in env.items() if k not in ("CI", "NO_COLOR")}
+    return {**plain, "TERM": "xterm-256color", "FORCE_COLOR": "1", "GITHUB_ACTIONS": "true"}
 
 
 def _login_shell_files(home: Path, bin_dir: Path) -> None:

@@ -25,7 +25,7 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
-from .base import artifacts, from_home, hook_commands, is_blanket_command, mcp_servers
+from .base import artifacts, from_home, hook_commands, is_blanket_command, matches_any, mcp_servers
 
 NAME = "copilot"
 
@@ -91,6 +91,19 @@ def _grants(data: dict[str, Any]) -> tuple[Grant, ...]:
     if data.get(skip) is True:
         grants.append(Grant(skip, "true", _CLAUDE_SKIP_FIX))
     return tuple(grants)
+
+
+# History that is only a record (fix masks keys there): each session's events.jsonl, the
+# session store, typed-command history, logs, and VS Code's chat sessions and edit snapshots.
+# Other files in a session folder (its plan, workspace files) are read back, so they are not.
+_RECORDS = (
+    re.compile(r"(^|/)\.copilot/session-state/(?:[^/]+/)*[^/]+\.jsonl$"),
+    re.compile(r"(^|/)\.copilot/session-store\.db$"),
+    re.compile(r"(^|/)\.copilot/command-history-state(/|$)"),
+    re.compile(r"(^|/)\.copilot/logs/"),
+    re.compile(r"(^|/)workspaceStorage/[^/]+/(chatSessions|chatEditingSessions)/"),
+    re.compile(r"(^|/)globalStorage/(emptyWindowChatSessions|transferredChatSessions)/"),
+)
 
 
 class Copilot:
@@ -195,6 +208,9 @@ class Copilot:
         yield from artifacts(
             NAME, Kind.SETTINGS, github / "copilot" / "settings.local.json", personal=True
         )
+
+    def pure_history(self, path: Path) -> bool:
+        return matches_any(path, _RECORDS)
 
     def read_config(self, artifact: Artifact) -> AgentConfig:
         path = artifact.path

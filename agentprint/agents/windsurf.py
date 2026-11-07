@@ -24,7 +24,7 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
-from .base import artifacts, from_home, hook_commands, is_blanket_command, mcp_servers
+from .base import artifacts, from_home, hook_commands, is_blanket_command, matches_any, mcp_servers
 
 NAME = "windsurf"
 
@@ -58,6 +58,11 @@ def _grants(data: dict[str, Any]) -> tuple[Grant, ...]:
     )
 
 
+# History that is only a record: none. memories/ holds Cascade's memories and rules (such as
+# global_rules.md), which Cascade reads back into every chat, so fix leaves keys there alone.
+_RECORDS: tuple[re.Pattern[str], ...] = ()
+
+
 class Windsurf:
     name = NAME
     package_rules = (
@@ -83,6 +88,9 @@ class Windsurf:
 
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         yield from artifacts(NAME, Kind.SETTINGS, root / ".windsurf" / "hooks.json")
+
+    def pure_history(self, path: Path) -> bool:
+        return matches_any(path, _RECORDS)
 
     def read_config(self, artifact: Artifact) -> AgentConfig:
         name = artifact.path.name

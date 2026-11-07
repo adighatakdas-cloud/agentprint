@@ -19,7 +19,7 @@ from pathlib import Path
 import yaml
 
 from .advice import Moment
-from .checks.ap006_package_leak import check_listing, is_agent_file
+from .checks import PACKAGE_WANT, check_package
 from .commands import NODE, ROOT_RELEASERS, WORKSPACE_RELEASERS, Action, Risky, detect
 from .gitcheck import check_push
 from .models import CannotCheck, Finding
@@ -100,7 +100,7 @@ def _built(cwd: Path, patterns: tuple[str, ...]) -> list[PackageListing]:
             "no built package (.whl / .tar.gz) found to upload. Build it first, then run "
             "`agentprint pack dist/<file> --format agent`."
         )
-    return [read_archive(file, is_agent_file) for file in files]
+    return [read_archive(file, PACKAGE_WANT) for file in files]
 
 
 def check_package_path(path: Path) -> list[Finding]:
@@ -108,14 +108,14 @@ def check_package_path(path: Path) -> list[Finding]:
 
     Never builds anything (no project code runs, no network)."""
     if path.is_file():
-        listings = [read_archive(path, is_agent_file)]
+        listings = [read_archive(path, PACKAGE_WANT)]
     elif (path / "package.json").is_file():
-        listings = [read_npm_project(path, is_agent_file)]
+        listings = [read_npm_project(path, PACKAGE_WANT)]
     elif (path / "pyproject.toml").is_file() or (path / "setup.py").is_file():
         listings = _built(path, DEFAULT_DIST)
     else:
         raise CannotCheck(f"{path} is not a package folder or a built package file")
-    return [finding for listing in listings for finding in check_listing(listing)]
+    return [finding for listing in listings for finding in check_package(listing)]
 
 
 def _check_publish(item: Risky) -> list[Finding]:
@@ -127,7 +127,7 @@ def _check_publish(item: Risky) -> list[Finding]:
             folders = [item.cwd / target for target in item.targets or (".",)]
         return [finding for folder in folders for finding in _node_target(folder)]
     listings = _built(item.cwd, item.targets or DEFAULT_DIST)
-    return [finding for listing in listings for finding in check_listing(listing)]
+    return [finding for listing in listings for finding in check_package(listing)]
 
 
 def _package_json(folder: Path) -> dict:

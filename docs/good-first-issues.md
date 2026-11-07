@@ -11,12 +11,15 @@ module's docstring.
 
 ## 1. Sort `pack` findings most severe first
 
-`agentprint scan` lists findings most severe first; `agentprint pack` lists them in the order
-the files were found, so a `high` row can sit above a `critical` one.
+`agentprint scan` returns findings most severe first; `agentprint pack` returns them in the
+order the files were found. A person's view groups them by severity and the agent format sorts
+them, but in `pack --format json` and `--format sarif` a `high` finding can sit above a
+`critical` one.
 
-- **Where:** `pack()` in `agentprint/cli.py`; `scan()` in `agentprint/scanner.py` shows the
-  sort to reuse.
-- **Done when:** the table, JSON and SARIF output of `pack` are sorted like `scan`, with a test.
+- **Where:** `run_pack_command()` in `agentprint/cli.py`; `scan()` in `agentprint/scanner.py`
+  shows the sort to reuse.
+- **Done when:** the JSON and SARIF output of `pack` are sorted like `scan`, with a test (the
+  output snapshots in `tests/data/snapshots/` change on purpose).
 
 ## 2. Understand heredocs when spotting a publish
 
@@ -56,7 +59,7 @@ hooks, so most of the work is paths.
   stores: permission check only).
 - **Install:** a hook and MCP entry in `~/.qwen/settings.json`; the note in `~/.qwen/QWEN.md`.
 - **Done when:** `agentprint/agents/qwen_code.py` and `agentprint/integrations/qwen_code.py`
-  exist with tests, the scan-only entry is removed, and the README tables are updated.
+  exist with tests, the scan-only entry is removed, and `site/src/content/docs/agents.md` is updated (then run `uv run python -m tools.gen_docs`).
 
 ## 5. Goose integration
 
@@ -68,7 +71,7 @@ folders, MCP servers as `extensions:` in `~/.config/goose/config.yaml`, and glob
   `agentprint/sqlite_text.py`); `secrets.yaml` as a credential store.
 - **Install:** hook, MCP entry and note, through Goose's own files. YAML edits must keep the
   user's comments and layout (see how `integrations/hermes.py` does it).
-- **Done when:** both modules exist with tests; mark it "docs-verified" in the README.
+- **Done when:** both modules exist with tests; mark it "docs-verified" in `site/src/content/docs/agents.md`.
 
 ## 6. Kilo Code: reuse the OpenCode plugin
 

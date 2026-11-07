@@ -35,6 +35,7 @@ from .base import (
     gemini_folder,
     hook_commands,
     is_blanket_command,
+    matches_any,
     mcp_servers,
 )
 
@@ -88,6 +89,14 @@ def _hooks(data: dict[str, Any]) -> tuple[HookCommand, ...]:
     return tuple(found)
 
 
+# History that is only a record (fix masks keys there): the transcripts each conversation keeps
+# under brain/<id>/.system_generated/logs/. The rest of brain/ (the task lists and plans the
+# agent writes and re-reads) and knowledge/ (saved knowledge it reads back) are not.
+_RECORDS = (
+    re.compile(r"(^|/)\.gemini/antigravity(-cli|-ide)?/brain/[^/]+/\.system_generated/logs/"),
+)
+
+
 class Antigravity:
     name = NAME
     package_rules = (
@@ -135,6 +144,9 @@ class Antigravity:
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         agents = root / ".agents"
         yield from artifacts(NAME, Kind.SETTINGS, agents / "hooks.json", agents / "mcp_config.json")
+
+    def pure_history(self, path: Path) -> bool:
+        return matches_any(path, _RECORDS)
 
     def read_config(self, artifact: Artifact) -> AgentConfig:
         name = artifact.path.name

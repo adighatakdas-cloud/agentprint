@@ -31,7 +31,6 @@ on stderr: a broken agentprint never blocks, and never answers with Cursor-break
 
 from __future__ import annotations
 
-import contextlib
 import difflib
 import json
 import os
@@ -60,6 +59,9 @@ from .integrations.base import (
     YamlEdit,
     expanded_size,
 )
+from .safewrite import atomic_write as _atomic_write
+from .safewrite import private_dir as _private
+from .safewrite import real as _real
 from .sanitize import clean
 from .secrets import find_secrets, redact
 
@@ -136,6 +138,8 @@ exit 0
 
 # ---- state, backups, safe writes --------------------------------------------------------------
 
+# _atomic_write, _real and _private come from safewrite (shared with `agentprint fix`).
+
 
 @dataclass
 class State:
@@ -156,11 +160,6 @@ class State:
         data = {"version": 1, "files": self.files, "dirs": self.dirs}
         self.dirs.extend(d for d in _mkdirs(self.path.parent) if d not in self.dirs)
         _atomic_write(self.path, json.dumps(data, indent=2) + "\n", 0o600)
-
-
-def _real(path: Path) -> Path:
-    """Edit through symlinks (dotfile setups) instead of replacing the link."""
-    return path.resolve() if path.is_symlink() else path
 
 
 def _read(path: Path) -> str | None:
@@ -191,26 +190,6 @@ def _read_only(path: Path) -> bool:
         return not _real(path).stat().st_mode & stat.S_IWUSR
     except FileNotFoundError:
         return False
-
-
-def _atomic_write(path: Path, text: str, mode: int | None = None) -> None:
-    """Write via a temp file that is private (0600) from its first byte, then give it the
-    original file's mode (or `mode`, or 0600 for a new file) and move it into place."""
-    target = _real(path)
-    tmp = target.with_name(f".{target.name}.agentprint-tmp")
-    with contextlib.suppress(FileNotFoundError):
-        tmp.unlink()  # a leftover from an interrupted run
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(text.encode("utf-8"))
-        final = stat.S_IMODE(target.stat().st_mode) if target.exists() else (mode or 0o600)
-        os.chmod(tmp, final)
-        os.replace(tmp, target)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            tmp.unlink()
-        raise
 
 
 def _backup_path(home: Path, path: Path) -> Path:
@@ -315,7 +294,8 @@ def _snippet(edits: list[Edit]) -> str:
     if all(isinstance(e, JsonEdit | YamlEdit) for e in edits):
         sample: dict = {}
         for edit in edits:
-            edit.add(sample)
+            if isinstance(edit, JsonEdit | YamlEdit):
+                edit.add(sample)
         return _render(json.loads(json.dumps(sample, default=str)), edits)  # plain types
     parts = []
     for edit in edits:
@@ -369,16 +349,28 @@ def select(names: list[str] | None, home: Path, env: Mapping[str, str]) -> list[
     return [i for i in chosen if i.installed(home, env)]
 
 
+APPLY_HINT = "Run without --dry-run to apply."
+
+
 def install(
-    home: Path, env: Mapping[str, str], names: list[str] | None, dry_run: bool, echo: Echo
-) -> None:
+    home: Path,
+    env: Mapping[str, str],
+    names: list[str] | None,
+    dry_run: bool,
+    echo: Echo,
+    *,
+    apply_hint: str | None = APPLY_HINT,
+) -> int:
+    """Arm the agents found; returns how many files changed (or would, in a dry run).
+
+    apply_hint ends a dry run's count line; the menu, which asks y/N itself, passes None."""
     agentprint = resolve_agentprint()
     launch = Launch(hook=str(home / STATE_DIR / "bin" / HOOK_MARK), mcp=(*agentprint, "mcp"))
     found = select(names, home, env)
     echo(f"agentprint install{' (dry run: nothing is written)' if dry_run else ''}")
     if not found:
         echo("No supported AI agent found under " + str(home) + ". Nothing to do.")
-        return
+        return 0
     echo("Agents found: " + ", ".join(i.label for i in found))
     echo("Agents will start agentprint with: " + " ".join(agentprint))
     if len(agentprint) == 2 and agentprint[1].startswith("agentprint=="):
@@ -411,13 +403,14 @@ def install(
     if changed == 0:
         echo("Everything is already set up. Nothing changed.")
     elif dry_run:
-        echo(f"{changed} file(s) would change. Run without --dry-run to apply.")
+        echo(f"{changed} file(s) would change." + (f" {apply_hint}" if apply_hint else ""))
     else:
         echo(f"Done: {changed} file(s) changed. Backups: {_shown(home, home / STATE_DIR)}")
         echo("Undo everything with: agentprint uninstall")
     for integration in found:
         for note in integration.notes:
             echo(f"Note for {integration.label}: {note}")
+    return changed
 
 
 def _install_file(
@@ -480,11 +473,6 @@ def _write_with_backup(
     state.files[key] = entry
 
 
-def _private(directory: Path) -> None:
-    for d in [directory, *[p for p in directory.rglob("*") if p.is_dir()]]:
-        d.chmod(stat.S_IRWXU)
-
-
 # ---- uninstall --------------------------------------------------------------------------------
 
 
@@ -494,8 +482,17 @@ def _marker_reverts(path: Path) -> list[Edit]:
 
 
 def uninstall(
-    home: Path, env: Mapping[str, str], names: list[str] | None, dry_run: bool, echo: Echo
-) -> None:
+    home: Path,
+    env: Mapping[str, str],
+    names: list[str] | None,
+    dry_run: bool,
+    echo: Echo,
+    *,
+    apply_hint: str | None = APPLY_HINT,
+) -> int:
+    """Disarm the agents; returns how many files changed (or would, in a dry run).
+
+    apply_hint ends a dry run's count line; the menu, which asks y/N itself, passes None."""
     launch = Launch(hook=str(home / STATE_DIR / "bin" / HOOK_MARK), mcp=("agentprint", "mcp"))
     chosen = list(names) if names else list(ALL_INTEGRATIONS)
     state = State.load(home)
@@ -528,8 +525,8 @@ def uninstall(
         changed += result not in {"same", "kept"}
         exact = exact and result in {"same", "restored", "removed"}
     if dry_run:
-        echo(f"\n{changed} file(s) would change. Run without --dry-run to apply.")
-        return
+        echo(f"\n{changed} file(s) would change." + (f" {apply_hint}" if apply_hint else ""))
+        return changed
     if last and exact:
         shutil.rmtree(home / STATE_DIR / "backups", ignore_errors=True)
         state.path.unlink(missing_ok=True)
@@ -544,6 +541,7 @@ def uninstall(
         if (home / STATE_DIR / "backups").exists():
             echo(f"Backups kept in {_shown(home, home / STATE_DIR / 'backups')}")
     echo(f"\nDone: {changed} file(s) changed." if changed else "\nNothing to remove.")
+    return changed
 
 
 def _rmdir_if_empty(directory: Path) -> bool:
@@ -629,6 +627,7 @@ def _uninstall_file(
     if restored is None:
         _real(path).unlink()
     elif how == "restored":
+        assert entry is not None  # "restored" only happens when a backup was found in entry
         _real(path).write_bytes(Path(entry["backup"]).read_bytes())  # exact original bytes
     else:
         _atomic_write(path, restored)
