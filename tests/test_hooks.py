@@ -220,6 +220,24 @@ CURSOR_MATCHES = [
     "git -C sub push origin main",
     "git add . && git commit -m x && git push",
     "if npm test; then git push; fi",
+    # files a publish can hide in (Ruling X7)
+    "make",
+    "make release",
+    "cd pkg && gmake -j4 publish",
+    "just release",
+    "task release",
+    "npm version patch",
+    "pnpm --silent version minor",
+    "./release.sh",
+    "scripts/release",
+    "bash scripts/release.sh",
+    "sh -e x.sh",
+    "source ./ship.sh",
+    "python scripts/release.py",
+    "python3 -u tools/up.py",
+    "node release.mjs",
+    "uv run python scripts/release.py",
+    "poetry run release",
 ]
 CURSOR_SKIPS = [
     "git stash push",
@@ -229,6 +247,12 @@ CURSOR_SKIPS = [
     "ls -la",
     "npm test",
     "git status",
+    "cat Makefile",
+    "echo make release",
+    "git commit -m 'make it work'",
+    "ls -la scripts",
+    "vim release.sh",
+    "npm install semver",
 ]
 
 
