@@ -89,10 +89,14 @@ Do these once, before the first tag. Step 2 is a decision, the rest are clicks.
    git push origin v0.1.0
    ```
 
+   Note the full 40-character commit SHA (`git rev-parse v0.1.0^{commit}`). Step 6 publishes it.
+
 4. Watch *Actions → Release*. Approve the `pypi` and `npm` steps if you set reviewers.
 5. Check it worked: `uvx agentprint==0.1.0 --version` and `npx agentprint-cli@0.1.0 --version`
    (use the npm name you chose).
-6. Optional: on GitHub, *Releases → Draft a new release* from the tag. Tick *Publish this Action
+6. On GitHub, *Releases → Draft a new release* from the tag, and write the release commit SHA in
+   the notes (`Release commit: <40-char SHA>`). People verifying a badge signed by agentprint pass
+   it as `--signer-digest`. Optional: tick *Publish this Action
    to the GitHub Marketplace* to list the Action there.
 
 ## When something fails

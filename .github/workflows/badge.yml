@@ -1,6 +1,8 @@
 # Reusable workflow: agentprint signs the verdict itself. The attestation names THIS file
 # (adighatakdas-cloud/agentprint/.github/workflows/badge.yml), so `gh attestation verify
-# --signer-workflow` proves these steps, which the caller cannot edit, produced the verdict.
+# --signer-workflow` plus `--signer-digest <release commit SHA>` shows this file, at that
+# release commit, produced the verdict. The digest matters: the workflow path alone matches any
+# ref, including an imposter commit that exists only in a fork.
 # It installs the released agentprint from PyPI, so it works from v0.1.0.
 #
 # Only `scan` is supported: it reads files and runs none of the caller's code. `pack` runs the

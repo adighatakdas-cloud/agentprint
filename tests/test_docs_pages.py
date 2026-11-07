@@ -164,7 +164,7 @@ def test_badge_page_covers_the_verifiable_badge():
 
 def test_badge_page_offers_both_modes_and_recommends_signed_by_agentprint():
     text = (DOCS / "badge.md").read_text()
-    assert "## Signed by agentprint (recommended)" in text
+    assert "## Signed by agentprint (new in v0.1.0)" in text
     assert "## Signed by your own workflow" in text
     assert text.index("## Signed by agentprint") < text.index("## Signed by your own workflow")
     assert "uses: adighatakdas-cloud/agentprint/.github/workflows/badge.yml@v0.1.0" in text
@@ -175,6 +175,10 @@ def test_badge_page_offers_both_modes_and_recommends_signed_by_agentprint():
     assert "`path`" in text and "`command`" in text and "`fail_on`" in text
     assert "proves" in text and "agentprint's workflow file" in text
     assert "cannot edit" not in text
+    assert "recommended" not in text.lower().split("## signed by your own workflow")[0]
+    assert "--signer-digest <release commit SHA>" in text and "imposter commit" in text
+    assert "release's notes" in text
+    assert "cannot edit" not in (gen_docs.ROOT / ".github/workflows/badge.yml").read_text()
     assert "fail-on: none" in text and "refused" in text
 
 
