@@ -40,7 +40,8 @@ EOF
 ## 3. Hooks on Windows
 
 The hook launcher is a POSIX shell script (`~/.agentprint/bin/agentprint-hook`), so on Windows
-`install` adds only the MCP server and the instructions note.
+`install` adds only the MCP server and the instructions note (enforced in `install.py` through
+`agentprint/platform.py`, and covered by `tests/test_windows_gate.py`).
 
 - **Where:** `launcher_script()` and `Launch` in `agentprint/install.py` and
   `agentprint/integrations/base.py`.

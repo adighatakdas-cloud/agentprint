@@ -16,6 +16,7 @@ from agentprint.integrations import ALL_INTEGRATIONS
 from agentprint.roster import SHORT_NAMES
 from agentprint.secrets import find_secrets
 from tests import fakes
+from tests.conftest import home_vars, set_home
 from tools import gen_docs
 
 SITE = gen_docs.ROOT / "site"
@@ -115,7 +116,7 @@ def test_fragments_ignore_ambient_env(monkeypatch, tmp_path):
         "TERM": "dumb",
         "COLUMNS": "40",
         "FORCE_COLOR": "0",
-        "HOME": str(tmp_path),  # not the real home, and not the demo world's
+        **home_vars(str(tmp_path)),  # not the real home, and not the demo world's
         "GEMINI_CLI_HOME": str(tmp_path / "gemini"),
         "CODEX_HOME": str(tmp_path / "codex"),
         "CLAUDE_CONFIG_DIR": str(tmp_path / "claude"),
@@ -179,7 +180,7 @@ def test_scan_and_fix_tell_one_story():
 def _person_at_a_terminal(monkeypatch, home: Path, project: Path) -> None:
     for name in ("GEMINI_CLI_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("HOME", str(home))
+    set_home(monkeypatch, str(home))
     monkeypatch.chdir(project)
     monkeypatch.setattr(cli, "is_interactive", lambda *a: True)
     monkeypatch.setattr(cli, "is_agent", lambda env: False)

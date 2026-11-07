@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 
 from agentprint.cli import app
 from agentprint.ui.detect import AGENT_MARKERS
+from tests.conftest import home_vars, set_home
 
 ROOT = Path(__file__).resolve().parent.parent
 DEMO = ROOT / "demo"
@@ -137,7 +138,7 @@ def world(tmp_path, monkeypatch) -> Path:
         ap008, "_parents", lambda path: [p for p in path.parents if p.is_relative_to(inside)]
     )
     monkeypatch.chdir(root)
-    monkeypatch.setenv("HOME", str(root))  # as the tape does: no real agent folder is read
+    set_home(monkeypatch, str(root))  # as the tape does: no real agent folder is read
     monkeypatch.setenv("COLUMNS", "100")
     for name in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "GEMINI_CLI_HOME"):
         monkeypatch.delenv(name, raising=False)
@@ -276,7 +277,7 @@ def test_loop_goes_block_then_fix_then_allowed(tmp_path):
     assert built.returncode == 0, built.stderr
     env = {
         **os.environ,
-        "HOME": str(root),
+        **home_vars(str(root)),
         "AGENT_LOOP_SPEED": "0",
         "AGENTPRINT_CMD": str(Path(sys.executable).parent / "agentprint"),
     }

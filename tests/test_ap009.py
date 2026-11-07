@@ -35,6 +35,7 @@ from agentprint.models import Severity
 from agentprint.pack import PackageListing, read_archive
 from agentprint.report import FailOn, exit_code, to_agent
 from tests import fakes, timing
+from tests.conftest import set_home
 
 runner = CliRunner()
 LABEL = "demo-1.0.0.tgz"
@@ -869,7 +870,7 @@ def test_scan_and_push_do_not_run_ap009(tmp_path, monkeypatch):
         pytest.skip("git not installed")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    set_home(monkeypatch, str(tmp_path / "home"))
     subprocess.run(["git", "-C", str(project), "init", "-q"], check=True)
     subprocess.run(["git", "-C", str(project), "add", "-A"], check=True)
     assert [f for f in check_push(project) if f.check_id == "AP009"] == []

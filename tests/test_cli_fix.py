@@ -30,6 +30,7 @@ from agentprint.cli import app
 from agentprint.integrations.base import INSTRUCTIONS
 from agentprint.secrets import find_secrets
 from tests import fakes
+from tests.conftest import set_home
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD_DEMO = ROOT / "demo" / "build_demo.py"
@@ -47,7 +48,7 @@ runner = CliRunner()
 @pytest.fixture(autouse=True)
 def _fake_real_home(tmp_path, monkeypatch):
     """Path.home() is a temporary folder: a fix run that forgot --home could only touch that."""
-    monkeypatch.setenv("HOME", str(tmp_path))
+    set_home(monkeypatch, str(tmp_path))
     for name in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME"):
         monkeypatch.delenv(name, raising=False)
 

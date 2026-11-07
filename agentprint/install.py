@@ -10,7 +10,8 @@ Ruling (how agents start agentprint): hooks call a small launcher script,
 ~/.agentprint/bin/agentprint-hook, which runs `<agentprint> guard`. <agentprint> is the absolute
 path of a permanent install if one is on PATH, else `uvx agentprint==<this version>` by absolute
 path. Absolute paths survive Gemini CLI's sanitized hook environment and GUI apps that don't
-see the shell PATH. Cost if wrong: one extra file on disk, and POSIX only (no Windows hooks).
+see the shell PATH. Cost if wrong: one extra file on disk. POSIX only: on Windows install adds
+just the MCP server and the note (no hooks, no launcher) until a Windows launcher exists.
 
 Launcher exit codes, from each agent's docs (rechecked 2026-11-05):
 - Claude Code: 0 = go on (stdout JSON read), 2 = block, others = non-blocking error.
@@ -45,7 +46,7 @@ from pathlib import Path
 
 import yaml
 
-from . import __version__
+from . import __version__, platform
 from .integrations import ALL_INTEGRATIONS
 from .integrations.base import (
     BLOCK_EXIT,
@@ -84,12 +85,14 @@ _THROWAWAY = (
     "/.cache/pipx/",  # pipx run on Linux
     "/tmp/",
     "/temp/",
+    "/uv/cache/archive-v",  # uvx on Windows: %LOCALAPPDATA%\\uv\\cache\\archive-v0\\...
+    "/appdata/local/temp/",  # %TEMP% on Windows
 )
 
 
 def _ephemeral(path: str) -> bool:
     """True for uvx / pipx run environments and temp dirs, which may vanish at any time."""
-    low = path.lower()
+    low = Path(path).as_posix().lower()
     return any(part in low for part in _THROWAWAY)
 
 
@@ -231,7 +234,7 @@ def _backup_path(home: Path, path: Path) -> Path:
     try:
         rel = path.relative_to(home)
     except ValueError:
-        rel = Path("abs") / str(path).lstrip("/")
+        rel = Path("abs", *platform.drive_safe_parts(path))  # drive kept: C/x/y, UNC/host/share
     return home / STATE_DIR / "backups" / rel
 
 
@@ -361,6 +364,13 @@ def _would_change(path: Path, edits: list[Edit]) -> bool:
 # ---- install ----------------------------------------------------------------------------------
 
 
+def _hook_free(edits: list[Edit]) -> list[Edit]:
+    """On Windows only the MCP server and the note go in: hooks run through a /bin/sh launcher."""
+    if not platform.is_windows():
+        return edits
+    return [e for e in edits if not e.what.startswith("hook")]
+
+
 def _group(edits: list[Edit]) -> dict[Path, list[Edit]]:
     grouped: dict[Path, list[Edit]] = {}
     for edit in edits:
@@ -427,20 +437,22 @@ def install(
             "  (no permanent install found, so hooks use uvx. For faster offline hooks run "
             "`uv tool install agentprint`, then install again.)"
         )
-    if strict:
+    if platform.is_windows():
+        echo(platform.NO_HOOKS_WINDOWS)
+    elif strict:
         echo("Strict mode: a publish or push agentprint cannot check will be blocked.")
     state = State.load(home)
     changed = 0
-    agents = [(i.name, i.label, i.edits(home, env, launch)) for i in found]
+    agents = [(i.name, i.label, _hook_free(i.edits(home, env, launch))) for i in found]
     agent_files = [(path, group) for _, _, edits in agents for path, group in _group(edits).items()]
     # The shared launcher goes in when an agent file will use it, or when a hook installed
     # earlier already uses it and the launcher is missing or out of date.
-    core_edits = _core_edits(home, agentprint)
+    core_edits = [] if platform.is_windows() else _core_edits(home, agentprint)
     needed = any(_would_change(path, group) for path, group in agent_files) or (
         any(_would_change(edit.path, [edit]) for edit in core_edits)
         and any(_uses_launcher(path) for path, _ in agent_files)
     )
-    core = [(CORE, "agentprint", core_edits)] if needed else []
+    core = [(CORE, "agentprint", core_edits)] if needed and core_edits else []
     sections = core + agents
     try:
         for name, label, edits in sections:
@@ -550,7 +562,7 @@ def uninstall(
     echo(f"agentprint uninstall{' (dry run: nothing is written)' if dry_run else ''}")
     grouped: dict[Path, list[Edit]] = {}
     for name in chosen:
-        grouped.update(_group(ALL_INTEGRATIONS[name].edits(home, env, launch)))
+        grouped.update(_group(_hook_free(ALL_INTEGRATIONS[name].edits(home, env, launch))))
     for key, entry in state.files.items():  # moved since install, e.g. AGENTS.override.md
         if Path(key) not in grouped and (entry.get("agent") in chosen or not names):
             grouped[Path(key)] = _marker_reverts(Path(key))
@@ -560,7 +572,7 @@ def uninstall(
         if entry.get("agent") != CORE and Path(key) not in grouped
     ]
     last = not others  # nothing of another agent left: the launcher and state go too
-    if last:
+    if last and not platform.is_windows():
         grouped.update(_group(_core_edits(home, ["agentprint"])))
     changed = 0
     exact = True
