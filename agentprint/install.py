@@ -201,7 +201,7 @@ def windows_launcher_script(agentprint: list[str]) -> str:
     for name, integration in ALL_INTEGRATIONS.items():
         allow = integration.reply(None).stdout.strip()
         if allow:
-            allows.append(f"            {_file_text(name)} {{ $allow = {_file_text(allow)} }}")
+            allows.append(f"        {_file_text(name)} {{ $allow = {_file_text(allow)} }}")
     fixed = subprocess.list2cmdline([*agentprint[1:], "guard"])
     lines = [
         f"# {HOOK_MARK}: Written by `agentprint install`; `agentprint uninstall` deletes it.",
@@ -223,15 +223,16 @@ def windows_launcher_script(agentprint: list[str]) -> str:
         "    }",
         "}",
         "function Exit-Allowed([string]$why) {",
-        "    try {",
-        "        [Console]::Error.WriteLine('agentprint: hook check failed (' + $why + '); ' +",
-        "            'the command was allowed')",
-        "        $allow = ''",
-        "        switch ($agent) {",
+        "    $line = 'agentprint: hook check failed (' + $why + '); the command was allowed'",
+        "    try { [Console]::Error.WriteLine($line) } catch { }",
+        "    $allow = ''",
+        "    switch ($agent) {",
         *allows,
-        "        }",
-        '        if ($allow) { Send-Bytes ([Text.Encoding]::UTF8.GetBytes($allow + "`n")) }',
-        "    } catch { }",
+        "    }",
+        "    if ($allow) {",
+        '        try { Send-Bytes ([Text.Encoding]::UTF8.GetBytes($allow + "`n")) }',
+        "        catch { $allow }  # where .NET calls are not allowed: PowerShell's own output",
+        "    }",
         "    exit 0",
         "}",
         "trap { Exit-Allowed ('launcher error: ' + $_.Exception.GetType().Name) }",
