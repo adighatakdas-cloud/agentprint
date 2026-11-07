@@ -746,7 +746,7 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
 
     from rich.text import Text
 
-    from .roster import roster, summary_line
+    from .roster import roster, scanned, summary_line
     from .sanitize import clean
     from .ui.layout import hang
 
@@ -759,27 +759,45 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
         return 2
     fmt = _auto_format(fmt, StatusFormat.agent, StatusFormat.table)
     states = roster(home_dir, env)
+    # Agents a sweep reads in full but install can't arm yet: listed when found.
+    swept = scanned(home_dir)
     if fmt is StatusFormat.json:
         agents = [
             {"name": s.name, "label": s.label, "found": s.found, "armed": s.armed} for s in states
         ]
-        typer.echo(json_lib.dumps({"tool": "agentprint", "version": __version__, "agents": agents}))
+        also = [{"name": s.name, "label": s.label, "found": s.found} for s in swept]
+        typer.echo(
+            json_lib.dumps(
+                {"tool": "agentprint", "version": __version__, "agents": agents, "scanned": also}
+            )
+        )
     elif fmt is StatusFormat.agent:
         for s in states:
             word = ("armed" if s.armed else "unarmed") if s.found else "not found"
             typer.echo(f"{clean(s.name)} {word}")
+        for s in swept:
+            if s.found:
+                typer.echo(f"{clean(s.name)} scanned (agentprint install can't arm it yet)")
         if any(s.found and not s.armed for s in states):
             typer.echo("Arm unarmed agents with: agentprint install")
     else:
         out = themed_console(env or dict(os.environ), plain=plain)
         out.print(Text(f"agentprint {__version__} · roster", style="ap.dim"))
-        for line in hang("", summary_line(states), out.width):
+        for line in hang("", summary_line(states, swept), out.width):
             out.print(line)
-        width = max([14, *(len(clean(s.label)) + 2 for s in states if s.found)])
+        shown = [s for s in [*states, *swept] if s.found]
+        width = max([14, *(len(clean(s.label)) + 2 for s in shown)])
         for s in states:
             if s.found:
                 line = Text(clean(s.label).ljust(width))
                 line.append(*(("armed", "ap.amber") if s.armed else ("unarmed", "ap.dim")))
+                out.print(line)
+        for s in swept:
+            if s.found:
+                out.print(Text(clean(s.label).ljust(width)).append("scanned", "ap.dim"))
+        if any(s.found for s in swept):
+            note = "scanned = agentprint scan reads its files; agentprint install can't arm it yet"
+            for line in hang("", Text(note, style="ap.dim"), out.width):
                 out.print(line)
         missing = [clean(s.label) for s in states if not s.found]
         if missing:

@@ -1,4 +1,9 @@
-"""Which AI agents are on this machine, and which have agentprint armed."""
+"""Which AI agents are on this machine, and which have agentprint armed.
+
+`roster` lists the agents `agentprint install` can arm. `scanned` lists the agents a sweep reads
+in full but install can't arm yet (their modules carry an AgentDoc): found when a sweep would
+read at least one of their files under this home.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from .agents import ALL_AGENTS
 from .install import State
 from .integrations import ALL_INTEGRATIONS
 from .report import _plural
@@ -47,9 +53,28 @@ def roster(home: Path, env: Mapping[str, str]) -> list[AgentState]:
     ]
 
 
-def summary_line(states: list[AgentState]) -> str:
+def scanned(home: Path) -> list[AgentState]:
+    """Agents read in full by a sweep that install can't arm yet, in registry order. Never
+    armed; found when discover_home yields a file (it stops at the first one)."""
+    states = []
+    for agent in ALL_AGENTS:
+        doc = getattr(agent, "doc", None)
+        if doc is None or agent.name in ALL_INTEGRATIONS:
+            continue
+        try:
+            found = next(iter(agent.discover_home(home)), None) is not None
+        except Exception:  # an agent module bug must never break `status`
+            found = False
+        states.append(AgentState(agent.name, str(doc.label), found, False))
+    return states
+
+
+def summary_line(states: list[AgentState], scanned: list[AgentState] | None = None) -> str:
     found = [s for s in states if s.found]
     if not found:
+        also = [s for s in scanned or [] if s.found]
+        if also:
+            return f"{_plural(len(also), 'agent')} scanned · none can be armed yet"
         return "no AI agents found on this machine"
     armed = sum(s.armed for s in found)
     line = f"{armed} of {_plural(len(found), 'agent')} armed"
