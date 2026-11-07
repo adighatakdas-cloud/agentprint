@@ -2,7 +2,8 @@ import pytest
 
 from agentprint import advice
 from agentprint.advice import ROTATE_AT, Moment, advise
-from agentprint.checks.ap005_mcp_inline_secret import _MARKER
+from agentprint.checks.ap004_network_hook import ASK_FIRST as HOOK_ASK_FIRST
+from agentprint.checks.ap005_mcp_inline_secret import _MARKER, ASK_FIRST
 from agentprint.models import Finding, Severity
 from agentprint.secrets import RULES, find_secrets, redact
 from tests import fakes
@@ -147,3 +148,78 @@ def test_readable_ordinary_file_needs_nothing_from_the_human():
 def test_explain_ap008_has_its_own_explanation():
     assert advice.explain("AP008").startswith("AP008 Agent data readable by other users")
     assert "other" in advice.explain("AP008")
+
+
+# ---- worded for a person (agentprint fix's "Needs you" in a terminal) -------------------------
+
+AGENT_ONLY = ("The agent cannot", "Ask the human", "ask the human", "an AI agent can't")
+
+
+@pytest.mark.parametrize("check_id", ["AP001", "AP002"])
+@pytest.mark.parametrize("key", [fakes.GITHUB, fakes.GENERIC_LINE], ids=["known", "generic"])
+def test_person_wording_drops_what_is_said_only_to_an_agent(check_id, key):
+    finding = _secret(check_id, key=key)
+    agent = advise(finding, Moment.scan)
+    person = advise(finding, Moment.scan, person=True)
+    assert advice.NO_LEAK in agent.fix_steps[0] and "The agent cannot" in agent.ask_human[0]
+    assert len(person.fix_steps) == len(agent.fix_steps)
+    assert len(person.ask_human) == len(agent.ask_human)
+    text = " ".join([*person.fix_steps, *person.ask_human])
+    assert advice.NO_LEAK not in text and not any(bad in text for bad in AGENT_ONLY)
+    assert text.endswith("Treat the old key as public.")
+    assert person.fix_steps[0] == agent.fix_steps[0].removesuffix(" " + advice.NO_LEAK)
+
+
+def test_person_rotate_text_keeps_where_to_rotate():
+    finding = _secret(key=fakes.GITHUB)
+    assert advice.rotate_text(finding) == advise(finding, Moment.scan).ask_human[0]
+    person = advice.rotate_text(finding, person=True)
+    assert ROTATE_AT["github"] in person and person.endswith(". Treat the old key as public.")
+    assert fakes.GITHUB not in person
+
+
+def test_person_mcp_step_starts_with_the_change_and_rotating_is_their_own():
+    [match] = find_secrets(fakes.GITHUB)
+    finding = Finding(
+        "AP005",
+        Severity.CRITICAL,
+        "Secret inline in MCP server config",
+        "cursor",
+        "/home/u/.cursor/mcp.json",
+        3,
+        f"{match.name}: {redact(match.value)}{_MARKER}'gh' (env.GITHUB_TOKEN)",
+        ASK_FIRST + 'replace the value with "${env:GITHUB_TOKEN}", then export GITHUB_TOKEN.',
+    )
+    agent = advise(finding, Moment.scan)
+    person = advise(finding, Moment.scan, person=True)
+    assert agent.fix_steps == [finding.fix]  # the agent view is unchanged
+    assert person.fix_steps == [
+        'Replace the value with "${env:GITHUB_TOKEN}", then export GITHUB_TOKEN.'
+    ]
+    [ask] = person.ask_human
+    assert ROTATE_AT["github"] in ask and not any(bad in ask for bad in AGENT_ONLY)
+
+
+def test_person_hook_step_is_their_own_question():
+    finding = Finding(
+        "AP004",
+        Severity.MEDIUM,
+        "Agent hook calls the network",
+        "claude-code",
+        "/home/u/.claude/settings.json",
+        5,
+        'PostToolUse hook runs curl: "curl https://x.example"',
+        f"In this file, find hooks.PostToolUse. {HOOK_ASK_FIRST} If it is wanted, keep it.",
+    )
+    assert advise(finding, Moment.scan).fix_steps == [finding.fix]
+    [step] = advise(finding, Moment.scan, person=True).fix_steps
+    assert step == (
+        "In this file, find hooks.PostToolUse. If you did not add this hook, delete it. "
+        "If it is wanted, keep it."
+    )
+
+
+def test_an_adviser_without_person_serves_both(monkeypatch):
+    monkeypatch.setitem(advice.ADVISERS, "AP998", lambda f, m: advice.Advice(["a"], ["b"]))
+    finding = Finding("AP998", Severity.LOW, "New", "x", "/p", None, "d", "fix")
+    assert advise(finding, Moment.scan, person=True) == advice.Advice(["a"], ["b"])
