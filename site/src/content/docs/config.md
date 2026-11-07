@@ -64,6 +64,8 @@ A config never stops a run.
 - An unknown key is one warning that names it. The rest of the file still applies.
 - A value of the wrong kind, such as `fail_on = "sometimes"`, is a warning, and that key keeps its default.
 - A file that is not valid TOML gives `could not read config <path>: …` and the defaults.
+- A config or baseline that is not a regular file (a FIFO, a terminal, a device) is never read, so it can't hold up the tripwire. The project's baseline is never read through a symbolic link either. Each is a warning, and nothing is known from it.
+- If applying the config fails in the tripwire, every finding counts.
 
 Warnings go to stderr, so `--format json` output stays valid JSON. The tripwire adds them to its warning, and the MCP tools end their answer with `warning:` lines.
 
@@ -92,10 +94,10 @@ An entry holds a check id, a path, a reason, a count and a fingerprint. The fing
 
 - the check id, such as `AP002`,
 - the path from the project root (`~/…` for a home-folder file),
-- the key rule's name, such as `Anthropic API key`, or the check's title for a finding that is not a key,
+- the key rule's name, such as `Anthropic API key`. For a finding that is not a key, what it is about: an over-broad permission (AP003) by its setting and granted value, a network hook (AP004) by its event and its kinds of network call (`curl`, `| sh`, `https://`), never the command's text. Other findings use the check's title,
 - for a key, its masked stub, the first four characters and the length (`sk-a…(len 105)`).
 
-It is never the key, a hash of the key, or a hash of the line it sits on, so nothing in the file can give a key back. The line number is not part of it either, so a finding stays known when lines move.
+It is never the key, a hash of the key, or a hash of the line it sits on, so nothing in the file can give a key back. The line number is not part of it either, so a finding stays known when lines move. A permission or hook that changes in an accepted file, such as a hook that now pipes its download into a shell, is new.
 
 Two findings with the same fingerprint, such as two keys of the same kind and length in one history file, share an entry with a count. If a third one turns up, it is new.
 
@@ -122,6 +124,8 @@ A key that would ship in a package being published, or in a push, always blocks.
 Ignore rules and the baseline still apply to everything else there. A non-secret agent file you ship on purpose (AP006), or a source map in an open-source package (AP009), can be known.
 
 Only a `--fail-on none` you type yourself on `pack` reports without failing, as it always has.
+
+When the project config lets a publish or push through that would have been blocked without it, the tripwire says so in one line, such as `allowed by project config: 1 AP006 ignored by config "we ship it on purpose".`
 
 ## Next
 
