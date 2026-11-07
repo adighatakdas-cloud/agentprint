@@ -56,6 +56,7 @@ class Risky:
     workspaces: tuple[str, ...] = ()  # named workspace packages (npm -w pkg, yarn workspace pkg)
     all_workspaces: bool = False  # every workspace package (--workspaces, pnpm -r, lerna, ...)
     unsure: str = ""  # why agentprint can't tell what this would publish; empty when it can
+    label: str = ""  # the file or command `unsure` is about, when it is one (`configure`)
 
 
 NODE = {"npm", "pnpm", "yarn", "bun"}

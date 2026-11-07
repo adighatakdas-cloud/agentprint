@@ -85,3 +85,23 @@ def test_a_script_too_large_to_read_warns_or_blocks_in_strict_mode(tmp_path):
     default = evaluate("./configure", tmp_path)
     assert not default.block and "larger than 64 KB" in default.warning
     assert evaluate("./configure", tmp_path, strict=True).block
+
+
+def test_could_not_check_names_the_file_and_the_next_step():
+    from pathlib import Path
+
+    from agentprint.commands import Action, Risky
+    from agentprint.guard import _could_not
+    from agentprint.models import CannotCheck
+
+    item = Risky(
+        Action.publish, "sh", Path("/x"), unsure="agentprint could not open it", label="ship.sh"
+    )
+    assert _could_not(item, CannotCheck(item.unsure)) == (
+        "agentprint could not check `ship.sh`: agentprint could not open it. Run the publish or "
+        "push as its own command, so agentprint can check it."
+    )
+    plain = Risky(Action.push, "git", Path("/x"), unsure="its folder is unknown")
+    assert _could_not(plain, CannotCheck(plain.unsure)) == (
+        "agentprint could not check this git push: its folder is unknown."
+    )
