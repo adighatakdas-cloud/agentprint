@@ -1,4 +1,5 @@
-"""agentprint as a native plugin or extension: the commands a plugin runs.
+"""agentprint as a native plugin or extension: the commands a plugin runs, and where each agent
+keeps the plugins it installed (read-only, so `agentprint status` can see a double install).
 
 The plugin files live in the repository under plugins/agentprint/, plus the few manifests an
 ecosystem requires at the repository root. tools/plugins.py writes them (through
@@ -17,10 +18,14 @@ strict mode cannot block when agentprint never starts. POSIX only, like `install
 
 from __future__ import annotations
 
+import json
 import shlex
+from collections.abc import Callable
+from pathlib import Path
 
 from . import __version__
-from .integrations.base import BLOCK_EXIT
+from .integrations import antigravity, claude_code, codex, copilot, gemini, hermes
+from .integrations.base import BLOCK_EXIT, Env
 
 NAME = "agentprint"  # the plugin, extension and marketplace name in every ecosystem
 PLUGIN_MARK = "agentprint-plugin"  # $0 of every plugin hook command
@@ -52,3 +57,108 @@ def hook_command(agent: str, allow: str = "", version: str = __version__) -> str
         f'echo "{FAILED}" >&2; {allowed}exit 0'
     )
     return " ".join(shlex.quote(part) for part in ("/bin/sh", "-c", script, PLUGIN_MARK))
+
+
+# ---- where agents keep installed plugins (read-only) --------------------------------------------
+
+MAX_MANIFEST = 64 * 1024
+# Copilot CLI's manifest lookup order inside a plugin folder.
+COPILOT_MANIFESTS = (
+    ".plugin/plugin.json",
+    "plugin.json",
+    ".github/plugin/plugin.json",
+    ".claude-plugin/plugin.json",
+)
+
+
+def _glob(base: Path, pattern: str) -> list[Path]:
+    try:
+        return sorted(base.glob(pattern))
+    except OSError:
+        return []
+
+
+def _named(folder: Path) -> bool:
+    """True when a Copilot plugin folder's manifest names agentprint."""
+    for name in COPILOT_MANIFESTS:
+        path = folder / name
+        try:
+            if path.is_file() and path.stat().st_size <= MAX_MANIFEST:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                return isinstance(data, dict) and data.get("name") == NAME
+        except (OSError, ValueError):
+            return False
+    return False
+
+
+def _claude(home: Path, env: Env) -> list[Path]:
+    # ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/
+    # https://code.claude.com/docs/en/plugin-marketplaces
+    return _glob(claude_code.config_dir(home, env) / "plugins" / "cache", f"*/{NAME}")
+
+
+def _codex(home: Path, env: Env) -> list[Path]:
+    # ~/.codex/plugins/cache/$MARKETPLACE_NAME/$PLUGIN_NAME/$VERSION/
+    # https://developers.openai.com/codex/plugins/build
+    return _glob(codex.config_dir(home, env) / "plugins" / "cache", f"*/{NAME}")
+
+
+def _copilot(home: Path, env: Env) -> list[Path]:
+    # ~/.copilot/installed-plugins/MARKETPLACE/PLUGIN-NAME, direct installs in _direct/SOURCE-ID/
+    # https://docs.github.com/en/copilot/reference/cli-plugin-reference
+    base = copilot.config_dir(home, env) / "installed-plugins"
+    found = [path for path in _glob(base, f"*/{NAME}") if path.parent.name != "_direct"]
+    return found + [path for path in _glob(base / "_direct", "*") if _named(path)]
+
+
+def _gemini(home: Path, env: Env) -> list[Path]:
+    # ~/.gemini/extensions/<name>/ https://geminicli.com/docs/extensions/
+    return [gemini.config_dir(home, env) / "extensions" / NAME]
+
+
+def _cursor(home: Path, env: Env) -> list[Path]:
+    # Only the local-plugin folder is documented: https://cursor.com/docs/plugins
+    return [home / ".cursor" / "plugins" / "local" / NAME]
+
+
+def _antigravity(home: Path, env: Env) -> list[Path]:
+    # ~/.gemini/config/plugins/<plugin_name>/ https://antigravity.google/docs/plugins
+    return [antigravity.config_dir(home, env) / "plugins" / NAME]
+
+
+def _hermes(home: Path, env: Env) -> list[Path]:
+    # ~/.hermes/plugins/<name>/ https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins
+    return [hermes.config_dir(home, env) / "plugins" / NAME]
+
+
+PLUGIN_FOLDERS: dict[str, Callable[[Path, Env], list[Path]]] = {
+    "claude-code": _claude,
+    "codex": _codex,
+    "copilot": _copilot,
+    "gemini": _gemini,
+    "cursor": _cursor,
+    "antigravity": _antigravity,
+    "hermes": _hermes,
+}
+
+# How to take the plugin out again, per agent (shown when both a plugin and `install` are in).
+REMOVE_PLUGIN = {
+    "claude-code": "claude plugin uninstall agentprint@agentprint",
+    "codex": "uninstall agentprint in Codex's /plugins menu",
+    "copilot": "copilot plugin uninstall agentprint",
+    "gemini": "gemini extensions uninstall agentprint",
+    "cursor": "delete ~/.cursor/plugins/local/agentprint, then reload the Cursor window",
+    "antigravity": "agy plugin uninstall agentprint",
+    "hermes": "hermes plugins disable agentprint, then delete ~/.hermes/plugins/agentprint",
+}
+
+
+def plugin_found(agent: str, home: Path, env: Env) -> bool:
+    """True when the agent's own plugin folder holds an agentprint plugin. Only looks."""
+    folders = PLUGIN_FOLDERS.get(agent)
+    if folders is None:
+        return False
+    try:
+        return any(path.is_dir() for path in folders(home, env))
+    except OSError:
+        return False

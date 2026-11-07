@@ -9,7 +9,7 @@ from collections.abc import Collection, Iterator, Sequence
 from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Annotated, Any, TypeVar, cast
 
 import typer
 from rich.console import Console
@@ -26,6 +26,9 @@ from .sarif import to_sarif
 from .scanner import scan as run_scan
 from .ui.detect import is_agent, is_interactive, plain_help, should_animate
 from .ui.theme import console as themed_console
+
+if TYPE_CHECKING:
+    from .roster import AgentState
 
 AGENT_NAMES = ", ".join(ALL_INTEGRATIONS)  # help text stays in step with the integrations
 
@@ -773,17 +776,22 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
         return 2
     fmt = _auto_format(fmt, StatusFormat.agent, StatusFormat.table)
     states = roster(home_dir, env)
+    twice = [s for s in states if s.found and s.twice]
     if fmt is StatusFormat.json:
-        agents = [
-            {"name": s.name, "label": s.label, "found": s.found, "armed": s.armed} for s in states
-        ]
+        agents = []
+        for s in states:
+            agent = {"name": s.name, "label": s.label, "found": s.found, "armed": s.armed}
+            if s.plugin:  # only when one is found, so the usual output stays as it was
+                agent["plugin"] = True
+            agents.append(agent)
         typer.echo(json_lib.dumps({"tool": "agentprint", "version": __version__, "agents": agents}))
     elif fmt is StatusFormat.agent:
         for s in states:
-            word = ("armed" if s.armed else "unarmed") if s.found else "not found"
-            typer.echo(f"{clean(s.name)} {word}")
-        if any(s.found and not s.armed for s in states):
+            typer.echo(f"{clean(s.name)} {_status_word(s)}")
+        if any(s.found and not s.guarded for s in states):
             typer.echo("Arm unarmed agents with: agentprint install")
+        for s in twice:
+            typer.echo(_keep_one(s))
     else:
         out = themed_console(env or dict(os.environ), plain=plain)
         out.print(Text(f"agentprint {__version__} · roster", style="ap.dim"))
@@ -793,14 +801,38 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
         for s in states:
             if s.found:
                 line = Text(clean(s.label).ljust(width))
-                line.append(*(("armed", "ap.amber") if s.armed else ("unarmed", "ap.dim")))
+                line.append(_status_word(s), "ap.amber" if s.guarded else "ap.dim")
                 out.print(line)
         missing = [clean(s.label) for s in states if not s.found]
         if missing:
             body = Text(", ".join(missing), style="ap.dim")
             for line in hang(Text("not found: ", style="ap.dim"), body, out.width):
                 out.print(line)
+        for s in twice:
+            for line in hang("", _keep_one(s), out.width):
+                out.print(line)
     return 0
+
+
+def _status_word(s: AgentState) -> str:
+    if not s.found:
+        return "not found"
+    if s.twice:
+        return "armed twice (plugin and install)"
+    if s.plugin:
+        return "armed (plugin)"
+    return "armed" if s.armed else "unarmed"
+
+
+def _keep_one(s: AgentState) -> str:
+    """What to do when agentprint is in an agent both as a plugin and through install."""
+    from .plugins import REMOVE_PLUGIN
+
+    return (
+        f"{s.label} has agentprint twice, as a plugin and through agentprint install: keep one. "
+        f"To keep the plugin, run: agentprint uninstall --agent {s.name}. To keep install, "
+        f"remove the plugin: {REMOVE_PLUGIN.get(s.name, 'in the agent')}."
+    )
 
 
 @app.command()
