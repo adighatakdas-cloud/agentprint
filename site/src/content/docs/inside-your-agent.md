@@ -39,12 +39,21 @@ Use `agentprint install --dry-run` to see the changes and write nothing.
 
 **To undo it:** `agentprint uninstall` takes out only what agentprint added. Add `--agent codex` to disarm one agent. A file you have not touched since comes back byte for byte.
 
+## Strict mode: block when it cannot check
+
+By default a hook never gets in your way: if agentprint hits an internal error, or cannot tell what a publish or push would upload ("could not check"), the command runs with a note. If you would rather stop than risk it, turn on strict mode. The same cases then block, with the reason in your agent's own deny message.
+
+- `agentprint install --strict` writes hooks that pass `--strict`. Run a plain `agentprint install` to go back.
+- Or set `AGENTPRINT_STRICT=1` in the environment your agent runs in, or call `agentprint guard --strict`.
+
+Strict mode is still limited to what agentprint can see: a secret assembled at run time, or one inside an arbitrary script, is not detected. And if the hook launcher itself is missing or broken, the command still runs.
+
 ## Good to know
 
 - **Codex** runs a new hook only after you trust it. Type `/hooks` in Codex once after installing.
 - **Hermes Agent** asks before it runs any new hook, and agentprint never approves its own. Start `hermes chat` once and accept it. Until then, and in gateway or cron runs that never ask, the hook is off. The MCP server still works.
 - **Hooks need macOS or Linux.** On Windows, only the MCP server and the note are installed for now.
-- **agentprint only ever blocks, never approves.** Your agents' own approval rules still apply. If agentprint itself fails, the command runs, with a note that it could not check.
+- **agentprint only ever blocks, never approves.** Your agents' own approval rules still apply. If agentprint itself fails, the command runs, with a note that it could not check (unless you turn on strict mode, below).
 - **Spotting a publish is best effort.** agentprint reads the command line. It is not a shell. It follows `cd`, `&&`, `bash -c`, package scripts, workspaces and release tools. A publish hidden in a Makefile, a script file or a heredoc can slip past, though the note still tells the agent to check. When agentprint is unsure what would be uploaded, it says "could not check", never "OK".
 
 See which agents are armed with `agentprint status`.

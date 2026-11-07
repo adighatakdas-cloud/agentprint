@@ -109,7 +109,7 @@ def _config_file(base: Path) -> Path:
 
 def edits(home: Path, env: Env, launch: Launch) -> list[Edit]:
     base = config_dir(home, env)
-    hook = [launch.hook, "--agent", NAME]
+    hook = [launch.hook, "--agent", NAME, *launch.hook_flags()]
     server = {"type": "local", "command": list(launch.mcp), "enabled": True}
     changes: list[Edit] = [
         FileEdit(

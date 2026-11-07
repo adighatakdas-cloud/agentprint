@@ -360,12 +360,15 @@ def install(
     echo: Echo,
     *,
     apply_hint: str | None = APPLY_HINT,
+    strict: bool = False,
 ) -> int:
     """Arm the agents found; returns how many files changed (or would, in a dry run).
 
     apply_hint ends a dry run's count line; the menu, which asks y/N itself, passes None."""
     agentprint = resolve_agentprint()
-    launch = Launch(hook=str(home / STATE_DIR / "bin" / HOOK_MARK), mcp=(*agentprint, "mcp"))
+    launch = Launch(
+        hook=str(home / STATE_DIR / "bin" / HOOK_MARK), mcp=(*agentprint, "mcp"), strict=strict
+    )
     found = select(names, home, env)
     echo(f"agentprint install{' (dry run: nothing is written)' if dry_run else ''}")
     if not found:
@@ -373,6 +376,8 @@ def install(
         return 0
     echo("Agents found: " + ", ".join(i.label for i in found))
     echo("Agents will start agentprint with: " + " ".join(agentprint))
+    if strict:
+        echo("Strict mode: a publish or push agentprint cannot check will be blocked.")
     if len(agentprint) == 2 and agentprint[1].startswith("agentprint=="):
         echo(
             "  (no permanent install found, so hooks use uvx. For faster offline hooks run "

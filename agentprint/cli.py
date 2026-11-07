@@ -616,16 +616,25 @@ def guard(
         typer.Option(help=f"Agent calling the hook: {AGENT_NAMES}."),
     ] = "claude-code",
     fail_on: FailOnOpt = FailOn.high,
+    strict: Annotated[
+        bool,
+        typer.Option(
+            "--strict",
+            help="Block (instead of allowing with a warning) when agentprint cannot check a "
+            "publish or push. Same as AGENTPRINT_STRICT=1.",
+        ),
+    ] = False,
 ) -> None:
     """Hook entry point for AI agents: stop a publish or git push that would leak.
 
     Reads the agent's hook JSON on stdin and answers in that agent's own format. Only package
     publishes and `git push` are checked; everything else passes straight through. If
-    agentprint itself fails, the command is allowed. `agentprint install` sets this up.
+    agentprint itself fails, the command is allowed (with --strict it is blocked).
+    `agentprint install` sets this up.
     """
     from .hook import run_hook  # imported here so other commands stay fast to start
 
-    reply = run_hook(agent, sys.stdin.read(), os.environ, fail_on)
+    reply = run_hook(agent, sys.stdin.read(), os.environ, fail_on, strict)
     if reply.stdout:
         typer.echo(reply.stdout)
     if reply.stderr:
@@ -689,7 +698,19 @@ def _setup_args(
 
 
 @app.command()
-def install(agent: AgentsOpt = None, dry_run: DryRunOpt = False, home: SetupHomeOpt = None) -> None:
+def install(
+    agent: AgentsOpt = None,
+    dry_run: DryRunOpt = False,
+    home: SetupHomeOpt = None,
+    strict: Annotated[
+        bool,
+        typer.Option(
+            "--strict",
+            help="Write hooks that block a publish or push agentprint cannot check "
+            "(default: allow it with a warning).",
+        ),
+    ] = False,
+) -> None:
     """Set agentprint up inside every AI coding agent on this computer.
 
     For each agent found it adds a hook that checks publishes and pushes (where the agent
@@ -699,7 +720,7 @@ def install(agent: AgentsOpt = None, dry_run: DryRunOpt = False, home: SetupHome
     from .install import install as run_install
 
     home_dir, env, names = _setup_args(agent, home)
-    run_install(home_dir, env, names, dry_run, typer.echo)
+    run_install(home_dir, env, names, dry_run, typer.echo, strict=strict)
 
 
 @app.command()

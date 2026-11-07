@@ -4,8 +4,9 @@ Agent-neutral: `integrations/` turn the agent's hook payload into (command, cwd)
 verdict back into the agent's native reply. Only publishes and `git push` are checked; every
 other command returns None straight away. Never runs a build and never touches the network:
 npm projects are listed with `npm pack --dry-run --ignore-scripts`, Python publishes are checked
-through the already-built files they upload. Any internal error lets the command through, with
-a warning saying so.
+through the already-built files they upload. By default any internal error, or a publish or push
+it cannot check, lets the command through with a warning saying so. In strict mode
+(`AGENTPRINT_STRICT=1` or `guard --strict`) those cases block instead.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,21 +42,58 @@ class Verdict:
     warning: str | None = None  # shown to the human/agent, never blocks
 
 
-__all__ = ["CannotCheck", "Verdict", "check_package_path", "evaluate", "workspace_folders"]
+__all__ = [
+    "CannotCheck",
+    "Verdict",
+    "check_package_path",
+    "evaluate",
+    "strict_block",
+    "strict_requested",
+    "workspace_folders",
+]
 
 
-def evaluate(command: str, cwd: Path, fail_on: FailOn = FailOn.high) -> Verdict | None:
-    """None when the command neither publishes nor pushes."""
+STRICT_HINT = (
+    "Strict mode is on (AGENTPRINT_STRICT=1 or --strict), so a command agentprint cannot check "
+    "is blocked. Fix the cause and retry, or ask the human to turn strict mode off."
+)
+
+
+def strict_requested(env: Mapping[str, str]) -> bool:
+    """True when AGENTPRINT_STRICT is set to a yes-like value (1, true, yes, on)."""
+    return env.get("AGENTPRINT_STRICT", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def strict_block(why: str) -> Verdict:
+    """The verdict strict mode gives when agentprint cannot check: a normal BLOCK."""
+    return Verdict(True, f"agentprint: BLOCK (strict mode)\n{why}\n{STRICT_HINT}\n")
+
+
+def evaluate(
+    command: str, cwd: Path, fail_on: FailOn = FailOn.high, strict: bool = False
+) -> Verdict | None:
+    """None when the command neither publishes nor pushes.
+
+    With `strict`, an internal error or a publish/push that cannot be checked blocks."""
     try:
         risky = detect(command, cwd)
     except Exception as exc:  # noqa: BLE001 - a parser bug must never block work
-        return Verdict(False, warning=_internal(exc))
+        return _failed(exc, strict)
     if not risky:
         return None
     try:
-        return _decide(command, risky, fail_on)
-    except Exception as exc:  # noqa: BLE001 - fail open, but say so
-        return Verdict(False, warning=_internal(exc))
+        return _decide(command, risky, fail_on, strict)
+    except Exception as exc:  # noqa: BLE001 - fail open (unless strict), but say so
+        return _failed(exc, strict)
+
+
+def _failed(exc: Exception, strict: bool) -> Verdict:
+    if strict:
+        return strict_block(
+            f"agentprint hit an internal error ({type(exc).__name__}) and could not check "
+            "this command."
+        )
+    return Verdict(False, warning=_internal(exc))
 
 
 def _internal(exc: Exception) -> str:
@@ -64,7 +103,7 @@ def _internal(exc: Exception) -> str:
     )
 
 
-def _decide(command: str, risky: list[Risky], fail_on: FailOn) -> Verdict:
+def _decide(command: str, risky: list[Risky], fail_on: FailOn, strict: bool = False) -> Verdict:
     os.environ.setdefault("NPM_CONFIG_UPDATE_NOTIFIER", "false")  # keep npm pack offline
     findings: list[Finding] = []
     warnings: list[str] = []
@@ -83,6 +122,8 @@ def _decide(command: str, risky: list[Risky], fail_on: FailOn) -> Verdict:
     warning = " ".join(warnings) or None
     if exit_code(findings, fail_on):
         return Verdict(True, to_agent(findings, fail_on, moment, rerun=command), warning)
+    if strict and warnings:
+        return strict_block(warning or "")
     return Verdict(False, warning=warning)
 
 

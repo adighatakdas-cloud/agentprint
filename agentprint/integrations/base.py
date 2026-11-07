@@ -36,6 +36,10 @@ class Launch:
 
     hook: str  # absolute path of the hook launcher script (~/.agentprint/bin/agentprint-hook)
     mcp: tuple[str, ...]  # argv that starts the MCP server
+    strict: bool = False  # hooks pass --strict: block when agentprint cannot check
+
+    def hook_flags(self) -> tuple[str, ...]:
+        return ("--strict",) if self.strict else ()
 
     def hook_command(self, agent: str, allow: str = "") -> str:
         """The command an agent's hook runs. If the launcher has gone missing (say ~/.agentprint
@@ -46,7 +50,7 @@ class Launch:
             f"{{ printf '%s\\n' {shlex.quote(allow.strip())}; exit 0; }}" if allow else "exit 0"
         )
         script = f'[ -x "$0" ] || {missing}; exec "$0" "$@"'
-        argv = ("/bin/sh", "-c", script, self.hook, "--agent", agent)
+        argv = ("/bin/sh", "-c", script, self.hook, "--agent", agent, *self.hook_flags())
         return " ".join(shlex.quote(part) for part in argv)
 
 

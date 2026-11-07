@@ -1,7 +1,8 @@
 """`agentprint guard`: read an agent's hook payload, answer in that agent's native format.
 
-Fails open everywhere: bad input, an unknown agent or a bug in agentprint lets the command run,
-with a warning where the agent can show one.
+Fails open everywhere unless strict mode is on (`AGENTPRINT_STRICT=1` or `--strict`): bad
+input, an unknown agent or a bug in agentprint lets the command run, with a warning where the
+agent can show one. Strict mode blocks those cases (not an unknown agent) instead.
 """
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 
-from .guard import Verdict, evaluate
+from .guard import Verdict, evaluate, strict_block, strict_requested
 from .integrations import ALL_INTEGRATIONS
 from .integrations.base import HookReply
 from .report import FailOn
@@ -18,25 +19,42 @@ __all__ = ["HookReply", "run_hook"]
 
 
 def run_hook(
-    agent: str, raw: str, env: Mapping[str, str], fail_on: FailOn = FailOn.high
+    agent: str,
+    raw: str,
+    env: Mapping[str, str],
+    fail_on: FailOn = FailOn.high,
+    strict: bool = False,
 ) -> HookReply:
     integration = ALL_INTEGRATIONS.get(agent)
     if integration is None:
         # Exit 0 = allow everywhere; non-zero means "deny" to some agents (GitHub Copilot).
         return HookReply(stderr=f"agentprint: unknown agent {agent!r}; command allowed")
+    strict = strict or strict_requested(env)
     try:
         payload = json.loads(raw)
         if not isinstance(payload, dict):
             raise ValueError("hook input is not a JSON object")
     except ValueError:
+        if strict:
+            return integration.reply(strict_block("agentprint could not read the hook input."))
         return integration.reply(
             Verdict(False, warning="agentprint could not read the hook input; command allowed.")
         )
     try:
         call = integration.parse_hook(payload, env)
-        verdict = None if call is None else evaluate(call.command, call.cwd, fail_on)
+        verdict = None if call is None else evaluate(call.command, call.cwd, fail_on, strict)
         return integration.reply(verdict)
     except Exception as exc:  # noqa: BLE001 - never block work because of an agentprint bug
+        if strict:
+            try:
+                return integration.reply(
+                    strict_block(
+                        f"agentprint hit an internal error ({type(exc).__name__}) and could not "
+                        "check this command."
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                return HookReply(stderr="agentprint: internal error (strict mode)", exit_code=2)
         warning = (
             f"agentprint hit an internal error ({type(exc).__name__}) and allowed the command "
             "without checking it."
