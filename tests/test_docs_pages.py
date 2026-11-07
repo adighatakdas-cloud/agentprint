@@ -254,11 +254,13 @@ def test_plugins_page_covers_every_ecosystem_and_says_pick_one():
         assert f"### {agent}" in text or f"| {agent}" in text, agent
     rows = [ln for ln in text.splitlines() if ln.startswith("| ") and ln.endswith(" |")]
     status = [
-        ln.rsplit("|", 2)[1].strip()
+        ln.split("|")[5].strip()
         for ln in rows
         if "as documented" in ln or "docs-verified only" in ln
     ]
     assert status.count("as documented") == 3 and len(status) == 8
+    live = [ln.split("|")[1].strip() for ln in rows if "| yes: blocks a leaky publish" in ln]
+    assert sorted(live) == ["Claude Code", "Gemini CLI", "GitHub Copilot CLI", "Hermes Agent"]
     words = ("code --add-mcp", "vscode:mcp/install?", "macOS and Linux only", "uninstall")
     for word in (*words, "not the bare `copilot plugin install adighatakdas-cloud/agentprint`"):
         assert word in text, word
