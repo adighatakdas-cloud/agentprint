@@ -38,6 +38,7 @@ pytestmark = pytest.mark.skipif(not PLUGIN.is_dir(), reason="not in the sdist")
 HOOK_FILES = {
     "claude-code": PLUGIN / "hooks" / "hooks.json",
     "codex": PLUGIN / "codex" / "hooks" / "hooks.json",
+    "copilot": PLUGIN / "copilot" / "hooks.json",
 }
 
 
@@ -315,3 +316,32 @@ def test_codex_mcp_is_a_stdio_server():
     mcp = _load(PLUGIN / "codex" / "mcp.json")
     assert mcp["mcpServers"]["agentprint"]["type"] == "stdio"
     assert (PLUGIN / "codex" / "skills" / "agentprint" / "SKILL.md").is_file()
+
+
+# ---- GitHub Copilot CLI --------------------------------------------------------------------------
+
+
+def test_copilot_marketplace_and_manifest():
+    market = _load(ROOT / ".github" / "plugin" / "marketplace.json")
+    assert market["name"] == "agentprint" and market["owner"]["name"]
+    [entry] = market["plugins"]
+    folder = ROOT / entry["source"]
+    manifest = _load(folder / ".github" / "plugin" / "plugin.json")
+    assert manifest["name"] == "agentprint" and manifest["version"] == __version__
+    assert len(manifest["description"]) <= 1024
+    # Copilot reads the first manifest it finds: no other one may sit in front of ours.
+    others = [m for m in (".plugin/plugin.json", "plugin.json") if (folder / m).exists()]
+    assert others == []
+
+
+def test_copilot_hook_file_is_the_one_install_writes():
+    launch = gen.LAUNCH
+    [edit] = [
+        e for e in ALL_INTEGRATIONS["copilot"].edits(gen.NOWHERE, {}, launch) if "hook" in e.what
+    ]
+    assert (PLUGIN / "copilot" / "hooks.json").read_text() == edit.apply(None)
+
+
+def test_copilot_mcp_server_is_local_with_all_tools():
+    server = _load(PLUGIN / "copilot" / ".mcp.json")["mcpServers"]["agentprint"]
+    assert server["type"] == "local" and server["tools"] == ["*"]

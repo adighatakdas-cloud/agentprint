@@ -171,11 +171,25 @@ def codex() -> dict[Path, str]:
     }
 
 
+def copilot() -> dict[Path, str]:
+    """https://docs.github.com/en/copilot/reference/cli-plugin-reference"""
+    folder = PLUGIN / "copilot"
+    marketplace = _marketplace("./plugins/agentprint/copilot")
+    return {
+        ROOT / ".github" / "plugin" / "marketplace.json": _json(marketplace),
+        folder / ".github" / "plugin" / "plugin.json": _json(_plugin_manifest()),
+        folder / "hooks.json": install_text("copilot", "hook"),
+        folder / ".mcp.json": _json({"mcpServers": {NAME: mcp_server("copilot")}}),
+        folder / "skills" / NAME / "SKILL.md": skill(),
+    }
+
+
 def files() -> dict[Path, str]:
     out: dict[Path, str] = {}
     for part in (
         claude_code,
         codex,
+        copilot,
     ):
         out |= part()
     return out
