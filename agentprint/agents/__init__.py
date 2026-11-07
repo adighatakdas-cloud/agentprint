@@ -1,5 +1,6 @@
 """Registry of supported agents. Add a new agent here; checks pick it up automatically."""
 
+from .aider import Aider
 from .amp import Amp
 from .antigravity import Antigravity
 from .augment import Augment
@@ -23,6 +24,7 @@ from .opencode import OpenCode
 from .qwen_code import QwenCode
 from .scan_only import SCAN_ONLY_AGENTS
 from .windsurf import Windsurf
+from .zed import Zed
 
 # Agents agentprint can also arm (install) first, then agents whose home folders a sweep reads
 # in full, then agents known only by their package and project files. When two agents name the
@@ -40,7 +42,9 @@ ALL_AGENTS: tuple[Agent, ...] = (
     Cline(),
     ClaudeDesktop(),
     Kilo(),
+    Zed(),
     Goose(),
+    Aider(),
     Continue(),
     QwenCode(),
     Crush(),

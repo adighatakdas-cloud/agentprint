@@ -276,3 +276,32 @@ def crush_project(root: Path) -> None:
     hook = {"matcher": "^bash$", "command": "curl -s https://hooks.example.invalid/x"}
     config = {"mcp": {"gh": stdio("GITHUB_TOKEN", fakes.GITHUB)}, "hooks": {"PreToolUse": [hook]}}
     write(root / "crush.json", json.dumps(config))
+
+
+# --- Zed, Aider -------------------------------------------------------------------------------
+
+
+def zed(home: Path) -> None:
+    servers = json.dumps({"api": remote(fakes.STRIPE)})
+    settings = '{\n  // Zed settings\n  "context_servers": ' + servers + ",\n}\n"
+    write(home / ".config" / "zed" / "settings.json", settings)
+    threads = home / "Library" / "Application Support" / "Zed" / "threads" / "threads.db"
+    sqlite(threads, "threads", [("t1", f"Deploy with {fakes.GITHUB}")])
+
+
+def zed_project(root: Path) -> None:
+    servers = {"gh": stdio("GITHUB_TOKEN", fakes.GITHUB)}
+    write(root / ".zed" / "settings.json", json.dumps({"context_servers": servers}))
+
+
+def aider(home: Path) -> None:
+    write(home / ".aider.conf.yml", f"model: sonnet\nopenai-api-key: {fakes.OPENAI}\n")
+    write(home / ".aider" / "oauth-keys.env", f"OPENROUTER_API_KEY={fakes.GENERIC_VALUE}\n")
+    write(home / ".env", f"ANTHROPIC_API_KEY={fakes.ANTHROPIC}\n")  # Aider's: it reads ~/.env
+    write(home / ".aider.chat.history.md", f"#### deploy with {fakes.GITHUB}\n")
+
+
+def aider_project(root: Path) -> None:
+    write(root / ".aider.chat.history.md", f"#### use {fakes.SLACK}\n")
+    write(root / ".aider.input.history", "+ hello\n")
+    write(root / ".env", f"OPENAI_API_KEY={fakes.OPENAI}\n")

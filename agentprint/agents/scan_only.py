@@ -1,25 +1,21 @@
 """Agents agentprint knows only by the files they leave in projects and packages.
 
 Each entry gives package rules (AP006: these files must not ship in an npm/PyPI package) and,
-where the agent writes inside the project itself (Aider's transcripts in the repo root, Crush's
-.crush/), those project files. Home folders and config are not read yet; an agent graduates to its
-own module when they are. Adding an entry here never touches a check.
+where the agent writes inside the project itself, those project files. Home folders and config
+are not read yet; an agent graduates to its own module when they are (as Aider, Cline, Kilo
+Code, Qwen Code, Crush, Goose, Kiro, Factory Droid, Continue, Zed and Augment have). Adding an
+entry here never touches a check.
 
 Rule of thumb, as for the full modules: transcripts, logs and key stores are flagged; personal
 settings are flagged; shared-by-design config, rules and instruction files (AGENTS.md,
-.clinerules/, .goosehints, .kiro/steering/, .agents/plugins/) are not.
+.roo/rules/, .agents/skills/) are not.
 
 Paths from each agent's docs, checked 2026-11-05 (none of these agents is installed on the
 verification Mac except Warp, whose database name was checked by name only):
-aider  https://aider.chat/docs/config/aider_conf.html, github.com/Aider-AI/aider aider/args.py
-zed    github.com/zed-industries/zed crates/agent/src/db.rs (threads/threads.db)
 pi     github.com/earendil-works/pi packages/coding-agent/docs/{configuration,mcp}.md
 openclaw https://docs.openclaw.ai/help/environment, .../gateway/security/secrets-and-storage
 warp   ~/Library/Group Containers/<team>.dev.warp/.../warp.sqlite (name verified on macOS)
 roo    https://roocodeinc.github.io/Roo-Code/features/settings-management, .../using-mcp-in-roo
-
-Ruling (Zed): .zed/settings.json is not flagged. It can hold context_servers keys, but a path
-rule can't see that, and editor settings are committed on purpose in many repos.
 """
 
 from __future__ import annotations
@@ -73,26 +69,6 @@ def _agent(
 
 
 SCAN_ONLY_AGENTS: tuple[ScanOnlyAgent, ...] = (
-    _agent(
-        "aider",
-        [
-            (
-                r"(^|/)\.aider\.(chat\.history\.md|input\.history|llm\.history)$",
-                H,
-                "Aider transcript or typed-input history (written to the repo root).",
-            ),
-            (r"(^|/)\.aider/oauth-keys\.env$", H, "Aider's saved OpenRouter key."),
-            (r"(^|/)\.aider\.conf\.yml$", M, "Aider config; may hold API keys."),
-            (r"(^|/)\.aider\.tags\.cache\.v\d+/", L, "Aider repo-map cache."),
-        ],
-        (
-            (".aider.chat.history.md", Kind.HISTORY, True),
-            (".aider.input.history", Kind.HISTORY, True),
-            (".aider.llm.history", Kind.HISTORY, True),
-            (".aider.conf.yml", Kind.SETTINGS, True),
-        ),
-    ),
-    _agent("zed", [(r"(?i)(^|/)zed/threads/threads\.db$", H, "Zed agent thread database.")]),
     _agent(
         "pi",
         [
