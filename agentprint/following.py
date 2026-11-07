@@ -255,9 +255,28 @@ def _scan_large(handle, head: bytes, path: Path, name: str) -> _File:
 # ---- what text names ------------------------------------------------------------------------
 
 
+_PARTS = re.compile(r"(\n|;|&&|\|\|?)")  # where one command ends in scanned text
+_DRY_RUN = re.compile(r"(?<![\w-])(?:--dry-run|--preview)(?![\w-])")
+_GIT_PUSH_N = re.compile(r"(?<![\w.-])git(?![\w-]).*(?<![\w-])push(?![\w-]).*(?<![\w-])-n(?![\w-])")
+
+
+def _without_dry_runs(text: str) -> str:
+    """Scanned text without the commands that are dry runs (`npm publish --dry-run`, `git push
+    -n`): those upload nothing, so naming one is not a reason to say "could not check"."""
+    parts = _PARTS.split(text)
+    return "".join(
+        " "
+        if not _PARTS.fullmatch(part) and (_DRY_RUN.search(part) or _GIT_PUSH_N.search(part))
+        else part
+        for part in parts
+    )
+
+
 def _named(text: str) -> list[Hit]:
-    """The publishes and pushes `_NAMED_PUBLISH` finds in text, in order, once each."""
+    """The publishes and pushes `_NAMED_PUBLISH` finds in text, in order, once each (dry runs
+    left out)."""
     hits: list[Hit] = []
+    text = _without_dry_runs(text)
     for match in _NAMED_PUBLISH.finditer(text):
         tool = next(group for group in match.groups() if group)
         hit = (c.Action.push if tool == "git" else c.Action.publish, tool)
@@ -269,7 +288,7 @@ def _named(text: str) -> list[Hit]:
 def _hits(text: str, cwd: Path) -> list[Hit]:
     """Shell text only scanned, not read as commands: named publishes and backstop hits."""
     hits = _named(text)
-    for risky in c._backstop(text, cwd):
+    for risky in c._backstop(_without_dry_runs(text), cwd):
         if (risky.action, risky.tool) not in hits:
             hits.append((risky.action, risky.tool))
     return hits

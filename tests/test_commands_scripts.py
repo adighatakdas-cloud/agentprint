@@ -867,3 +867,14 @@ def test_a_oneshell_step_is_charged_against_the_byte_budget_before_it_is_read(tm
     assert (risky.tool, risky.label) == ("npm", "Makefile") and risky.unsure
     write(tmp_path, "Makefile", ".ONESHELL:\nall:\n\tcd pkg\n\tnpm publish\n")
     assert found("make", tmp_path) == [(P, "npm", tmp_path / "pkg", "")]  # small: followed
+
+
+def test_a_dry_run_found_by_a_scan_is_not_could_not_check(tmp_path):
+    for i in range(1, 6):
+        write(tmp_path, f"s{i}.sh", f"./s{i + 1}.sh\n", 0o755)
+    write(tmp_path, "s6.sh", "npm publish --dry-run\ngit push -n origin main\n", 0o755)
+    assert detect("./s1.sh", tmp_path) == []  # scanned one level further: dry runs upload nothing
+    write(tmp_path, "s6.sh", "npm publish --dry-run && npm publish\n", 0o755)
+    assert labelled("./s1.sh", tmp_path) == [(P, "npm", deep("npm publish"), "s6.sh")]
+    write(tmp_path, "check.py", "subprocess.run(['npm', 'publish', '--dry-run'])\n")
+    assert detect("python check.py", tmp_path) == []
