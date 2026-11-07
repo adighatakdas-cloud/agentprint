@@ -14,6 +14,8 @@ from collections.abc import Iterable
 from pathlib import Path, PurePath
 from typing import Any
 
+from . import unread
+
 NO_HOOKS_WINDOWS = "Hooks are not installed on Windows yet; the MCP server and the note are."
 
 
@@ -55,9 +57,12 @@ def set_run_notes(check_id: str, notes: Iterable[str]) -> None:
 
 
 def scan_notes() -> tuple[str, ...]:
-    """What the latest sweep could not check on this machine, one line each; empty when it
-    checked everything (always so on POSIX). Shown in every output format."""
-    return tuple(note for check_id in sorted(_RUN_NOTES) for note in _RUN_NOTES[check_id])
+    """What the latest sweep could not check on this machine, one line each: each check's own
+    notes (on Windows, AP008 files it could not read) and each file it could not read at all (a
+    locked database: unread.py). Empty when it checked everything. Shown in every output format."""
+    return tuple(note for check_id in sorted(_RUN_NOTES) for note in _RUN_NOTES[check_id]) + tuple(
+        unread.notes()
+    )
 
 
 def drive_safe_parts(path: PurePath) -> tuple[str, ...]:

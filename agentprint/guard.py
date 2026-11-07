@@ -72,6 +72,7 @@ _LOOKS_RISKY = re.compile(
     r"(?<![\w-])(?:" + "|".join(re.escape(w) for w in PUBLISH_WORDS) + r")(?![\w-])", re.I
 )
 
+NEXT_STEP = "Run the publish or push as its own command, so agentprint can check it."
 STRICT_HINT = (
     "Strict mode is on (AGENTPRINT_STRICT=1 or --strict), so a command agentprint cannot check "
     "is blocked. Fix the cause and retry, or ask the human to turn strict mode off."
@@ -135,8 +136,7 @@ def _decide(command: str, risky: list[Risky], fail_on: FailOn, strict: bool = Fa
             else:
                 findings += _check_publish(item)
         except (CannotCheck, PackError) as exc:
-            what = "git push" if item.action is Action.push else f"{item.tool} publish"
-            warnings.append(f"agentprint could not check this {what}: {clean(str(exc))}.")
+            warnings.append(_could_not(item, exc))
     moment = Moment.publish if any(r.action is Action.publish for r in risky) else Moment.push
     warning = " ".join(warnings) or None
     if exit_code(findings, fail_on):
@@ -144,6 +144,15 @@ def _decide(command: str, risky: list[Risky], fail_on: FailOn, strict: bool = Fa
     if strict and warnings:
         return strict_block(warning or "")
     return Verdict(False, warning=warning)
+
+
+def _could_not(item: Risky, exc: Exception) -> str:
+    """One "could not check" line. When it is about a file or command (`item.label`), it names
+    that and says what to do instead."""
+    if item.label:
+        return f"agentprint could not check `{clean(item.label)}`: {clean(str(exc))}. {NEXT_STEP}"
+    what = "git push" if item.action is Action.push else f"{item.tool} publish"
+    return f"agentprint could not check this {what}: {clean(str(exc))}."
 
 
 def _built(cwd: Path, patterns: tuple[str, ...]) -> list[PackageListing]:

@@ -1,3 +1,4 @@
+<!-- mcp-name: io.github.adighatakdas-cloud/agentprint -->
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/adighatakdas-cloud/agentprint/main/docs/brand/logo-dark.svg">
@@ -94,12 +95,15 @@ secret keys and Google OAuth secrets are from third-party scanners, not the vend
 - If something would leak, the agent gets a brief: the fix steps, plus what to ask you (rotate a key).
 - It only ever blocks (BLOCK or CLEAR); your agent's own approval rules still apply.
 - `agentprint uninstall` takes out exactly what `install` added.
+- Rather add it as a plugin? Claude Code, Codex, Copilot CLI, Gemini CLI, Cursor, Antigravity
+  and Hermes each have one: see [Plugins](https://adighatakdas-cloud.github.io/agentprint/plugins/).
 
 Details: [Inside your agent](https://adighatakdas-cloud.github.io/agentprint/inside-your-agent/).
 
 ## More
 
 [Agents](https://adighatakdas-cloud.github.io/agentprint/agents/) ·
+[Plugins](https://adighatakdas-cloud.github.io/agentprint/plugins/) ·
 [Use in CI](https://adighatakdas-cloud.github.io/agentprint/ci/) ·
 [Privacy](https://adighatakdas-cloud.github.io/agentprint/privacy/) ·
 [Comparison](https://adighatakdas-cloud.github.io/agentprint/comparison/) ·

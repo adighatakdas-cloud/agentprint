@@ -1,18 +1,34 @@
 """Registry of supported agents. Add a new agent here; checks pick it up automatically."""
 
+from .aider import Aider
+from .amp import Amp
 from .antigravity import Antigravity
+from .augment import Augment
 from .base import Agent
 from .claude_code import ClaudeCode
+from .claude_desktop import ClaudeDesktop
+from .cline import Cline
 from .codex import Codex
+from .continue_dev import Continue
 from .copilot import Copilot
+from .crush import Crush
 from .cursor import Cursor
+from .factory_droid import FactoryDroid
 from .gemini import Gemini
+from .goose import Goose
 from .hermes import Hermes
+from .junie import Junie
+from .kilo import Kilo
+from .kiro import Kiro
 from .opencode import OpenCode
+from .qwen_code import QwenCode
 from .scan_only import SCAN_ONLY_AGENTS
 from .windsurf import Windsurf
+from .zed import Zed
 
-# Fully supported agents first, then agents known only by their package and project files.
+# Agents agentprint can also arm (install) first, then agents whose home folders a sweep reads
+# in full, then agents known only by their package and project files. When two agents name the
+# same file, the first one keeps it.
 ALL_AGENTS: tuple[Agent, ...] = (
     ClaudeCode(),
     Codex(),
@@ -23,6 +39,20 @@ ALL_AGENTS: tuple[Agent, ...] = (
     Copilot(),
     Hermes(),
     Antigravity(),
+    Cline(),
+    ClaudeDesktop(),
+    Kilo(),
+    Zed(),
+    Goose(),
+    Aider(),
+    Continue(),
+    QwenCode(),
+    Crush(),
+    Kiro(),
+    FactoryDroid(),
+    Augment(),
+    Amp(),
+    Junie(),
     *SCAN_ONLY_AGENTS,
 )
 

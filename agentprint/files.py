@@ -6,7 +6,7 @@ import os
 from collections.abc import Iterator
 from pathlib import Path
 
-from . import sqlite_text
+from . import sqlite_text, unread
 
 MAX_BYTES = 512 * 1024 * 1024
 
@@ -17,7 +17,8 @@ def _is_binary(path: Path) -> bool:
 
 
 def iter_lines(path: Path) -> Iterator[tuple[int, str]]:
-    """Yield (line_number, line). Yields nothing for binary, oversized or unreadable files.
+    """Yield (line_number, line). Yields nothing for binary, oversized or unreadable files; one
+    that exists but can't be read is named in the scan's not_checked notes (unread.py).
 
     SQLite databases (Cursor, OpenCode chat stores) yield the text of their cells, read-only
     and size-capped, with line number 0 because database rows have no line.
@@ -31,7 +32,10 @@ def iter_lines(path: Path) -> Iterator[tuple[int, str]]:
             return
         with path.open("r", encoding="utf-8", errors="replace", newline="") as fh:
             yield from enumerate(fh, start=1)
-    except OSError:
+    except FileNotFoundError:  # gone since it was found (an agent cleaned up): nothing to say
+        return
+    except OSError as exc:
+        unread.note(path, unread.why(exc))
         return
 
 

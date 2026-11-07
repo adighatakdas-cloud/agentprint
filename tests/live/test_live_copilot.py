@@ -8,13 +8,18 @@ Path check: Copilot asks before a command touches a path outside the project and
 folder, and with no one to ask it refuses. agentprint runs from this checkout's virtualenv, so
 `--allow-all-paths` ("disable file path verification") lets the model run it, as it would run
 an agentprint on the person's PATH.
+The plugin variant installs plugins/agentprint/copilot with `copilot plugin install <path>`, and
+no `agentprint install`. https://docs.github.com/en/copilot/reference/cli-plugin-reference
 """
 
 import pytest
 
 from tests.live import harness
 from tests.live.runner import (
+    PLUGINS,
     AgentCLI,
+    Plugin,
+    agent_command,
     assert_blocked,
     assert_help_not_menu,
     assert_ran,
@@ -85,3 +90,18 @@ def test_scan_output_is_plain_text_for_the_model(tmp_path):
 def test_bare_agentprint_does_not_hang(tmp_path):
     outcome = run(COPILOT, tmp_path, "bare", leaky=False)
     assert_help_not_menu(outcome)
+
+
+PLUGIN = Plugin(
+    install=lambda home, env, exe, tmp: agent_command(
+        [str(exe), "plugin", "install", str(PLUGINS / "copilot")], env, tmp
+    )
+)
+
+
+def test_plugin_blocks_a_leaky_publish(tmp_path):
+    assert_blocked(run(COPILOT, tmp_path, "publish", leaky=True, plugin=PLUGIN), "publish")
+
+
+def test_plugin_lets_a_clean_publish_run(tmp_path):
+    assert_ran(run(COPILOT, tmp_path, "publish", leaky=False, plugin=PLUGIN), "publish")

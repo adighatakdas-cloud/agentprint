@@ -100,11 +100,12 @@ def test_scan_only_agents_have_no_home_files_and_no_config(tmp_path):
 
 
 def test_aider_transcripts_in_the_repo_are_scanned_and_personal(tmp_path):
+    # Aider and Qwen Code have their own modules now; their project files are unchanged.
     (tmp_path / ".aider.chat.history.md").write_text(f"#### deploy with {fakes.GITHUB}\n")
     (tmp_path / ".aider.input.history").write_text("+ hello\n")
     (tmp_path / ".qwen").mkdir()
     (tmp_path / ".qwen" / ".env").write_text(f"OPENAI_API_KEY={fakes.OPENAI}\n")
-    found = [a for agent in SCAN_ONLY_AGENTS for a in agent.discover_project(tmp_path)]
+    found = [a for agent in ALL_AGENTS for a in agent.discover_project(tmp_path)]
     assert {(a.path.name, a.kind, a.personal) for a in found} == {
         (".aider.chat.history.md", Kind.HISTORY, True),
         (".aider.input.history", Kind.HISTORY, True),

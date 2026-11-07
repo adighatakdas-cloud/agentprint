@@ -38,6 +38,7 @@ from typing import Any
 from . import platform, sqlite_text, structured, winacl
 from .advice import NO_LEAK, Advice, Moment, advise, agent_path, split_location
 from .agents import ALL_AGENTS, by_name
+from .agents.base import EnvReference
 from .checks.ap005_mcp_inline_secret import _MARKER as MCP_MARKER
 from .checks.ap007_local_not_ignored import git_state
 from .checks.base import safe_snippet
@@ -106,6 +107,9 @@ class Change:
     json_path: str = ""
     var: str = ""
     version: Version | None = None
+    # env: the text written in place of the key, in the agent's own syntax ("${TOKEN}",
+    # "${env:TOKEN}" in VS Code); "" means "${<var>}".
+    reference: str = ""
     # ignore: the line to add, and the ignore file to add it to (also `path`, so every line for
     # one file is applied in one go).
     line_text: str = ""
@@ -560,29 +564,39 @@ def _plan_masks(findings: list[Finding], pack: bool) -> tuple[list[Change], list
 PLANNERS: dict[str, Planner] = {"AP001": _plan_masks, "AP002": _plan_masks}
 
 
-# ---- env references: AP005 (Claude Code MCP entries) -----------------------------------------
+# ---- env references: AP005 (MCP entries of agents that document an env reference) ------------
 
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
-_ENV_FILES = (".claude.json", ".mcp.json")  # the Claude Code files that expand ${VAR}
 
 
-def _env_slots(doc: Any, name: str) -> Iterable[tuple[tuple[str, ...], str, str, str]]:
-    """Every string under mcpServers.<server>.env.<NAME> the way the Claude Code module reads
-    them (the top level, and for ~/.claude.json each project's own servers):
+def env_reference(agent_name: str, path: Path) -> EnvReference | None:
+    """How this agent's MCP file names an environment variable, from its module (Claude Code
+    "${NAME}", VS Code "${env:NAME}", ...), or None when the agent documents no such reference."""
+    get = getattr(by_name(agent_name), "env_reference", None)
+    try:
+        ref = get(path) if get is not None else None
+    except Exception:  # an agent module bug must never let fix edit a file it can't place
+        return None
+    return ref if isinstance(ref, EnvReference) else None
+
+
+def _env_slots(doc: Any, ref: EnvReference) -> Iterable[tuple[tuple[str, ...], str, str, str]]:
+    """Every string under <servers>.<server>.<env>.<NAME> the way the agent module reads them
+    (the top level, and with `ref.projects` each project's own servers, as in ~/.claude.json):
     (JSON path, server name, variable name, value)."""
     if not isinstance(doc, dict):
         return
     holders: list[tuple[tuple[str, ...], Any]] = [((), doc)]
-    projects = doc.get("projects") if name == ".claude.json" else None
+    projects = doc.get("projects") if ref.projects else None
     if isinstance(projects, dict):
         holders += [(("projects", k), v) for k, v in projects.items() if isinstance(k, str)]
     for prefix, holder in holders:
-        servers = holder.get("mcpServers") if isinstance(holder, dict) else None
+        servers = holder.get(ref.servers) if isinstance(holder, dict) else None
         for server, entry in servers.items() if isinstance(servers, dict) else ():
-            env = entry.get("env") if isinstance(entry, dict) else None
+            env = entry.get(ref.env) if isinstance(entry, dict) else None
             for var, value in env.items() if isinstance(env, dict) else ():
                 if isinstance(server, str) and isinstance(value, str) and _ENV_NAME.fullmatch(var):
-                    yield (*prefix, "mcpServers", server, "env", var), server, var, value
+                    yield (*prefix, ref.servers, server, ref.env, var), server, var, value
 
 
 def _plain_json_string(value: str) -> bool:
@@ -606,8 +620,11 @@ def _occurrences(data: bytes, needle: bytes) -> Iterable[int]:
         start = data.find(needle, start + 1)
 
 
-def _plan_env_file(path: Path, findings: list[Finding]) -> tuple[list[Change], list[Manual]]:
-    """Replace every inline key under an env block of one Claude Code file with "${NAME}"."""
+def _plan_env_file(
+    path: Path, findings: list[Finding], ref: EnvReference
+) -> tuple[list[Change], list[Manual]]:
+    """Replace every inline key under an env block of one MCP file with the agent's own
+    reference to an environment variable ("${NAME}" for Claude Code)."""
     changes: list[Change] = []
     var_of: dict[str, str] = {}  # finding detail -> variable that now holds the key
     data = _read(path)
@@ -620,35 +637,37 @@ def _plan_env_file(path: Path, findings: list[Finding]) -> tuple[list[Change], l
     before = structured.parse(data, str(path)) if text_ok and data is not None else None
     if data is not None and before is not None and len(data) <= structured.MAX_BYTES:
         used: set[int] = set()
-        slots = list(_env_slots(before, path.name))[:MAX_SETTINGS_TRIES]
+        slots = list(_env_slots(before, ref))[:MAX_SETTINGS_TRIES]
         for jpath, server, var, value in slots:
             found = find_secrets(value)
             if len(found) != 1 or found[0].value != value or not _plain_json_string(value):
                 continue
             needle = b'"' + value.encode() + b'"'
+            reference = ref.reference(var)
             for start in _occurrences(data, needle):
                 if start in used:
                     continue
-                new = data[:start] + f'"${{{var}}}"'.encode() + data[start + len(needle) :]
-                if structured.parse(new, str(path)) != _with_value(before, jpath, "${" + var + "}"):
+                new = data[:start] + json.dumps(reference).encode() + data[start + len(needle) :]
+                if structured.parse(new, str(path)) != _with_value(before, jpath, reference):
                     continue
                 used.add(start)
-                where = f"env.{var} of MCP server {safe_snippet(server, 60)!r}"
+                where = f"{ref.env}.{var} of MCP server {safe_snippet(server, 60)!r}"
                 changes.append(
                     Change(
                         kind="env",
                         path=path,
                         line=data.count(b"\n", 0, start) + 1,
                         check_id="AP005",
-                        shown=f'{where}: key replaced by "${{{var}}}"',
+                        shown=f'{where}: key replaced by "{reference}"',
                         offsets=((start, start + len(needle)),),
                         digests=(_digest(needle),),
                         json_path=json.dumps(list(jpath)),
                         var=var,
                         version=version,
+                        reference=reference,
                     )
                 )
-                field_text = safe_snippet(f"env.{var}", 60)
+                field_text = safe_snippet(f"{ref.env}.{var}", 60)
                 detail = f"{found[0].name}: {redact(value)}{MCP_MARKER}"
                 detail += f"{safe_snippet(server, 60)!r} ({field_text})"
                 var_of[detail] = var
@@ -663,7 +682,7 @@ def _plan_env_file(path: Path, findings: list[Finding]) -> tuple[list[Change], l
         manual.append(
             Manual(
                 finding.check_id,
-                f"After rotating, set {var} in the shell that starts Claude Code to the new key: "
+                f"After rotating, set {var} in {ref.where} to the new key: "
                 f"the MCP config now reads it from there ({quote(str(path))}).",
             )
         )
@@ -671,8 +690,10 @@ def _plan_env_file(path: Path, findings: list[Finding]) -> tuple[list[Change], l
 
 
 def _plan_env(findings: list[Finding], pack: bool) -> tuple[list[Change], list[Manual]]:
-    """AP005: Claude Code env entries become "${NAME}" references; every other entry (headers,
-    args, URL, other agents) stays with the human and its per-agent advice."""
+    """AP005: env entries become references to an environment variable, in the files of agents
+    that document one (Claude Code, Qwen Code, Amp, Factory Droid, Augment "${NAME}", VS Code
+    "${env:NAME}", Kilo Code "{env:NAME}", Crush "$NAME"); every other entry (headers, args, URL,
+    other agents) stays with the human and its advice."""
     changes: list[Change] = []
     manual: list[Manual] = []
     by_file: dict[str, list[Finding]] = {}
@@ -680,10 +701,11 @@ def _plan_env(findings: list[Finding], pack: bool) -> tuple[list[Change], list[M
         by_file.setdefault(finding.location, []).append(finding)
     for location, group in by_file.items():
         path = Path(location)
-        ours = [f for f in group if f.agent == "claude-code"] if path.name in _ENV_FILES else []
+        ref = env_reference(group[0].agent, path)
+        ours = [f for f in group if f.agent == group[0].agent] if ref is not None else []
         rest = [f for f in group if f not in ours]
-        if ours:
-            more_changes, more_manual = _plan_env_file(path, ours)
+        if ours and ref is not None:
+            more_changes, more_manual = _plan_env_file(path, ours, ref)
             changes += more_changes
             manual += more_manual
         manual += _leave_to_human(rest, pack)[1]
@@ -1163,7 +1185,7 @@ def _apply_env(changes: list[Change], journal: Journal) -> list[Result]:
     expected, new = before, data
     try:
         for c in sorted(changes, key=lambda c: c.offsets[0][0], reverse=True):
-            (start, end), reference = c.offsets[0], "${" + c.var + "}"
+            (start, end), reference = c.offsets[0], c.reference or "${" + c.var + "}"
             new = new[:start] + json.dumps(reference).encode() + new[end:]
             expected = _with_value(expected, tuple(json.loads(c.json_path)), reference)
         text = new.decode("utf-8")

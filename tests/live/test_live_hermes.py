@@ -5,13 +5,21 @@ Custom endpoint: `model: {provider: custom, base_url, default, api_key}` in ~/.h
 unattended run `hermes chat --accept-hooks` ("Auto-approve any unseen shell hooks declared in
 config.yaml without a TTY prompt") is the documented way. agentprint itself never approves it.
 https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks
+The plugin variant copies plugins/agentprint/hermes to ~/.hermes/plugins/agentprint and runs
+`hermes plugins enable agentprint`, with no `agentprint install` (so no shell hook).
+https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins
 """
+
+import shutil
 
 import pytest
 
 from tests.live import harness
 from tests.live.runner import (
+    PLUGINS,
     AgentCLI,
+    Plugin,
+    agent_command,
     assert_blocked,
     assert_help_not_menu,
     assert_ran,
@@ -98,3 +106,20 @@ def test_scan_output_is_plain_text_for_the_model(tmp_path):
 def test_bare_agentprint_does_not_hang(tmp_path):
     outcome = run(HERMES, tmp_path, "bare", leaky=False)
     assert_help_not_menu(outcome)
+
+
+def _install_plugin(home, env, exe, tmp):
+    target = home / ".hermes" / "plugins" / "agentprint"
+    shutil.copytree(PLUGINS / "hermes", target, ignore=shutil.ignore_patterns("__pycache__"))
+    agent_command([str(exe), "plugins", "enable", "agentprint"], env, tmp)
+
+
+PLUGIN = Plugin(install=_install_plugin)
+
+
+def test_plugin_blocks_a_leaky_publish(tmp_path):
+    assert_blocked(run(HERMES, tmp_path, "publish", leaky=True, plugin=PLUGIN), "publish")
+
+
+def test_plugin_lets_a_clean_publish_run(tmp_path):
+    assert_ran(run(HERMES, tmp_path, "publish", leaky=False, plugin=PLUGIN), "publish")

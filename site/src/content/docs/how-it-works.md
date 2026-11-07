@@ -9,7 +9,7 @@ All of it produces one thing, a list of findings. They are already masked. A per
 
 ## The parts
 
-- **Agents** (`agentprint/agents/`): one module per agent. It says where the agent keeps files in your home folder and in a project, how to read its config (permissions, hooks, MCP servers), and which of its files must never ship in a package. Fifteen lighter agents live in `scan_only.py`. Adding an agent never touches a check.
+- **Agents** (`agentprint/agents/`): one module per agent. It says where the agent keeps files in your home folder and in a project, how to read its config (permissions, hooks, MCP servers), and which of its files must never ship in a package. Four lighter agents live in `scan_only.py`. Adding an agent never touches a check.
 - **Checks** (`agentprint/checks/`): one module per [check](/agentprint/checks/). A check gets the found files and returns findings. Checks never parse an agent's file format. When several checks see the same key, the most precise one claims it, so you get one finding.
 - **Secrets** (`secrets.py`): key patterns and the masking function.
 - **Pack** (`pack.py`): asks the package manager what a package would ship (`npm pack --dry-run --ignore-scripts`, or `uv build`), or reads a built archive in memory. AP006 then matches every file name against all agents' package rules.
@@ -31,7 +31,7 @@ All of it produces one thing, a list of findings. They are already masked. A per
 - **Scanned names are untrusted.** File names inside a package are chosen by whoever built it. Before any of that text is shown, agentprint removes terminal escape sequences, control characters and invisible Unicode, and caps the length. In output for an AI agent, scanned text is a quoted JSON string under a note that says it is data, not instructions.
 - **Commands are never shortened.** A fix step that holds a shell command is shown whole and unchanged, or replaced by a plain-words instruction. Cutting a quoted command could turn part of a hostile file name into something that runs.
 - **Installs are reversible.** Every edit marks what it added, so `uninstall` removes exactly that and keeps your own changes. Files are backed up first and written atomically. A file agentprint cannot edit safely is left alone, and the lines to add by hand are printed instead.
-- **Reading is bounded.** SQLite databases are opened read-only. Archives are read in memory with caps on entries and size. YAML is read with a safe loader.
+- **Reading is bounded.** SQLite databases are opened read-only and create no file next to them; one that can't be read is named under "not checked". Archives are read in memory with caps on entries and size. YAML is read with a safe loader.
 
 ## How it is tested
 
