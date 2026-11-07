@@ -266,7 +266,7 @@ def _key_reader(fd: int) -> KeyReader:
                     if more:
                         pending.extend(more)
                         continue
-                    key, used = ("quit" if pending == b"\x1b" else None), len(pending)
+                    key, used = ("quit" if bytes(pending) == b"\x1b" else None), len(pending)
                 del pending[:used]
                 if key is not None:
                     return key

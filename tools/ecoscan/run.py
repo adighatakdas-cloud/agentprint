@@ -14,7 +14,7 @@ import json
 import os
 import time
 import zlib
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
@@ -129,7 +129,7 @@ def run(
     validate_pct: int = 0,
     recent: Callable | None = None,
     scan: Callable | None = None,
-    redo: set[str] = frozenset(),
+    redo: Collection[str] = frozenset(),
     max_bytes: int | None = None,
     log: Callable[[str], None] = print,
 ) -> dict:
@@ -148,8 +148,10 @@ def run(
     if recent is None and window is not None:
         lo, hi = window
 
-        def recent(http, n, tally):
+        def in_window(http, n, tally):
             return REGISTRIES[eco].in_range(http, lo, hi, tally)[:n]
+
+        recent = in_window
 
     recent = recent or REGISTRIES[eco].recent
     scan = scan or REGISTRIES[eco].scan

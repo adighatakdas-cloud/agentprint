@@ -2,15 +2,14 @@ name: Docs
 
 on:
   pull_request:
-    paths: &paths
+    paths:
       - "site/**"
       - "tools/gen_brand.py"
       - "tools/gen_docs.py"
       - "docs/brand/**"
       - ".github/workflows/docs.yml"
   push:
-    branches: [main]
-    paths: *paths
+    branches: [main]  # any path: the coverage badge stays fresh
   workflow_dispatch:
 
 permissions:
@@ -37,6 +36,13 @@ jobs:
         with:
           node-version: "22"
           package-manager-cache: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: Run the tests with coverage
+        working-directory: .
+        run: uv run --locked pytest -m "integration or not integration" --cov=agentprint --cov-report=json:coverage.json
+      - name: Write the coverage badge
+        working-directory: .
+        run: uv run --locked python -m tools.coverage_badge coverage.json site/public/coverage.json
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - run: pnpm build

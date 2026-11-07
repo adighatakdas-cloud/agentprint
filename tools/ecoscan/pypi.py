@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import xmlrpc.client
+from typing import IO, Any, cast
 from urllib.parse import quote
 
 from agentprint.pack import PackError, read_archive_bytes, read_archive_fileobj
@@ -31,7 +32,7 @@ def _norm(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()  # PEP 503
 
 
-def _rpc(http: Http, method: str, *params, tally: Tally):
+def _rpc(http: Http, method: str, *params, tally: Tally) -> Any:  # xmlrpc replies are untyped
     body = xmlrpc.client.dumps(params, method).encode()
     resp = http.post(
         f"{PYPI}/pypi",
@@ -117,7 +118,7 @@ def _listing(http: Http, archive: str, info: dict, tally: Tally, rec: dict, cap:
     if filename.endswith((".zip", ".whl")):
         rec["method"].append(f"{archive}:range")
         remote = RangeFile(http, url, size, max_bytes=MAX_RANGE_BYTES, tally=tally)
-        return read_archive_fileobj(remote, filename, is_candidate)
+        return read_archive_fileobj(cast("IO[bytes]", remote), filename, is_candidate)  # file-like
     if size > cap:
         raise TooLarge(f"{size} bytes")
     rec["method"].append(f"{archive}:full")

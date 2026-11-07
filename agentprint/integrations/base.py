@@ -68,8 +68,10 @@ class Unsupported(Exception):
 
 
 class Edit(Protocol):
-    path: Path
-    what: str
+    @property
+    def path(self) -> Path: ...
+    @property
+    def what(self) -> str: ...
 
     def apply(self, old: str | None) -> str: ...
 

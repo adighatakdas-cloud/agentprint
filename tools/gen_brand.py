@@ -13,6 +13,7 @@ import argparse
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from fontTools.pens.boundsPen import BoundsPen
 from fontTools.pens.svgPathPen import SVGPathPen
@@ -88,9 +89,12 @@ class _Wordmark:
 
     def __init__(self) -> None:
         font = TTFont(FONT)
-        self.cap = font["OS/2"].sCapHeight
-        self.xh = font["OS/2"].sxHeight
+        os2: Any = font["OS/2"]  # fontTools' table classes are untyped
+        self.cap = os2.sCapHeight
+        self.xh = os2.sxHeight
         cmap, glyphs, hmtx = font.getBestCmap(), font.getGlyphSet(), font["hmtx"]
+        if cmap is None:
+            raise ValueError(f"{FONT} has no character map")
         self.paths: dict[str, str] = {}
         left = right = bottom = top = None
         pen_x = 0
@@ -101,6 +105,8 @@ class _Wordmark:
                 glyphs[name].draw(TransformPen(pen, (1, 0, 0, 1, pen_x, 0)))
                 bounds = BoundsPen(glyphs)
                 glyphs[name].draw(bounds)
+                if bounds.bounds is None:
+                    raise ValueError(f"glyph {name!r} has no outline")
                 x0, y0, x1, y1 = bounds.bounds
                 left = pen_x + x0 if left is None else left
                 right = pen_x + x1
@@ -108,6 +114,8 @@ class _Wordmark:
                 top = y1 if top is None else max(top, y1)
                 pen_x += hmtx[name][0]
             self.paths[part] = pen.getCommands()
+        if left is None or right is None or bottom is None or top is None:
+            raise ValueError("the wordmark has no glyphs")
         self.left, self.right, self.bottom, self.top = left, right, bottom, top
 
 
@@ -168,7 +176,7 @@ def outputs() -> dict[Path, str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="gen_brand", description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(prog="gen_brand", description=(__doc__ or "").splitlines()[0])
     parser.add_argument("--check", action="store_true", help="report stale files, write nothing")
     args = parser.parse_args(argv)
     stale = 0

@@ -310,7 +310,7 @@ def outputs() -> dict[Path, str]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="gen_docs", description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(prog="gen_docs", description=(__doc__ or "").splitlines()[0])
     parser.add_argument("--check", action="store_true", help="report stale files, write nothing")
     args = parser.parse_args(argv)
     stale = 0

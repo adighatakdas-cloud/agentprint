@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from ..guard import Verdict
 from .base import (
@@ -97,7 +98,7 @@ def _shared(node: object) -> bool:
     return bool(getattr(anchor, "value", None)) or bool(getattr(node, "merge", None))
 
 
-def _section(parent: dict, key: str, kind: type) -> dict | list:
+def _section(parent: Any, key: str, kind: type) -> Any:  # ruamel CommentedMap/CommentedSeq
     """parent[key] as a mapping (or list) agentprint may add to. A new one goes first in its
     parent, so comments the user wrote after their own entries stay after them."""
     from ruamel.yaml.comments import CommentedMap, CommentedSeq
