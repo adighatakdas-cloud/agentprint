@@ -335,6 +335,13 @@ def test_codex_marketplace_and_manifest():
     assert manifest["version"] == __version__
 
 
+def test_the_codex_marketplace_folder_holds_no_plugin_folder():
+    # Antigravity loads every folder in a workspace's .agents/plugins/ as a plugin, so a folder
+    # here would load for anyone who opens this repository in Antigravity.
+    folder = ROOT / ".agents" / "plugins"
+    assert [p.name for p in folder.iterdir()] == ["marketplace.json"]
+
+
 def test_codex_mcp_is_a_stdio_server():
     mcp = _load(PLUGIN / "codex" / "mcp.json")
     assert mcp["mcpServers"]["agentprint"]["type"] == "stdio"
