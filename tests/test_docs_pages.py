@@ -1,6 +1,7 @@
 import re
 import subprocess
 
+from agentprint import __version__
 from agentprint.secrets import find_secrets
 from tools import gen_docs
 
@@ -157,7 +158,10 @@ def test_badge_page_covers_the_verifiable_badge():
         "default branch",
     ):
         assert needle in text, needle
-    assert "adighatakdas-cloud/agentprint@v0.1.0  # better: pin the release's commit SHA" in text
+    assert (
+        f"adighatakdas-cloud/agentprint@v{__version__}  # better: pin the release's commit SHA"
+        in text
+    )
     assert "![" not in text.split("```")[0] and "<img" not in text
     assert "/agentprint/badge/" in (DOCS / "ci.md").read_text()
 
@@ -167,7 +171,7 @@ def test_badge_page_offers_both_modes_and_recommends_signed_by_agentprint():
     assert "## Signed by agentprint (new in v0.1.0)" in text
     assert "## Signed by your own workflow" in text
     assert text.index("## Signed by agentprint") < text.index("## Signed by your own workflow")
-    assert "uses: adighatakdas-cloud/agentprint/.github/workflows/badge.yml@v0.1.0" in text
+    assert f"uses: adighatakdas-cloud/agentprint/.github/workflows/badge.yml@v{__version__}" in text
     assert "--signer-workflow adighatakdas-cloud/agentprint/.github/workflows/badge.yml" in text
     assert "works from v0.1.0" in text
     assert "supports `scan` only" in text and "`command: pack` is refused" in text
@@ -210,3 +214,10 @@ def test_agent_loop_gif_is_the_same_file_in_docs_and_on_the_site():
     gif = (gen_docs.ROOT / "docs/agent-loop.gif").read_bytes()
     assert gif[:6] in (b"GIF87a", b"GIF89a")
     assert gif == (PUBLIC / "agent-loop.gif").read_bytes()
+
+
+def test_ci_page_pins_users_copy_name_this_release():
+    text = (DOCS / "ci.md").read_text()
+    assert f"uses: adighatakdas-cloud/agentprint@v{__version__}  #" in text
+    assert f"rev: v{__version__}\n" in text
+    assert re.findall(r"agentprint@v(\d+\.\d+\.\d+)", text) == [__version__]

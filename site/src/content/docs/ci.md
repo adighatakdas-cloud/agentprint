@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: adighatakdas-cloud/agentprint@v0.1.0  # better: pin the release's commit SHA
+      - uses: adighatakdas-cloud/agentprint@v0.1.1  # better: pin the release's commit SHA
         with: { command: pack, upload-sarif: true }  # command: pack or scan
 ```
 
@@ -51,7 +51,7 @@ Add to `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/adighatakdas-cloud/agentprint
-    rev: v0.1.0
+    rev: v0.1.1
     hooks:
       - id: agentprint-pack   # agent files or keys in your package
       - id: agentprint-scan   # keys in this repo's agent settings
