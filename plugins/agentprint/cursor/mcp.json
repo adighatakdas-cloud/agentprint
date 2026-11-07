@@ -1,7 +1,6 @@
 {
   "mcpServers": {
     "agentprint": {
-      "type": "stdio",
       "command": "uvx",
       "args": [
         "--from",

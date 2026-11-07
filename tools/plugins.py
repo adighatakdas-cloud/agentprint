@@ -209,8 +209,13 @@ def gemini() -> dict[Path, str]:
 
 
 def cursor() -> dict[Path, str]:
-    """https://cursor.com/docs/reference/plugins"""
+    """https://cursor.com/docs/reference/plugins . Its plugin examples show hooks/hooks.json
+    without the standalone file's `"version": 1` and mcp.json servers without `type` (Cursor
+    infers the transport from `command`), so both are left out; the rest is install's entry."""
     folder = PLUGIN / "cursor"
+    hooks = install_json("cursor", "hook")
+    hooks.pop("version")
+    server = {k: v for k, v in mcp_server("cursor").items() if k != "type"}
     rule = CURSOR_RULE.replace(
         "<!-- Written by `agentprint install`; `agentprint uninstall` deletes this file. -->",
         f"<!-- Part of the agentprint plugin. {GENERATED} -->",
@@ -220,8 +225,8 @@ def cursor() -> dict[Path, str]:
             _marketplace("plugins/agentprint/cursor")
         ),
         folder / ".cursor-plugin" / "plugin.json": _json(_plugin_manifest()),
-        folder / "hooks" / "hooks.json": install_text("cursor", "hook"),
-        folder / "mcp.json": _json({"mcpServers": {NAME: mcp_server("cursor")}}),
+        folder / "hooks" / "hooks.json": _json(hooks),
+        folder / "mcp.json": _json({"mcpServers": {NAME: server}}),
         folder / "rules" / "agentprint.mdc": rule,
     }
 

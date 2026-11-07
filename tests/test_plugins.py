@@ -118,7 +118,10 @@ def test_every_json_file_parses_and_every_version_is_this_one():
 
 @pytest.mark.parametrize("agent", sorted(HOOK_FILES))
 def test_plugin_hook_is_the_entry_install_writes(agent):
-    assert _without_commands(_load(HOOK_FILES[agent])) == _without_commands(_installed(agent))
+    installed = _installed(agent)
+    if agent == "cursor":  # Cursor's plugin hooks file has no "version" (its reference)
+        assert installed.pop("version") == 1
+    assert _without_commands(_load(HOOK_FILES[agent])) == _without_commands(installed)
 
 
 @pytest.mark.parametrize("agent", sorted(HOOK_FILES))
@@ -392,6 +395,12 @@ def test_cursor_marketplace_manifest_and_rule():
     rule = (folder / "rules" / "agentprint.mdc").read_text()
     assert yaml.safe_load(rule.split("---\n")[1])["alwaysApply"] is True
     assert "Written by `agentprint install`" not in rule  # the plugin's own, not install's
+
+
+def test_cursor_files_use_only_keys_its_reference_shows():
+    assert "version" not in _load(HOOK_FILES["cursor"])
+    server = _load(PLUGIN / "cursor" / "mcp.json")["mcpServers"]["agentprint"]
+    assert set(server) == {"command", "args"}
 
 
 def test_cursor_hook_matcher_only_fires_for_publish_and_push():
