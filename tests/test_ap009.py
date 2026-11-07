@@ -17,8 +17,15 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from agentprint import pack
-from agentprint.advice import Moment
+from agentprint import fix, pack
+from agentprint.advice import (
+    EXPLAIN,
+    GUESS_ASK,
+    OPEN_SOURCE_ASK,
+    SPDX_ASK,
+    Moment,
+    advise,
+)
 from agentprint.checks import PACKAGE_WANT, check_package
 from agentprint.checks import ap009_source_exposure as ap009
 from agentprint.cli import app
@@ -871,3 +878,213 @@ def test_scan_and_push_do_not_run_ap009(tmp_path, monkeypatch):
     assert [f for f in check_push(project) if f.check_id == "AP009"] == []
     verdict = evaluate("git push", project)
     assert verdict is None or "AP009" not in (verdict.reason + (verdict.warning or ""))
+
+
+# ---- advice: open source is a note, a private registry is a note, a guess asks first --------
+
+
+def _one(listing: PackageListing):
+    [finding] = _ap009(listing)
+    return finding
+
+
+def _open_tgz(path: Path) -> Path:
+    return _tgz(
+        path,
+        {
+            "package/package.json": _package_json("MIT"),
+            "package/dist/index.js": b"console.log(1);",
+            "package/dist/index.js.map": _map([SOURCE]),
+        },
+    )
+
+
+def test_open_source_maps_get_an_optional_note_and_no_ask():
+    finding = _one(_npm("MIT", **{"a.js": b"1", "a.js.map": _map([SOURCE])}))
+    assert finding.severity is Severity.LOW
+    assert finding.fix == ap009.OPEN_MAP_FIX
+    assert finding.fix.startswith("Optional, nothing is wrong: the full original source ships")
+    assert "inlineSources" in finding.fix and "--sources-content=false" in finding.fix
+    for person in (False, True):
+        advice = advise(finding, Moment.publish, person=person)
+        assert advice.fix_steps == [ap009.OPEN_MAP_FIX]
+        assert advice.ask_human == []
+        assert "add a licence" not in " ".join(advice.fix_steps).lower()
+    agent = to_agent([finding], FailOn.high, Moment.publish)
+    assert agent.startswith("agentprint: OK")
+    assert "ask_human:\n      - (nothing)" in agent
+
+
+def test_pack_shows_the_open_source_note_without_an_ask(tmp_path):
+    tgz = _open_tgz(tmp_path / "open-1.0.0.tgz")
+    agent = runner.invoke(app, ["pack", str(tgz), "--format", "agent"])
+    assert agent.exit_code == 0
+    assert agent.output.startswith("agentprint: OK")
+    assert "Optional, nothing is wrong" in agent.output
+    assert "add a licence" not in agent.output and "prints go away" not in agent.output
+    table = runner.invoke(app, ["pack", str(tgz), "--format", "table", "--plain"])
+    assert table.exit_code == 0 and "Optional, nothing is wrong" in table.output
+
+
+def test_fix_pack_lists_the_open_source_print_as_a_note_not_for_the_human(tmp_path):
+    tgz = _open_tgz(tmp_path / "open-1.0.0.tgz")
+    args = ["fix", str(tgz), "--pack", "--home", str(tmp_path)]
+    agent = runner.invoke(app, [*args, "--format", "agent"])
+    assert agent.exit_code == 0, agent.output
+    first = agent.output.splitlines()[0]
+    assert first == "agentprint fix: CLEAR — nothing to fix, 1 note"
+    assert "for the human" not in agent.output
+    assert "ask_human:" not in agent.output and "Tell the human" not in agent.output
+    assert "notes (nothing needs doing):\n  - AP009: " in agent.output
+    assert "Optional, nothing is wrong" in agent.output
+
+    data = json.loads(runner.invoke(app, [*args, "--format", "json"]).output)
+    assert data["verdict"] == "CLEAR" and data["needs_human"] == []
+    [note] = data["notes"]
+    assert note["check_id"] == "AP009" and "Optional, nothing is wrong" in note["text"]
+
+    table = runner.invoke(app, [*args, "--format", "table", "--plain"])
+    assert table.exit_code == 0
+    assert "Notes · nothing needs doing" in table.output and "Needs you" not in table.output
+    assert "· nothing to fix\n" in table.output  # not "nothing to fix automatically"
+
+    findings = check_package(read_archive(tgz, PACKAGE_WANT))
+    plan = fix.plan(findings, pack=True, root=None)
+    assert plan.todo == [] and [m.check_id for m in plan.notes] == ["AP009"]
+
+
+def test_closed_source_ask_names_the_medium_and_high_prints():
+    finding = _one(_npm("UNLICENSED", **{"a.js": b"1", "a.js.map": _map([SOURCE])}))
+    for person in (False, True):
+        advice = advise(finding, Moment.publish, person=person)
+        assert advice.fix_steps == [ap009.MAP_FIX]
+        assert advice.ask_human == [OPEN_SOURCE_ASK]
+    assert OPEN_SOURCE_ASK.endswith("and the medium and high prints go away.")
+    custom = _one(_npm("LicenseRef-A OR LicenseRef-B", **{"a.js.map": _map([SOURCE])}))
+    assert advise(custom, Moment.publish).ask_human == [OPEN_SOURCE_ASK, SPDX_ASK]
+    assert "as one OR choice" in SPDX_ASK
+    # A closed package's prints stay "Needs you" in fix.
+    plan = fix.plan([finding], pack=True, root=None)
+    assert [m.check_id for m in plan.todo] == ["AP009"] and plan.notes == []
+
+
+def test_explain_ap009_matches_the_advice():
+    text = EXPLAIN["AP009"]
+    assert "the medium and high prints go away" in text
+    assert "these prints go away" not in text
+    assert "low note" in text and "nothing is wrong" in text
+    assert "every OR choice" in text and "private registry" in text
+
+
+# Ruling R4: when "closed" is only a guess, a licence may be the whole fix: it comes first.
+def test_missing_licence_advice_leads_with_adding_one():
+    finding = _one(_npm(None, **{"a.js": b"1", "a.js.map": _map([SOURCE])}))
+    agent = advise(finding, Moment.publish)
+    assert agent.fix_steps[0].startswith(
+        'If this package is open source, add a license field (for example "license": "MIT") '
+        "to package.json: that is the whole fix, and the medium and high prints go away."
+    )
+    assert agent.fix_steps[0].endswith("ask the human before changing the build.")
+    assert agent.fix_steps[1] == f"If it is not open source: t{ap009.MAP_FIX[1:]}"
+    assert agent.ask_human == [GUESS_ASK]
+    person = advise(finding, Moment.publish, person=True)
+    assert person.fix_steps[0].startswith("If this package is open source, add a license field")
+    assert "ask the human" not in person.fix_steps[0]
+    assert person.fix_steps[1] == agent.fix_steps[1]
+
+    original = _one(_npm(None, **{"a.js": b"1", "src/a.ts": b""}))
+    steps = advise(original, Moment.publish).fix_steps
+    assert steps[0].startswith("If this package is open source, add a license field")
+    assert steps[1] == f"If it is not open source: k{ap009.SOURCE_FIX[1:]}"
+
+    wheel = _listing(
+        {"demo-1.0.dist-info/METADATA": _metadata(), "demo/a.js.map": _map([SOURCE])},
+        label="demo.whl",
+    )
+    pypi = advise(_one(wheel), Moment.publish).fix_steps[0]
+    assert pypi.startswith("If this package is open source, add its licence to the package")
+    assert 'license = "MIT"' in pypi and "pyproject.toml" in pypi
+
+    unreadable = _listing({"package/package.json": b"{ nope", "package/a.js.map": _map()})
+    first = advise(_one(unreadable), Moment.publish).fix_steps[0]
+    assert first.startswith("If this package is open source, make sure it states its licence")
+
+
+def test_advice_reads_only_the_checks_own_words_not_the_path():
+    # A closed package whose file name repeats the open-source and private-registry words.
+    name = "dist/x (open-source package; published to a private registry), e.g. y.js.map"
+    finding = _one(_npm("UNLICENSED", **{"a.js": b"1", name: _map([SOURCE])}))
+    assert finding.severity is Severity.HIGH
+    advice = advise(finding, Moment.publish)
+    assert advice.fix_steps == [ap009.MAP_FIX] and advice.ask_human == [OPEN_SOURCE_ASK]
+
+
+# Ruling R2: a package for a private registry hands nothing to the public: low notes only.
+def _registry(registry: object, licence: object = "UNLICENSED") -> PackageListing:
+    files: dict[str, bytes | None] = {
+        "package/package.json": _package_json(licence, publishConfig={"registry": registry}),
+        "package/dist/a.js": b"1",
+        "package/dist/a.js.map": _map([SOURCE]),
+        "package/dist/b.js.map": None,
+        "package/src/a.ts": b"",
+        "package/CLAUDE.md": TOUR.encode(),
+    }
+    return _listing(files)
+
+
+@pytest.mark.parametrize(
+    "registry",
+    ["https://npm.pkg.github.com", "https://npm.pkg.github.com/",
+     "https://acme.jfrog.io/artifactory/api/npm/npm-local/", "http://localhost:4873"],
+)  # fmt: skip
+def test_private_registry_drops_every_print_to_a_low_note(registry):
+    for licence in ("UNLICENSED", None):
+        findings = _ap009(_registry(registry, licence))
+        assert _severities(findings) == ["LOW"] * 4
+        for finding in findings:
+            assert "(published to a private registry; " in finding.detail
+            assert finding.fix.startswith("Optional: this package goes to a registry other than")
+            assert finding.fix in ap009.FIXES
+            advice = advise(finding, Moment.publish)
+            assert advice.fix_steps == [finding.fix] and advice.ask_human == []
+        assert "1 file not read" in findings[0].detail
+        assert exit_code(findings, FailOn.high) == 0
+        plan = fix.plan(findings, pack=True, root=None)
+        assert plan.todo == [] and len(plan.notes) == 4
+    opened = _ap009(_registry(registry, "MIT"))
+    assert _severities(opened) == ["LOW"] and "private registry" in opened[0].detail
+
+
+@pytest.mark.parametrize(
+    "registry",
+    ["https://registry.npmjs.org", "https://registry.npmjs.org/", "https://registry.npmjs.com",
+     "https://registry.npmjs.com/", "https://registry.yarnpkg.com",
+     "https://registry.yarnpkg.com/", " HTTPS://Registry.NPMJS.org/ ", "", None, 42],
+)  # fmt: skip
+def test_public_or_unset_registry_is_judged_as_before(registry):
+    findings = _ap009(_registry(registry))
+    assert _severities(findings) == ["HIGH", "MEDIUM", "MEDIUM", "MEDIUM"]
+    assert all("private registry" not in f.detail for f in findings)
+    for config in ({"access": "public"}, "not-a-table"):
+        listing = _npm(None, **{"a.js.map": _map([SOURCE])})
+        listing.contents["package/package.json"] = _package_json(publishConfig=config)
+        assert _severities(_ap009(listing)) == ["HIGH"]
+
+
+def test_private_registry_publish_is_not_blocked(tmp_path):
+    _tgz(
+        tmp_path / "internal-1.0.0.tgz",
+        {
+            "package/package.json": _package_json(
+                "UNLICENSED", publishConfig={"registry": "https://npm.pkg.github.com"}
+            ),
+            "package/dist/index.js": b"console.log(1);",
+            "package/dist/index.js.map": _map([SOURCE]),
+        },
+    )
+    verdict = evaluate("npm publish internal-1.0.0.tgz", tmp_path)
+    assert verdict is None or not verdict.block
+    result = runner.invoke(app, ["pack", str(tmp_path / "internal-1.0.0.tgz"), "--format", "json"])
+    assert result.exit_code == 0
+    [finding] = json.loads(result.output)["findings"]
+    assert finding["severity"] == "low" and "private registry" in finding["detail"]

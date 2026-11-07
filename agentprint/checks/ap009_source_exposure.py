@@ -15,6 +15,10 @@ and an open-source package is never nagged:
 | original source next to the compiled code        | medium        | -           |
 | AI instruction files                             | medium        | -           |
 
+The open-source low print is a note, not a problem, and its fix is optional. An npm package
+whose `publishConfig.registry` is not the public npm registry is published to a private
+registry, so whatever is found there is only a low note too.
+
 One finding per kind per package: a count and one example path, never file contents.
 Content is only what `pack` read within its limits. A file that was not read is never guessed
 at: an unread `.map` still counts by its name (it ships, whatever is inside), an unread bundle
@@ -51,8 +55,33 @@ MAP_FIX = (
 )
 SOURCE_FIX = f"Keep original source (src/, .ts, .vue, .svelte) out of the package ({_KEEP_OUT})."
 INSTRUCTIONS_FIX = f"Keep AI instruction files out of the package ({_KEEP_OUT})."
+# An open-source package's maps that hold the source: a note, so the fix is optional.
+OPEN_MAP_FIX = (
+    "Optional, nothing is wrong: the full original source ships inside these source maps, which "
+    "is normal for open source. If you did not mean to publish it, turn off sourcesContent in "
+    'the build (tsc "inlineSources": false; esbuild --sources-content=false; Rollup '
+    "output.sourcemapExcludeSources: true, in Vite under build.rollupOptions; webpack devtool: "
+    f'"nosources-source-map"), or keep the .map files out of the package ({_KEEP_OUT}).'
+)
+_PRIVATE_FIX = (
+    "Optional: this package goes to a registry other than the public npm registry "
+    "(publishConfig.registry), so this is only a note. If it will also be published publicly: "
+)
+
+
+def private_fix(fix: str) -> str:
+    """A kind's fix, for a package published to a private registry: optional."""
+    return f"{_PRIVATE_FIX}{fix[0].lower()}{fix[1:]}"
+
 
 OPEN = "open-source package"
+PRIVATE = "published to a private registry"
+# publishConfig.registry values that are the public npm registry (compared without a final /).
+PUBLIC_NPM = (
+    "https://registry.npmjs.org",
+    "https://registry.npmjs.com",
+    "https://registry.yarnpkg.com",
+)
 _ADD_ONE = "so treated as closed source; add one if it's open source"
 _ADD_LICENCE = "so treated as closed source; add a licence if it's open source"
 NPM_MISSING = f"no licence field, {_ADD_ONE}"
@@ -65,6 +94,8 @@ CUSTOM_ID = (
     "open source"
 )
 NO_OPEN_CHOICE = "closed-source package: its licence expression has no open-source choice"
+# The reasons that are a guess: no licence was found or it could not be read.
+GUESSED = (NPM_MISSING, NPM_UNREADABLE, PYPI_MISSING, PYPI_UNREADABLE, NOTHING_FOUND)
 PROPRIETARY = "License :: Other/Proprietary License"
 # Licence values that say "closed source" outright (compared trimmed and case-insensitively).
 NPM_CLOSED_WORDS = ("proprietary", "commercial")
@@ -207,6 +238,17 @@ def _npm_licence(data: dict) -> tuple[bool, str]:
     return (True, why) if why else (False, OPEN)
 
 
+def _private_registry(data: dict) -> bool:
+    """True when package.json's publishConfig.registry is set to something other than the
+    public npm registry (it can still be changed with --registry or .npmrc, which a package
+    doesn't show)."""
+    config = data.get("publishConfig")
+    registry = config.get("registry") if isinstance(config, dict) else None
+    if not isinstance(registry, str) or not registry.strip():
+        return False
+    return registry.strip().lower().rstrip("/") not in PUBLIC_NPM
+
+
 def _headers(raw: bytes) -> list[tuple[str, str]]:
     """(lower-case name, value) pairs of a METADATA / PKG-INFO header block.
 
@@ -253,6 +295,23 @@ def _pypi_licence(raw: bytes | None) -> tuple[bool, str]:
     return (False, OPEN) if stated or osi else (True, PYPI_MISSING)
 
 
+def _judge(listing: PackageListing) -> tuple[bool, str, bool]:
+    """(closed source?, why, published to a private registry?)."""
+    found = _licence_file(listing.files)
+    if found is None:
+        return True, NOTHING_FOUND, False
+    kind, name = found
+    raw = listing.contents.get(name)
+    if kind == "pypi":
+        closed, why = _pypi_licence(raw)
+        return closed, why, False
+    data = _npm_data(raw)
+    if data is None:
+        return True, NPM_UNREADABLE, False
+    closed, why = _npm_licence(data)
+    return closed, why, _private_registry(data)
+
+
 def licence_of(listing: PackageListing) -> tuple[bool, str]:
     """(closed source?, why), from package.json (npm) or METADATA / PKG-INFO (PyPI).
 
@@ -263,15 +322,14 @@ def licence_of(listing: PackageListing) -> tuple[bool, str]:
     `All rights reserved`, or no License / License-Expression and no OSI classifier. A licence
     file that is missing or could not be read counts as closed, and `why` says so. `why` never
     repeats what the file says."""
-    found = _licence_file(listing.files)
-    if found is None:
-        return True, NOTHING_FOUND
-    kind, name = found
-    raw = listing.contents.get(name)
-    if kind == "pypi":
-        return _pypi_licence(raw)
-    data = _npm_data(raw)
-    return (True, NPM_UNREADABLE) if data is None else _npm_licence(data)
+    closed, why, _ = _judge(listing)
+    return closed, why
+
+
+def reason(detail: str) -> str:
+    """The part of an AP009 detail that is the check's own words (before the example path,
+    which comes from the package): what was found and why it is closed or open."""
+    return detail.partition(", e.g. ")[0]
 
 
 # ---- source maps ---------------------------------------------------------------------------
@@ -340,6 +398,7 @@ class Exposure:
     fix: str
     closed: Severity
     open: Severity | None  # None: never mentioned for an open-source package
+    open_fix: str = ""  # the fix for an open-source package's (low) print, when it differs
 
 
 FULL = Exposure(
@@ -349,6 +408,7 @@ FULL = Exposure(
     MAP_FIX,
     Severity.HIGH,
     Severity.LOW,
+    OPEN_MAP_FIX,
 )
 LAYOUT = Exposure(
     "source map gives away your file layout and original names",
@@ -375,6 +435,12 @@ INSTRUCTIONS = Exposure(
     None,
 )
 KINDS = (FULL, LAYOUT, ORIGINAL, INSTRUCTIONS)  # the order findings come in
+# Every fix an AP009 finding can carry.
+FIXES = frozenset(
+    {kind.fix for kind in KINDS}
+    | {kind.open_fix for kind in KINDS if kind.open_fix}
+    | {private_fix(kind.fix) for kind in KINDS}
+)
 
 
 def _sort(listing: PackageListing) -> tuple[dict[Exposure, list[str]], int]:
@@ -408,12 +474,17 @@ def _sort(listing: PackageListing) -> tuple[dict[Exposure, list[str]], int]:
 
 def check_listing(listing: PackageListing) -> list[Finding]:
     found, not_read = _sort(listing)
-    closed, why = licence_of(listing)
+    closed, why, private = _judge(listing)
+    if private:
+        why = f"{PRIVATE}; {why}"
     findings: list[Finding] = []
     for kind, names in found.items():
         severity = kind.closed if closed else kind.open
         if not names or severity is None:
             continue
+        fix = kind.fix if closed else kind.open_fix or kind.fix
+        if private:  # nothing goes to the public registry: only a note
+            severity, fix = Severity.LOW, private_fix(kind.fix)
         what = kind.one if len(names) == 1 else kind.many
         findings.append(
             Finding(
@@ -424,7 +495,7 @@ def check_listing(listing: PackageListing) -> list[Finding]:
                 location=f"{listing.label}!{names[0]}",
                 line=None,
                 detail=f"{len(names)} {what} ({why}), e.g. {names[0]}",
-                fix=kind.fix,
+                fix=fix,
             )
         )
     if findings and not_read:

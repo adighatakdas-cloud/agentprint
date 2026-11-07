@@ -40,7 +40,7 @@ from .checks.ap005_mcp_inline_secret import _MARKER as MCP_MARKER
 from .checks.ap007_local_not_ignored import git_state
 from .checks.base import safe_snippet
 from .files import MAX_BYTES
-from .models import Finding
+from .models import Finding, Severity
 from .safewrite import atomic_write, private_dir, real
 from .sanitize import clean, quote
 from .secrets import find_secrets, redact
@@ -121,11 +121,16 @@ class Manual:
 
     `text` is worded for the AI agent that ran fix (the agent and JSON views); `person` is the
     same item for a person reading the plan (the human view), or "" when `text` reads well to
-    both. Two items with the same check id and text are one item, whatever their `person`."""
+    both. Two items with the same check id and text are one item, whatever their `person`.
+
+    `note`: nothing is wrong and nothing needs doing (AP009's low prints: an open-source
+    package's maps, or a package for a private registry); shown as a note, never counted as
+    something for the human to do."""
 
     check_id: str
     text: str
     person: str = field(default="", compare=False)
+    note: bool = field(default=False, compare=False)
 
 
 @dataclass
@@ -133,6 +138,16 @@ class Plan:
     changes: list[Change]
     manual: list[Manual]
     findings: list[Finding]
+
+    @property
+    def todo(self) -> list[Manual]:
+        """The "needs you" items: what only the human can do."""
+        return [m for m in self.manual if not m.note]
+
+    @property
+    def notes(self) -> list[Manual]:
+        """Items to know about that need nothing done."""
+        return [m for m in self.manual if m.note]
 
 
 @dataclass
@@ -747,7 +762,19 @@ def _plan_locks(findings: list[Finding], pack: bool) -> tuple[list[Change], list
     return list(changes.values()), manual
 
 
-PLANNERS.update({"AP005": _plan_env, "AP007": _plan_ignore, "AP008": _plan_locks})
+def _plan_rebuild(findings: list[Finding], pack: bool) -> tuple[list[Change], list[Manual]]:
+    """AP009: fix never edits a build config, so each print is left to the human. A low print
+    (an open-source package's maps, or a package for a private registry) is only a note."""
+    manual = _leave_to_human(findings, pack)[1]
+    return [], [
+        replace(item, note=True) if finding.severity is Severity.LOW else item
+        for finding, item in zip(findings, manual, strict=True)
+    ]
+
+
+PLANNERS.update(
+    {"AP005": _plan_env, "AP007": _plan_ignore, "AP008": _plan_locks, "AP009": _plan_rebuild}
+)
 
 
 # ---- preflight: AP006 (npm packages) and AP002 inside packaged agent files ---------------------

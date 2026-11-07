@@ -22,11 +22,10 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
 from .agents import ALL_AGENTS
+from .checks import ap009_source_exposure as ap009
 from .checks.ap004_network_hook import ASK_FIRST as HOOK_ASK_FIRST
 from .checks.ap005_mcp_inline_secret import _MARKER as MCP_MARKER
 from .checks.ap005_mcp_inline_secret import ASK_FIRST as MCP_ASK_FIRST
-from .checks.ap009_source_exposure import CUSTOM_ID as LICENCE_CUSTOM_ID
-from .checks.ap009_source_exposure import INSTRUCTIONS_FIX, MAP_FIX, SOURCE_FIX
 from .models import Finding, Severity
 from .sanitize import clean, quote, safe_step
 from .secrets import RULES
@@ -293,25 +292,55 @@ def _readable_by_others(finding: Finding, moment: Moment) -> Advice:
     return Advice([finding.fix], ask)
 
 
-_OPEN_SOURCE_ASK = (
-    "Decide whether this package is meant to be open source; if so, add a licence and these "
-    "prints go away."
+OPEN_SOURCE_ASK = (
+    "Decide whether this package is meant to be open source; if it is, give it an open-source "
+    "licence (an SPDX id such as MIT) and the medium and high prints go away."
 )
-_SPDX_ASK = "Use an SPDX licence id (such as MIT or Apache-2.0) for the licence, not a custom one."
+SPDX_ASK = (
+    "If it is open source, use an SPDX licence id (such as MIT or Apache-2.0) as the licence, "
+    "or as one OR choice next to the custom one."
+)
+GUESS_ASK = "Decide whether this package is meant to be open source."
+# When "closed source" is only a guess (no licence found, or not readable): how to state one.
+_STATE_LICENCE = {
+    ap009.NPM_MISSING: 'add a license field (for example "license": "MIT") to package.json',
+    ap009.PYPI_MISSING: (
+        'add its licence to the package metadata (for example license = "MIT" in the [project] '
+        "table of pyproject.toml)"
+    ),
+}
+_STATE_ANY = (
+    'make sure it states its licence (a "license" field in package.json, or license in the '
+    "[project] table of pyproject.toml)"
+)
 
 
 @adviser("AP009")
 def _rebuildable_source(finding: Finding, moment: Moment, person: bool = False) -> Advice:
     # The check's fix for each kind names the build settings (tsc sourceMap, esbuild
-    # --sources-content, Vite build.sourcemap, webpack devtool); the wording differs only in
-    # who does it. Nothing here edits a build config.
-    known = (MAP_FIX, SOURCE_FIX, INSTRUCTIONS_FIX)
-    step = finding.fix if finding.fix in known else MAP_FIX
-    if person:
-        step = f"In your build settings or package file list: {step[0].lower()}{step[1:]}"
-    ask = [_OPEN_SOURCE_ASK]
-    if LICENCE_CUSTOM_ID in finding.detail:
-        ask.append(_SPDX_ASK)
+    # --sources-content, Vite build.sourcemap, webpack devtool). Nothing here edits a build
+    # config. Only the check's own words in the detail are read: the example path after them
+    # comes from the package.
+    step = finding.fix if finding.fix in ap009.FIXES else ap009.MAP_FIX
+    why = ap009.reason(finding.detail)
+    if ap009.PRIVATE in why or finding.severity is Severity.LOW:
+        # An open-source package's maps, or a private registry: a note, and its fix (already
+        # worded as optional by the check) is the whole advice. Nothing to ask the human.
+        return Advice([step])
+    if any(guess in why for guess in ap009.GUESSED):
+        # "Closed" is a guess: a licence may be the whole fix, so it comes before the build.
+        how = next((h for g, h in _STATE_LICENCE.items() if g in why), _STATE_ANY)
+        first = (
+            f"If this package is open source, {how}: that is the whole fix, and the medium and "
+            "high prints go away."
+        )
+        if not person:
+            first += " If you cannot tell, ask the human before changing the build."
+        steps = [first, f"If it is not open source: {step[0].lower()}{step[1:]}"]
+        return Advice(steps, [GUESS_ASK])
+    ask = [OPEN_SOURCE_ASK]
+    if ap009.CUSTOM_ID in why:
+        ask.append(SPDX_ASK)
     return Advice([step], ask)
 
 
@@ -344,13 +373,18 @@ EXPLAIN: dict[str, str] = {
         "about to publish holds source maps with your original source, source maps that give "
         "away your file layout, original .ts/.vue/.svelte source next to the compiled files, or "
         "AI instruction files. Nobody can stop reverse engineering of code you ship; this shows "
-        "what hands an AI your source or a map of it. Severity depends on the licence: a package "
-        "with no licence, UNLICENSED, SEE LICENSE IN, a LicenseRef id or a proprietary marker "
-        "counts as closed source. Fix: turn off source maps or their sourcesContent in the build "
-        "(tsc sourceMap/inlineSources, esbuild --sources-content=false, Vite build.sourcemap, "
-        "webpack devtool), or keep the files out with .npmignore, the package.json files list or "
-        "the Python build tool's exclude list. The human decides whether the package is meant to "
-        "be open source; if so, adding a licence makes these prints go away."
+        "what hands an AI your source or a map of it. Severity depends on the licence. Closed "
+        "source (high and medium prints): no licence, UNLICENSED, SEE LICENSE IN, a proprietary "
+        "marker, or an SPDX expression whose every OR choice is a custom LicenseRef id. Open "
+        "source: only maps that hold the full original source are mentioned, as a low note; "
+        "nothing is wrong, and sourcesContent can be turned off if that was not meant. A package "
+        "whose package.json publishConfig.registry is a private registry gets low notes only. "
+        "Fix for closed source: turn off source maps or their sourcesContent in the build (tsc "
+        "sourceMap/inlineSources, esbuild --sources-content=false, Vite build.sourcemap, webpack "
+        "devtool), or keep the files out with .npmignore, the package.json files list or the "
+        "Python build tool's exclude list. When no licence was found, ask the human first: if "
+        "the package is open source, adding a licence (an SPDX id such as MIT) is the whole fix "
+        "and the medium and high prints go away."
     ),
     "AP007": (
         "AP007 Personal agent file not gitignored (low). A personal agent file is neither "

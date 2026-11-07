@@ -131,14 +131,18 @@ def to_agent_fix(
     waiting = outcome is None and bool(planned)  # a plan that was not applied
     blocking = [f for f in after if exit_code([f], fail_on)]
 
+    todo, notes = plan.todo, plan.notes  # notes need nothing done: never "for the human"
+
     if waiting:
         counts = [f"{fixes(len(planned))} ready"]
     elif outcome is not None:
         counts = [f"{len(done)} fixed"] + ([f"{len(skipped)} not fixed"] if skipped else [])
     else:
-        counts = ["nothing to fix automatically" if plan.manual else "nothing to fix"]
-    if plan.manual:
-        counts.append(f"{len(plan.manual)} for the human")
+        counts = ["nothing to fix automatically" if todo else "nothing to fix"]
+    if todo:
+        counts.append(f"{len(todo)} for the human")
+    if notes:
+        counts.append(f"{len(notes)} note" + ("" if len(notes) == 1 else "s"))
     head = ", ".join(counts)
     if waiting:
         head += "; dry run: nothing changed" if dry_run else f"; nothing changed: {RERUN}"
@@ -159,9 +163,12 @@ def to_agent_fix(
         for f in blocking:
             where = _where(Path(f.location), f.line)
             out.append(f"  - {f.severity.name.lower()} {f.check_id} {f.title}: {where}")
-    if plan.manual:
+    if todo:
         out.append("ask_human:")
-        out += [f"  - {m.check_id}: {clean(m.text, None)}" for m in plan.manual]
+        out += [f"  - {m.check_id}: {clean(m.text, None)}" for m in todo]
+    if notes:
+        out.append("notes (nothing needs doing):")
+        out += [f"  - {m.check_id}: {clean(m.text, None)}" for m in notes]
 
     if waiting:
         rerun = "with --yes" + (" and without --dry-run" if dry_run else "")
@@ -169,7 +176,7 @@ def to_agent_fix(
         out.append(f"{start} To apply these fixes, run the same agentprint fix command {rerun}.")
         return "\n".join(out)
     last = []
-    if plan.manual:
+    if todo:
         last.append("Tell the human each ask_human item: these are theirs to do.")
     if skipped:
         last.append("Run the same agentprint fix command again for what was not fixed.")
@@ -213,7 +220,8 @@ def to_json_fix(
         "planned": [_change(c) for c in plan.changes],
         "applied": [_change(c) for c in outcome.applied] if outcome else [],
         "skipped": [_change(c, why) for c, why in outcome.skipped] if outcome else [],
-        "needs_human": [{"check_id": m.check_id, "text": clean(m.text, None)} for m in plan.manual],
+        "needs_human": [{"check_id": m.check_id, "text": clean(m.text, None)} for m in plan.todo],
+        "notes": [{"check_id": m.check_id, "text": clean(m.text, None)} for m in plan.notes],
         "after": {
             "summary": summary(after),
             "findings": [finding_dict(f, moment) for f in after],
