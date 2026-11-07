@@ -146,7 +146,7 @@ def exposed_paths(
     """The files of this artifact (and its SQLite sidecars) that others can read: the exact list
     the check reports, which `agentprint fix` locks."""
     if _is_windows() or not _in_scope(artifact):
-        return []  # (the "not checked" note is printed once by run())
+        return []  # (reported through platform.scan_notes())
     cache = {} if cache is None else cache
     return [path for path in _paths(artifact) if _exposure(path, cache) is not None]
 
@@ -169,7 +169,6 @@ class ReadableByOthers:
 
     def run(self, artifacts: Iterable[Artifact]) -> list[Finding]:
         if _is_windows():
-            platform.note_once(platform.NOT_CHECKED_WINDOWS)
             return []
         cache: dict[Path, os.stat_result | None] = {}
         groups: dict[tuple[Path, bool], list[_Exposed]] = {}

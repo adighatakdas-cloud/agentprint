@@ -754,8 +754,7 @@ def _plan_locks(findings: list[Finding], pack: bool) -> tuple[list[Change], list
     finding; fix does not work them out again)."""
     changes: dict[Path, Change] = {}
     manual: list[Manual] = []
-    if platform.is_windows():  # no go-rwx on Windows: say so instead of doing nothing
-        platform.note_once(platform.NOT_CHECKED_WINDOWS)
+    if platform.is_windows():  # no go-rwx on Windows; the output says "not checked" (scan_notes)
         return [], _leave_to_human(findings, pack)[1] if findings else []
     for finding in findings:
         if not finding.paths:

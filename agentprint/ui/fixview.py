@@ -13,6 +13,7 @@ never see this layout: they get fixreport.to_agent_fix.
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from pathlib import Path
 
 from rich.console import Console
@@ -176,6 +177,7 @@ def render_outcome(
     *,
     plan: Plan | None = None,
     note: str | None = None,
+    not_checked: Sequence[str] = (),
 ) -> None:
     """After the plan (and the y/N question): what was fixed and what was not, what still
     blocks, then the verdict of the re-check (BLOCK or CLEAR, from ui.results). `outcome` None:
@@ -210,6 +212,10 @@ def render_outcome(
                 # "fix masked it", and this key is still in its file.
                 for line in hang(DETAIL_INDENT, _prose(f.detail), width):
                     console.print(line)
+    for gap in not_checked:
+        blocks.next()
+        for line in hang(Text("not checked  ", style="ap.dim"), clean(gap), width):
+            console.print(line)
     blocks.next()
     for line in verdict_lines(after_findings, fail_on, width):
         console.print(line)

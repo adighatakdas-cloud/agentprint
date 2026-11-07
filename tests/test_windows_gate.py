@@ -126,8 +126,7 @@ def test_backup_paths_on_two_drives_never_collide_or_land_on_the_original(tmp_pa
     ],
 )
 def test_ephemeral_knows_windows_paths(path):
-    # What pathlib's as_posix() gives on Windows; the real backslash form runs below.
-    assert install._ephemeral(path.replace("\\", "/"))
+    assert install._ephemeral(path)  # backslashes are handled on every OS
 
 
 @pytest.mark.windows_only
@@ -176,15 +175,6 @@ def test_roaming_appdata_off_windows_is_the_default(monkeypatch, tmp_path):
     assert platform.roaming_appdata(Path.home()) == Path.home() / "AppData" / "Roaming"
 
 
-def test_not_checked_note_prints_once(win, capsys, monkeypatch):
-    from agentprint.checks.ap008_readable_by_others import CHECK as check  # noqa: PLC0415
-
-    monkeypatch.setattr(platform, "_shown", set())
-    assert check.run([]) == []
-    assert check.run([]) == []
-    assert capsys.readouterr().err.count(platform.NOT_CHECKED_WINDOWS) == 1
-
-
 def test_every_integration_has_hook_edits_the_gate_can_see(tmp_path):
     # The gate drops edits whose description starts with "hook": keep that contract honest.
     launch = install.Launch(hook=str(tmp_path / "h"), mcp=("agentprint", "mcp"))
@@ -193,3 +183,123 @@ def test_every_integration_has_hook_edits_the_gate_can_see(tmp_path):
         hooks = [w for w in whats if w.startswith("hook")]
         assert len(hooks) <= 1, name
         assert any("MCP" in w or "instructions" in w for w in whats), name
+
+
+# ---- what was not checked travels with the result --------------------------------------------
+
+
+@pytest.fixture
+def proj(tmp_path) -> Path:
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "index.js").write_text("module.exports = 1;\n")
+    return root
+
+
+def _cli(*args):
+    from typer.testing import CliRunner
+
+    from agentprint.cli import app
+
+    return CliRunner().invoke(app, list(args))
+
+
+@pytest.mark.parametrize("fmt", ["agent", "json", "table"])
+def test_scan_says_permissions_were_not_checked_on_windows(win, proj, fmt):
+    out = _cli("scan", str(proj), "--no-home", "--format", fmt).output
+    assert "not checked" in out.lower() or "not_checked" in out
+    assert "AP008" in out and "Windows" in out
+    if fmt == "json":
+        assert json.loads(out)["not_checked"] == [platform.NOT_CHECKED_WINDOWS]
+    if fmt == "agent":
+        assert out.splitlines()[0] == "agentprint: OK"  # line 1 stays the verdict
+        assert f"not_checked: {platform.NOT_CHECKED_WINDOWS}" in out
+
+
+@pytest.mark.parametrize("fmt", ["agent", "json", "table"])
+def test_scan_on_posix_has_no_not_checked_note(monkeypatch, proj, fmt):
+    monkeypatch.setattr(platform, "is_windows", lambda: False)
+    out = _cli("scan", str(proj), "--no-home", "--format", fmt).output
+    assert "not_checked" not in out and "not checked" not in out.lower()
+
+
+@pytest.mark.parametrize("fmt", ["agent", "json", "table"])
+def test_fix_says_permissions_were_not_checked_on_windows(win, proj, fmt):
+    out = _cli("fix", str(proj), "--no-home", "--format", fmt).output
+    assert "AP008" in out and "Windows" in out
+    if fmt == "json":
+        assert json.loads(out)["not_checked"] == [platform.NOT_CHECKED_WINDOWS]
+
+
+def test_fix_on_posix_has_no_not_checked_note(monkeypatch, proj):
+    monkeypatch.setattr(platform, "is_windows", lambda: False)
+    out = _cli("fix", str(proj), "--no-home", "--format", "json").output
+    assert "not_checked" not in json.loads(out)
+
+
+def test_mcp_scan_tool_says_permissions_were_not_checked_on_windows(win, proj):
+    from tests.test_mcp import call
+
+    text = call("scan_secrets", path=str(proj))
+    assert text.splitlines()[0] == "agentprint: OK"
+    assert f"not_checked: {platform.NOT_CHECKED_WINDOWS}" in text
+
+
+def test_mcp_scan_tool_on_posix_has_no_note(monkeypatch, proj):
+    from tests.test_mcp import call
+
+    monkeypatch.setattr(platform, "is_windows", lambda: False)
+    assert "not_checked" not in call("scan_secrets", path=str(proj))
+
+
+# ---- no hook talk on Windows -----------------------------------------------------------------
+
+
+def test_windows_install_says_nothing_about_hooks_but_the_one_line(monkeypatch, tmp_path):
+    monkeypatch.setattr(platform, "is_windows", lambda: True)
+    uvx = ["uvx", f"agentprint=={install.__version__}"]
+    monkeypatch.setattr(install, "resolve_agentprint", lambda: list(uvx))
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".hermes").mkdir()
+    out = _run(home, strict=True)
+    assert platform.NO_HOOKS_WINDOWS in out
+    assert "Codex" in out and "Hermes" in out
+    assert "hooks use" not in out and "/hooks" not in out and "approve" not in out
+    assert "Strict mode" not in out and "hermes hooks" not in out
+    talk = [
+        ln for ln in out.splitlines() if "hook" in ln.lower() and not ln.lstrip().startswith("+")
+    ]
+    assert talk == [platform.NO_HOOKS_WINDOWS]  # (the note's own text is a diff line, "+...")
+
+
+def test_posix_install_keeps_its_hook_notes(monkeypatch, tmp_path):
+    monkeypatch.setattr(platform, "is_windows", lambda: False)
+    monkeypatch.setattr(install, "resolve_agentprint", lambda: ["uvx", "agentprint==0"])
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    out = _run(home, dry_run=True)
+    assert "hooks use uvx" in out and "/hooks" in out
+
+
+# ---- long-path and device prefixes; POSIX path matching unchanged -----------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "parts"),
+    [
+        ("\\\\?\\C:\\x\\y", ("C", "x", "y")),
+        ("\\\\?\\UNC\\server\\share\\x", ("UNC", "server", "share", "x")),
+        ("\\\\.\\COM1", ("DEVICE", "COM1")),
+    ],
+)
+def test_extended_prefixes_never_become_folder_names(raw, parts):
+    got = platform.drive_safe_parts(PureWindowsPath(raw))
+    assert got == parts
+    assert not any(c in part for part in got for c in "?.:\\")
+
+
+def test_ephemeral_leaves_posix_paths_as_they_were():
+    assert not install._ephemeral("/usr/local//bin/./agentprint")
+    assert install._ephemeral("/home/me/.cache/uv/archive-v0/x/bin/agentprint")
+    assert install._ephemeral("/tmp//x/agentprint")

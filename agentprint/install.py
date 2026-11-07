@@ -92,7 +92,7 @@ _THROWAWAY = (
 
 def _ephemeral(path: str) -> bool:
     """True for uvx / pipx run environments and temp dirs, which may vanish at any time."""
-    low = Path(path).as_posix().lower()
+    low = str(path).replace("\\", "/").lower()  # Windows paths too, POSIX ones unchanged
     return any(part in low for part in _THROWAWAY)
 
 
@@ -410,11 +410,14 @@ def install(
     """Arm the agents found; returns how many files changed (or would, in a dry run).
 
     apply_hint ends a dry run's count line; the menu, which asks y/N itself, passes None."""
+    windows = platform.is_windows()  # no hooks there: only the MCP server and the note go in
     agentprint = resolve_agentprint()
     found = select(names, home, env)
     # Strict hooks must run an agentprint that honours --strict: an older permanent install is
     # passed over for uvx running this version, so the promise printed below holds.
-    stale = (agentprint[0], ignores_strict(agentprint)) if strict and found else None
+    stale = (
+        (agentprint[0], ignores_strict(agentprint)) if strict and found and not windows else None
+    )
     if stale and stale[1]:
         agentprint = pinned_uvx()
     launch = Launch(
@@ -426,7 +429,9 @@ def install(
         return 0
     echo("Agents found: " + ", ".join(i.label for i in found))
     echo("Agents will start agentprint with: " + " ".join(agentprint))
-    if stale and stale[1]:
+    if windows:
+        pass  # no hooks here: nothing below about how hooks start agentprint applies
+    elif stale and stale[1]:
         echo(
             f"  (the agentprint at {stale[0]} {stale[1]}, so hooks use uvx with agentprint "
             f"{__version__} instead. Upgrade it with `uv tool upgrade agentprint`, then install "
@@ -437,7 +442,7 @@ def install(
             "  (no permanent install found, so hooks use uvx. For faster offline hooks run "
             "`uv tool install agentprint`, then install again.)"
         )
-    if platform.is_windows():
+    if windows:
         echo(platform.NO_HOOKS_WINDOWS)
     elif strict:
         echo("Strict mode: a publish or push agentprint cannot check will be blocked.")
@@ -447,7 +452,7 @@ def install(
     agent_files = [(path, group) for _, _, edits in agents for path, group in _group(edits).items()]
     # The shared launcher goes in when an agent file will use it, or when a hook installed
     # earlier already uses it and the launcher is missing or out of date.
-    core_edits = [] if platform.is_windows() else _core_edits(home, agentprint)
+    core_edits = [] if windows else _core_edits(home, agentprint)
     needed = any(_would_change(path, group) for path, group in agent_files) or (
         any(_would_change(edit.path, [edit]) for edit in core_edits)
         and any(_uses_launcher(path) for path, _ in agent_files)
@@ -470,7 +475,7 @@ def install(
     else:
         echo(f"Done: {changed} file(s) changed. Backups: {_shown(home, home / STATE_DIR)}")
         echo("Undo everything with: agentprint uninstall")
-    for integration in found:
+    for integration in () if windows else found:  # the notes are about trusting hooks
         for note in integration.notes:
             echo(f"Note for {integration.label}: {note}")
     return changed
