@@ -66,6 +66,19 @@ def _no_gemini_cli_home(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_sweep_notes():
+    """A sweep's "not checked" notes are module state, reset by each scan; a test that runs a
+    check on its own must not see notes another test left behind."""
+    from agentprint import platform, unread
+
+    unread.forget()
+    platform._RUN_NOTES.clear()
+    yield
+    unread.forget()
+    platform._RUN_NOTES.clear()
+
+
+@pytest.fixture(autouse=True)
 def _no_ambient_agent_env(monkeypatch):
     """Tests often run inside an AI agent; they must not depend on the shell's markers."""
     for name in (*AGENT_MARKERS, "AGENTPRINT_THEME", "COLORFGBG"):
