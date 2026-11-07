@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from . import unread
 from .agents import ALL_AGENTS
 from .checks import SCAN_CHECKS
 from .models import Artifact, Finding
@@ -35,6 +36,7 @@ def drop_claimed(findings: list[Finding]) -> list[Finding]:
 
 
 def scan(home: Path | None, project: Path | None) -> list[Finding]:
+    unread.forget()  # platform.scan_notes() then names what this scan could not read
     artifacts = discover(home, project)
     findings = drop_claimed([finding for check in SCAN_CHECKS for finding in check.run(artifacts)])
     return sorted(findings, key=lambda f: (-f.severity, f.check_id, f.location, f.line or 0))

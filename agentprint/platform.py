@@ -13,6 +13,8 @@ import sys
 from pathlib import Path, PurePath
 from typing import Any
 
+from . import unread
+
 NOT_CHECKED_WINDOWS = "File permissions (AP008) are not checked on Windows yet."
 NO_HOOKS_WINDOWS = "Hooks are not installed on Windows yet; the MCP server and the note are."
 
@@ -41,8 +43,10 @@ def use_utf8_streams() -> None:
 
 
 def scan_notes() -> tuple[str, ...]:
-    """What a sweep cannot check on this machine; empty on POSIX. Shown in every output format."""
-    return (NOT_CHECKED_WINDOWS,) if is_windows() else ()
+    """What the last sweep could not check: on Windows, file permissions; anywhere, each file it
+    could not read (a locked database: unread.py). Empty when everything was checked. Shown in
+    every output format."""
+    return ((NOT_CHECKED_WINDOWS,) if is_windows() else ()) + unread.notes()
 
 
 def drive_safe_parts(path: PurePath) -> tuple[str, ...]:

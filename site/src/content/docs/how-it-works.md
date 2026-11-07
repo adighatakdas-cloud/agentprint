@@ -31,7 +31,7 @@ All of it produces one thing, a list of findings. They are already masked. A per
 - **Scanned names are untrusted.** File names inside a package are chosen by whoever built it. Before any of that text is shown, agentprint removes terminal escape sequences, control characters and invisible Unicode, and caps the length. In output for an AI agent, scanned text is a quoted JSON string under a note that says it is data, not instructions.
 - **Commands are never shortened.** A fix step that holds a shell command is shown whole and unchanged, or replaced by a plain-words instruction. Cutting a quoted command could turn part of a hostile file name into something that runs.
 - **Installs are reversible.** Every edit marks what it added, so `uninstall` removes exactly that and keeps your own changes. Files are backed up first and written atomically. A file agentprint cannot edit safely is left alone, and the lines to add by hand are printed instead.
-- **Reading is bounded.** SQLite databases are opened read-only. Archives are read in memory with caps on entries and size. YAML is read with a safe loader.
+- **Reading is bounded.** SQLite databases are opened read-only and create no file next to them; one that can't be read is named under "not checked". Archives are read in memory with caps on entries and size. YAML is read with a safe loader.
 
 ## How it is tested
 

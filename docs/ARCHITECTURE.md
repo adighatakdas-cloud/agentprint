@@ -144,7 +144,7 @@ your own changes. Files are backed up first (the backups are readable only by yo
 written atomically. A file agentprint can't edit safely (JSON with comments, YAML with anchors) is left alone, and the
 lines to add by hand are printed instead.
 
-**Reading is bounded.** SQLite chat databases are opened read-only. Archives are read in
+**Reading is bounded.** SQLite chat databases are opened read-only (immutable when no sidecar file exists, so nothing is created); a file that can't be read is named in the scan's not_checked notes (`unread.py`). Archives are read in
 memory, never unpacked to disk, with caps on entries, unpacked size and content read. YAML is
 read with a safe loader that gives up after 100 aliases, so a crafted file can't blow up.
 
