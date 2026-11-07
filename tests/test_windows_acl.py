@@ -9,6 +9,7 @@ under tmp_path only.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -138,7 +139,19 @@ def test_files_an_elevated_run_made_count_as_mine_only_when_elevated(
     assert len(AP008.run([_home("x", Kind.HISTORY, f, home)])) == int(elevated)
 
 
-WINDOWS_HOSTILE = ['d"q', "a$b", "tick`id`", "pc%PATH%t", "bang!x", "semi;x", "amp&x", "nl\nx"]
+_NTFS_ILLEGAL = pytest.mark.skipif(
+    os.name == "nt", reason="NTFS refuses this character in a file name, so it can't occur there"
+)
+WINDOWS_HOSTILE = [
+    pytest.param('d"q', marks=_NTFS_ILLEGAL),
+    "a$b",
+    "tick`id`",
+    "pc%PATH%t",
+    "bang!x",
+    "semi;x",
+    "amp&x",
+    pytest.param("nl\nx", marks=_NTFS_ILLEGAL),
+]
 
 
 @pytest.mark.parametrize("name", WINDOWS_HOSTILE)
