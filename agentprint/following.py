@@ -316,7 +316,7 @@ def _step(step: recipes.Step, name: str, cwd: Path, depth: int) -> list[c.Risky]
     text, other = recipes.shell_text(step.text)
     found = [risky for body in other for risky in _flag(_named(body), name, cwd, _CODE)]
     reading = _reading(cwd)
-    if reading.peeking or reading.bytes >= MAX_BYTES:
+    if reading.peeking or reading.bytes + len(text) > MAX_BYTES:  # charged before it is read
         return found + _flag(_hits(text, cwd), name, cwd, _DEEP)
     if depth >= c.MAX_DEPTH or reading.steps >= MAX_STEPS:
         return found + _peek(text, cwd, min(depth, c.MAX_DEPTH))
@@ -340,7 +340,7 @@ def _peek(text: str, cwd: Path, depth: int) -> list[c.Risky]:
 def too_deep(text: str, cwd: Path) -> list[c.Risky]:
     """`commands.detect` past `MAX_DEPTH` (a `bash -c` or package script at the limit)."""
     reading = _reading(cwd)
-    if reading.peeking or reading.bytes >= MAX_BYTES:
+    if reading.peeking or reading.bytes + len(text) > MAX_BYTES:
         # Labelled with what it runs, never with the text: a line can hold a key (NPM_TOKEN=...).
         return [
             c.Risky(action, tool, cwd, unsure=_NESTED, label=_what(action, tool))
@@ -536,9 +536,10 @@ def _make(args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
         found.append(c.Risky(c.Action.publish, "make", cwd, unsure=why, label=label))
     reading = _reading(cwd)
     for raw in plan.raw:
-        if reading.peeking or reading.bytes >= MAX_BYTES:  # scan only, with a small expansion
+        left = MAX_BYTES - reading.bytes
+        if reading.peeking or left <= 0:  # scan only, with a small expansion
             found += _flag(_hits(plan.text(raw, limit=4096), cwd), name, cwd, _DEEP)
-        elif text := plan.text(raw):
+        elif text := plan.text(raw, total=left):  # a .ONESHELL step stops growing at the budget
             found += _step(recipes.Step(text), name, cwd, depth)
     return found
 

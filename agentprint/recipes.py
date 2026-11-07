@@ -262,14 +262,21 @@ class MakePlan:
     variables: dict[str, str]
     memo: dict[str, str] = field(default_factory=dict)
 
-    def text(self, step: str, limit: int = 0) -> str:
+    def text(self, step: str, limit: int = 0, total: int = 0) -> str:
         """One step with variables filled in and `@`/`-`/`+` taken off each line. A value that
-        grows past `limit` characters (64 KB when 0) stays unknown."""
-        lines = [
-            _RECIPE_PREFIX.sub("", expand_make(line, self.variables, self.memo, limit=limit))
-            for line in step.split("\n")
-        ]
-        return "\n".join(line for line in lines if line.strip())
+        grows past `limit` characters (64 KB when 0) stays unknown. Once the step is longer than
+        `total` characters (when given), the rest of its lines (a `.ONESHELL` recipe) are kept
+        as written, unexpanded, so one step can't grow without bound."""
+        lines: list[str] = []
+        size = 0
+        for line in step.split("\n"):
+            if not total or size <= total:
+                line = expand_make(line, self.variables, self.memo, limit=limit)
+            line = _RECIPE_PREFIX.sub("", line)
+            if line.strip():
+                lines.append(line)
+                size += len(line) + 1
+        return "\n".join(lines)
 
 
 def make_plan(mf: Makefile, goals: list[str], overrides: dict[str, str]) -> MakePlan:
