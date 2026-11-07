@@ -43,7 +43,7 @@ _SECRET_FIX = (
 _RECORDS = (
     re.compile(r"(^|/)\.cline/data/(sessions|logs|tasks)/"),
     re.compile(r"(^|/)\.cline/data/(db/sessions\.db|state/taskHistory\.json)$"),
-    re.compile(r"(^|/)saoudrizwan\.claude-dev/(tasks|state)/"),
+    re.compile(r"(^|/)saoudrizwan\.claude-dev/(tasks/|state/taskHistory\.json$)"),
 )
 
 DOC = AgentDoc(
@@ -95,7 +95,8 @@ class Cline:
             data / "logs",
             data / "tasks",  # legacy CLI tasks
             data / "state" / "taskHistory.json",
-            *(ext / folder for ext in extensions for folder in ("tasks", "state")),
+            *(ext / "tasks" for ext in extensions),
+            *(ext / "state" / "taskHistory.json" for ext in extensions),
         )
         yield from artifacts(
             NAME, Kind.CREDENTIALS, data / "secrets.json", data / "settings" / "providers.json"

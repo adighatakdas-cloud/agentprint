@@ -32,7 +32,6 @@ from rich.text import Text
 
 import agentprint
 from agentprint import fix as fixer
-from agentprint.agents import ALL_AGENTS
 from agentprint.agents.base import AgentDoc
 from agentprint.checks import SCAN_CHECKS
 from agentprint.checks import ap006_package_leak as ap006
@@ -40,7 +39,7 @@ from agentprint.checks import ap009_source_exposure as ap009
 from agentprint.fixreport import fixes, rows
 from agentprint.integrations import ALL_INTEGRATIONS
 from agentprint.report import FailOn
-from agentprint.roster import SHORT_NAMES, AgentState
+from agentprint.roster import SHORT_NAMES, AgentState, swept_agents
 from agentprint.scanner import scan
 from agentprint.ui import fixview
 from agentprint.ui.results import render
@@ -269,12 +268,9 @@ def replace_block(
 
 
 def scanned_agents() -> list[AgentDoc]:
-    """The AgentDoc of every agent a sweep reads in full that install can't arm yet, in
-    registry order (the order `agentprint status` lists them)."""
-    docs = [
-        getattr(agent, "doc", None) for agent in ALL_AGENTS if agent.name not in ALL_INTEGRATIONS
-    ]
-    return [doc for doc in docs if isinstance(doc, AgentDoc)]
+    """The AgentDoc of every agent a sweep reads in full that install can't arm yet, in the
+    order `agentprint status` lists them."""
+    return [doc for _, doc in swept_agents()]
 
 
 def agents_table(docs: list[AgentDoc]) -> str:

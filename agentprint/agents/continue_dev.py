@@ -4,7 +4,8 @@ Not installed on the verification Mac. Paths from the docs and the official sour
 2026-11-05: everything is in ~/.continue (%USERPROFILE%\\.continue on Windows): sessions/*.json
 (and the sessions.json index), logs/prompt.log (full prompts) and core.log, dev_data/ (JSONL
 events and devdata.sqlite), config.yaml (mcpServers: a list of {name, command, args, env};
-models may carry a raw apiKey), the deprecated config.json, mcpServers/*.yaml|json, .env
+models may carry a raw apiKey), the deprecated config.json (servers under
+experimental.modelContextProtocolServers[].transport), mcpServers/*.yaml|json, .env
 (secrets read through ${{ secrets.NAME }}) and auth.json (cn login). In a project:
 .continue/mcpServers/, .continue/.env and the personal .continue/settings.local.json.
 Docs: https://docs.continue.dev/faqs, https://docs.continue.dev/customize/deep-dives/mcp,
@@ -20,15 +21,31 @@ from __future__ import annotations
 import re
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 from ..models import AgentConfig, Artifact, Kind, PackageRule, Severity
-from .base import AgentDoc, artifacts, from_home, matches_any, read_mcp_file
+from ..structured import load
+from .base import AgentDoc, artifacts, dig, from_home, matches_any, mcp_servers, read_mcp_servers
 
 NAME = "continue"
 _SECRET_FIX = (
     'replace the value with "${{ secrets.<VAR> }}" (Continue reads secrets from .env files), '
     "put <VAR>=... in ~/.continue/.env, then run chmod 600 ~/.continue/.env."
 )
+
+
+def _legacy_servers(data: Any) -> dict[str, Any]:
+    """Servers in the deprecated config.json: experimental.modelContextProtocolServers, a list
+    of {transport: {type, command, args, env}} with no name (named here by position)."""
+    entries = dig(data, "experimental", "modelContextProtocolServers")
+    found: dict[str, Any] = {}
+    for i, entry in enumerate(entries if isinstance(entries, list) else [], start=1):
+        transport = entry.get("transport") if isinstance(entry, dict) else None
+        if isinstance(transport, dict):
+            name = entry.get("name")
+            found[name if isinstance(name, str) else f"#{i}"] = transport
+    return found
+
 
 # History that is only a record (fix masks keys there): sessions, logs, usage events.
 _RECORDS = (re.compile(r"(^|/)\.continue/(sessions|logs|dev_data)/"),)
@@ -97,4 +114,8 @@ class Continue:
         in_folder = path.parent.name == "mcpServers"
         if not (in_folder or path.name in ("config.yaml", "config.json")):
             return AgentConfig()
-        return read_mcp_file(path, _SECRET_FIX, "mcpServers")
+        data = load(path)
+        servers = read_mcp_servers(data, _SECRET_FIX, "mcpServers")
+        if path.name == "config.json" and not in_folder:
+            servers += mcp_servers(_legacy_servers(data), _SECRET_FIX)
+        return AgentConfig(mcp_servers=servers)

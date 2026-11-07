@@ -152,3 +152,16 @@ def test_qwen_memory_key_is_left_to_the_human(tmp_path):
     assert p.changes == []
     assert any("reads that file back" in m.text for m in p.manual)
     assert fakes.GITHUB in memory.read_text()
+
+
+def test_continue_legacy_config_json_servers(tmp_path):
+    import json
+
+    path = tmp_path / ".continue" / "config.json"
+    transport = {"type": "stdio", "command": "uvx", "args": ["gh-mcp"], "env": {"GH": fakes.GITHUB}}
+    legacy = {"experimental": {"modelContextProtocolServers": [{"transport": transport}, "x", {}]}}
+    homes.write(path, json.dumps(legacy))
+    [server] = Continue().read_config(Artifact("continue", Kind.SETTINGS, path)).mcp_servers
+    assert server.name == "#1" and dict(server.fields)["env.GH"] == f"GH={fakes.GITHUB}"
+    [finding] = [f for f in scan(tmp_path, None) if f.check_id == "AP005"]
+    assert finding.agent == "continue" and "'#1'" in finding.detail

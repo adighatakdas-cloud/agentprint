@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .agents import ALL_AGENTS
+from .agents.base import Agent, AgentDoc
 from .install import State
 from .integrations import ALL_INTEGRATIONS
 from .report import _plural
@@ -53,14 +54,22 @@ def roster(home: Path, env: Mapping[str, str]) -> list[AgentState]:
     ]
 
 
-def scanned(home: Path) -> list[AgentState]:
-    """Agents read in full by a sweep that install can't arm yet, in registry order. Never
-    armed; found when discover_home yields a file (it stops at the first one)."""
-    states = []
+def swept_agents() -> list[tuple[Agent, AgentDoc]]:
+    """Agents a sweep reads in full that install can't arm yet, with their AgentDoc: modules
+    with a doc and no integration, in registry order (`status` and the docs' agents table)."""
+    found = []
     for agent in ALL_AGENTS:
         doc = getattr(agent, "doc", None)
-        if doc is None or agent.name in ALL_INTEGRATIONS:
-            continue
+        if isinstance(doc, AgentDoc) and agent.name not in ALL_INTEGRATIONS:
+            found.append((agent, doc))
+    return found
+
+
+def scanned(home: Path) -> list[AgentState]:
+    """swept_agents() as roster entries. Never armed; found when discover_home yields a file
+    (it stops at the first one)."""
+    states = []
+    for agent, doc in swept_agents():
         try:
             found = next(iter(agent.discover_home(home)), None) is not None
         except Exception:  # an agent module bug must never break `status`

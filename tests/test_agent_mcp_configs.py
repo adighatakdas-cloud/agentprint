@@ -102,7 +102,9 @@ def test_vscode_user_and_profile_mcp_json(tmp_path):
         ("copilot", "User"),
         ("copilot", "-5f3a1b"),
     }
-    assert all("${input:" in f.fix for f in found)
+    # The advice names what fix writes (${env:NAME}) first, and ${input:} as the alternative.
+    for f in found:
+        assert f.fix.index("${env:") < f.fix.index("${input:")
 
 
 # --- Kiro -------------------------------------------------------------------------------------
@@ -196,6 +198,9 @@ def test_amp_settings_and_unverified_secrets_file(tmp_path):
     assert [s.name for s in servers] == ["linear", "api"]
     ap005 = [f for f in scan(home, None) if f.check_id == "AP005"]
     assert {f.agent for f in ap005} == {"amp"} and len(ap005) == 2
+    # The secrets file (third-party report) is a key store: only who can read it is checked.
+    store = [f for f in scan(home, None) if f.location.endswith("secrets.json")]
+    assert {f.check_id for f in store} <= {"AP008"}
     # A nested "amp": {"mcpServers": ...} is not Amp's format: nothing is read from it.
     nested = homes.write(tmp_path / "n" / "settings.json", json.dumps({"amp": {"mcpServers": {}}}))
     assert _config(Amp(), nested) == AgentConfig()

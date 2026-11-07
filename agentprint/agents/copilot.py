@@ -63,9 +63,10 @@ _CLI_SECRET_FIX = (
     "so <VAR> cannot be read from your shell."
 )
 _VSCODE_SECRET_FIX = (
-    'replace the value with "${input:<VAR>}" and add {"id": "<VAR>", "type": "promptString", '
-    '"password": true} to the file\'s "inputs" list: VS Code then asks for the key once and keeps '
-    "it in its secret storage."
+    'replace the value with "${env:<VAR>}" and set <VAR> in the environment VS Code starts from '
+    '(agentprint fix makes this change for an env entry). Or use "${input:<VAR>}" and add '
+    '{"id": "<VAR>", "type": "promptString", "password": true} to the file\'s "inputs" list: VS '
+    "Code then asks for the key once and keeps it in its secret storage."
 )
 # VS Code-format mcp.json (top key "servers") names an environment variable as ${env:NAME}.
 # https://code.visualstudio.com/docs/copilot/reference/mcp-configuration (read 2026-11-07)

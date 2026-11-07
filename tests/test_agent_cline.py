@@ -111,3 +111,15 @@ def test_cline_package_rule_unchanged():
     assert matches("x/globalStorage/saoudrizwan.claude-dev/tasks/t/a.json") == ["cline"]
     assert matches("package/.clinerules/style.md") == []
     assert matches("package/.cline/rules/style.md") == []
+
+
+def test_cline_extension_state_is_only_the_task_list(tmp_path):
+    home = tmp_path / "home"
+    state = home / EXT / "state"
+    homes.write(state / "taskHistory.json", "[]")
+    homes.write(state / "other.json", "{}")  # not documented: not read
+    assert _rel(Cline().discover_home(home), home) == {
+        (Kind.HISTORY, f"{EXT.as_posix()}/state/taskHistory.json")
+    }
+    assert Cline().pure_history(state / "taskHistory.json")
+    assert not Cline().pure_history(state / "other.json")
