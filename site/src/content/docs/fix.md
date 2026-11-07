@@ -26,6 +26,8 @@ Each line of the plan starts with what it will do: `mask`, `env`, `ignore` or `l
 
 `mask` and `env` can't be undone: the key is gone, and agentprint never kept a copy. `lock` is `chmod go-rwx` on exactly the files the check found.
 
+On Windows, `lock` is one `icacls` call per file: `icacls "<file>" /inheritance:r /grant:r *<your SID>:F *S-1-5-18:F *S-1-5-32-544:F`, plus `/remove:g` for any other account the file names itself. Other users lose their access, and you, SYSTEM and Administrators get full control. agentprint runs only Windows' own `icacls.exe` from `System32`, never one found in the current folder or on `PATH`. It then reads the access list again. If anyone else can still read the file, or you could no longer read and write it, it puts the old list back and tells you. A file owned by another account is left as it is, and so is a file on a drive that keeps no permissions (FAT, exFAT): `fix` says it cannot make it private on that drive. A file owned by Administrators (made by a program run as administrator) is locked only when agentprint runs as administrator too.
+
 A masked key keeps its first four characters, and every character after them becomes `*`. The line keeps its length, so nothing else in the file moves. In agentprint's output a key is always shown masked, as its first four characters and its length: `sk-a…(len 105)`.
 
 An `ignore` line names just the file, from the project root: `/.claude/settings.local.json`. It never names a whole folder such as `.claude/` or `.github/`, because those also hold files you commit and ship on purpose, like workflows and shared agent settings. The one exception is a folder that holds nothing but agent data, such as `.codex/sessions/`: then the line names that folder.
@@ -54,7 +56,7 @@ If your npm package has no `.npmignore` yet, `fix` starts one as a copy of `.git
 - **No copy of a key.** A file that held a key is never backed up. The plan, the journal and the output show masked keys only.
 - **A running agent's writes are kept.** The AI agent that runs `fix` may be writing to its own transcript at that very moment. To mask a key, agentprint reads its bytes again, checks they are still the key, and writes over exactly those bytes. The file is never replaced or cut short, so anything the agent adds meanwhile stays.
 - **It refuses if a file changed.** If a file changed or was deleted between the plan and the fix, that one change is skipped and reported ("the file changed while fixing; run agentprint fix again"). The others go ahead. Its own edits don't count: when one file gets both `mask` and `env`, the `env` change checks the file as the masks left it.
-- **A journal of every change.** Each run that changes something writes `~/.agentprint/fix/<time>.json`, readable only by you: the file, the kind of change, the line, the masked key and the old file mode. A run that changed nothing leaves no journal. Before it edits an ignore file, `fix` copies it to `~/.agentprint/fix/backups/`. Ignore files hold no keys.
+- **A journal of every change.** Each run that changes something writes `~/.agentprint/fix/<time>.json`, readable only by you: the file, the kind of change, the line, the masked key and the old file mode (on Windows, the old access list, as SDDL text). A run that changed nothing leaves no journal. Before it edits an ignore file, `fix` copies it to `~/.agentprint/fix/backups/`. Ignore files hold no keys.
 
 ### Undo
 
@@ -62,7 +64,7 @@ If your npm package has no `.npmignore` yet, `fix` starts one as a copy of `.git
 agentprint fix --undo
 ```
 
-This puts back the `ignore` and `lock` changes of the last run: ignore files come back from their copies, an ignore file that `fix` created is removed, and files get their old modes. It can't undo `mask` or `env`: agentprint never kept the key, so there is nothing to put back, and it tells you which changes those were. It leaves alone an ignore file you edited after the fix, or a mode you changed again, and says so. With no journal, it says there is nothing to undo.
+This puts back the `ignore` and `lock` changes of the last run: ignore files come back from their copies, an ignore file that `fix` created is removed, and files get their old modes (on Windows, their old access lists). It can't undo `mask` or `env`: agentprint never kept the key, so there is nothing to put back, and it tells you which changes those were. It leaves alone an ignore file you edited after the fix, or a mode or access list you changed again, and says so. With no journal, it says there is nothing to undo.
 
 ### One limit
 

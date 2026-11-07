@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 SEED = 20261107
-ZERO_WIDTH = "​"  # zero-width space
+ZERO_WIDTH = "\u200b"  # zero-width space
 
 ALNUM = string.ascii_letters + string.digits
 UPPER_DIGITS = string.ascii_uppercase + string.digits
@@ -419,6 +419,52 @@ NEGATIVES: dict[str, tuple[Callable[[random.Random], str], str]] = {
 }
 
 
+# --- added in 0.1.1 with the newer hidden-key shapes (appended, see build) ---------------------
+
+
+def _side_by_side(key: str, rng: random.Random) -> str:
+    cut = rng.randrange(6, len(key) - 6)
+    return '"' + key[:cut] + '""' + key[cut:] + '"'  # "head""tail": two literals, no space
+
+
+# category -> (obfuscator, shape name), like OBFUSCATIONS
+NEWER_OBFUSCATIONS: dict[str, tuple[Callable[[str, random.Random], str], str]] = {
+    "obf-quotes-side-by-side": (_side_by_side, "claude-history"),
+}
+
+_QUOTED_WORDS = ("hi", "ok", "done", "5", "10", "O", "Brien", "it", "s", "name", "quote")
+
+
+def _empty_quotes(rng: random.Random) -> str:
+    """Code, CSV and SQL with empty strings and "" escapes, some inside words: no key."""
+    a, b, c, d = (rng.choice(_QUOTED_WORDS) for _ in range(4))
+    return (
+        f'x = ""; f("", ""); s = "{a}""{b}"; csv: "{c} said ""{d}""",'
+        f'"{rng.randrange(100)}""{rng.randrange(100)}" and \'{a}\'\'{b}\' then {c}""{d}'
+    )
+
+
+_PHRASES = (
+    "hello world, how are",
+    "AKIA is not a key at",
+    "xoxo, hugs and kisses",
+    "glpat- is a prefix",
+)
+
+
+def _short_base64(rng: random.Random) -> str:
+    """Base64 of 24 to 39 characters that is not one whole key, some starting like one."""
+    digits = "".join(rng.choice(string.digits) for _ in range(rng.randrange(1, 8)))
+    text = rng.choice(_PHRASES) + digits
+    return "echo " + base64.b64encode(text.encode()).decode() + " | base64 -d"
+
+
+NEWER_NEGATIVES: dict[str, tuple[Callable[[random.Random], str], str]] = {
+    "neg-empty-quotes": (_empty_quotes, "claude-history"),
+    "neg-short-base64": (_short_base64, "claude-history"),
+}
+
+
 def _negative_file(category: str, value: str, shape: str) -> tuple[str, str]:
     """The shape's file with a look-alike where a key would sit, under a harmless name."""
     if shape == "claude-history":
@@ -497,6 +543,14 @@ def build(root: Path, seed: int = SEED) -> list[Case]:
     for category, family in NEW_FAMILIES.items():
         for n, kind in enumerate(family):
             add_positive(category, n, history, kind, make_new_key(kind, rng))
+    for category, (obfuscate, shape_name) in NEWER_OBFUSCATIONS.items():
+        for n, kind in enumerate(KINDS):
+            payload = obfuscate(make_key(kind, rng), rng)
+            add_positive(category, n, SHAPES[shape_name], kind, payload)
+    for category, (make, shape_name) in NEWER_NEGATIVES.items():
+        for n in range(7):
+            path, text = _negative_file(category, make(rng), shape_name)
+            write(Case(f"{category}-{n}", category, False, path), text)
 
     manifest = [
         {

@@ -162,6 +162,66 @@ def test_prefilter_never_changes_what_is_found():
         assert len(with_filter) == 1
 
 
+# Letters Python's case-insensitive regex matches as s, i, i and k: the long s, the dotless i,
+# the dotted capital I and the Kelvin sign. lower() keeps the first three as they are.
+ODD_CASE = (("s", "\u017f"), ("i", "\u0131"), ("i", "\u0130"), ("k", "\u212a"))
+
+
+def _odd_spellings(name: str) -> list[str]:
+    lower = name.lower()
+    return [lower.replace(a, b) for a, b in ODD_CASE if a in lower]
+
+
+def _named_lines() -> list[tuple[str, str]]:
+    """(name as spelled, line): each name-gated rule's name in odd case, then a fake key."""
+    lines = [
+        (spelling, f"{spelling}={key}")
+        for name, key in fakes.CONTEXT.values()
+        for spelling in _odd_spellings(name)
+    ]
+    for name in ("api_key", "secret", "token", "password"):
+        lines += [(s, f"{s} = {fakes.GENERIC_VALUE}") for s in _odd_spellings(name)]
+    return lines
+
+
+def test_prefilter_folds_case_the_way_the_rules_match_it():
+    from agentprint import secrets
+
+    off = tuple(secrets.replace(r, needs=(), starts=()) for r in secrets.RULES)
+    lines = _named_lines()
+    assert any("\u017f" in s for s, _ in lines) and any("\u0131" in s for s, _ in lines)
+    for spelling, line in lines:
+        with_filter = [m.rule_id for m in find_secrets(line)]
+        without = [m.rule_id for m, _, _ in secrets._matches(line, off)]
+        assert with_filter == without, ascii(spelling)
+        assert with_filter, ascii(spelling)
+
+
+def test_a_split_key_behind_an_odd_case_name_is_found():
+    from agentprint.secrets import find_secrets_deep
+
+    value = fakes.GENERIC_VALUE
+    _, key = fakes.CONTEXT["twilio"]
+    for text, rule_id, found in (
+        (f'\u017fecret = "{value[:12]}" + "{value[12:]}"', "generic", value),
+        (f'tw\u0131l\u0131o_key = "{key[:10]}" + "{key[10:]}"', "twilio", key),
+    ):
+        assert [(m.rule_id, m.value, m.obfuscation) for m in find_secrets_deep(text)] == [
+            (rule_id, found, "split")
+        ], rule_id
+
+
+def test_every_needs_word_survives_folding():
+    from agentprint import secrets
+
+    words = {w for r in RULES for w in r.needs}
+    assert words  # the name-gated rules carry their words
+    for word in words:
+        assert secrets._fold(word) == word
+        for spelling in (word.upper(), word.title(), *_odd_spellings(word)):
+            assert word in secrets._fold(spelling), ascii(spelling)
+
+
 @pytest.mark.parametrize("spell", [str.upper, str.lower, str.title, str.swapcase])
 def test_context_name_matches_in_any_case(spell):
     for rule_id, (name, key) in fakes.CONTEXT.items():

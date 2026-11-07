@@ -143,7 +143,8 @@ instructions: a file name can't pose as an instruction to the model.
 **Commands are never shortened.** A fix step that holds a shell command is shown whole and
 unchanged, or replaced by a plain-words instruction (`sanitize.safe_step`). Cutting or editing a
 shell-quoted command could turn part of a hostile file name into something that runs. AP008
-puts a path into its `chmod` command only when every character is in a small safe set.
+puts a path into its `chmod` command (on Windows, its `icacls` command, from `winacl.py`) only
+when every character is in a small safe set.
 
 **Installs are reversible.** Every edit marks what it added (a marker comment, an `agentprint`
 key, or the launcher's name in a hook command), so `uninstall` removes exactly that and keeps

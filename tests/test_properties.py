@@ -56,6 +56,11 @@ TRICKS = {
     "base64": lambda key, a, b: _b64(f"here it is: {key}\n"),
     "json split": lambda key, a, b: json.dumps({"content": f'k = "{a}" + "{b}";'}),
     "json invisible": lambda key, a, b: json.dumps({"display": f"{a}\u200b{b}"}),
+    "empty quotes": lambda key, a, b: f'export K={a}""{b} && go',
+    "empty single quotes": lambda key, a, b: f"export K={a}''{b} && go",
+    "json side by side": lambda key, a, b: json.dumps({"content": f'k = "{a}""{b}";'}),
+    "json empty quotes": lambda key, a, b: json.dumps({"display": f'export K={a}""{b}'}),
+    "base64 of the key alone": lambda key, a, b: _b64(key),  # under 40 characters for AWS
 }
 HIDDEN = st.tuples(st.sampled_from(KEYS), st.integers(1, 10), st.sampled_from(sorted(TRICKS))).map(
     lambda t: (t[0], TRICKS[t[2]](t[0], t[0][: t[1]], t[0][t[1] :]))
