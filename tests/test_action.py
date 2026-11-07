@@ -106,6 +106,18 @@ def test_attest_runs_only_on_a_push_to_the_default_branch():
     assert "::notice" in skipped["run"] and "${{" not in skipped["run"]
 
 
+def test_report_only_runs_never_sign_or_publish():
+    [attest] = _steps_named("Attest the badge")
+    [publish] = _steps_named("Publish badge")
+    assert "inputs.fail-on != 'none'" in attest["if"]
+    assert "inputs.fail-on != 'none'" in publish["if"]
+    [warn] = _steps_named("Skip signing and publishing a report-only")
+    assert "inputs.fail-on == 'none'" in warn["if"]
+    assert "inputs.attest-badge == 'true'" in warn["if"]
+    assert "inputs.publish-badge == 'true'" in warn["if"]
+    assert "::warning" in warn["run"] and "${{" not in warn["run"]
+
+
 def test_publish_runs_only_on_a_push_to_the_default_branch():
     [publish] = _steps_named("Publish badge")
     cond = publish["if"]

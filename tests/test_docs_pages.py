@@ -132,10 +132,20 @@ def test_badge_page_covers_the_verifiable_badge():
     assert "https://img.shields.io/endpoint?url=" in text
     assert "agentprint-badge/badge.json" in text
     assert "/attestations" in text
-    assert (
-        "gh attestation verify badge.json -R OWNER/REPO "
-        "--predicate-type https://adighatakdas-cloud.github.io/agentprint/badge/v1"
-    ) in text
+    assert "gh attestation verify badge.json -R OWNER/REPO" in text
+    for flag in (
+        "--predicate-type https://adighatakdas-cloud.github.io/agentprint/badge/v1",
+        "--source-ref refs/heads/main",
+        "--source-digest <commit>",
+        "--signer-workflow OWNER/REPO/.github/workflows/agentprint.yml",
+        "git ls-remote https://github.com/OWNER/REPO refs/heads/main",
+    ):
+        assert flag in text, flag
+    assert "does not prove the workflow ran agentprint unchanged" in text
+    assert "byte-identical" in text
+    assert "persist-credentials: false" in text
+    assert "branches: [main]" in text and "pull_request:" not in text.split("```yaml")[1]
+    assert "fail-on: none" in text and "never publish" in text
     for needle in (
         "badge-dir",
         "attest-badge: true",
