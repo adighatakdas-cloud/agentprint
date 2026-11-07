@@ -102,14 +102,15 @@ def describe(row: Row) -> str:
         return f"env.{first.var} of MCP server {server} set to {quote(reference)}"
     if row.kind == "ignore":
         return f"line {quote(first.line_text)} added"
+    if row.kind == "lock" and first.old_mode is None:  # Windows: an access list, not a mode
+        if len(row.changes) > 1:
+            return f"{len(row.changes)} files: other users removed from their access lists (icacls)"
+        return first.shown
     if row.kind == "lock" and len(row.changes) > 1:
-        how = "chmod go-rwx" if first.old_mode is not None else "icacls"  # (None: Windows)
-        return f"{len(row.changes)} files made private to the owner ({how})"
+        return f"{len(row.changes)} files made private to the owner (chmod go-rwx)"
     if row.kind == "lock" and first.old_mode is not None:
         new = first.old_mode & ~0o077
         return f"mode {first.old_mode:04o} -> {new:04o} (private to the owner)"
-    if row.kind == "lock":
-        return f"{first.shown} (private to the owner)"
     return quote(first.shown)
 
 

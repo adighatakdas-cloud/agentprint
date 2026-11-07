@@ -750,12 +750,19 @@ def _plan_ignore(findings: list[Finding], pack: bool) -> tuple[list[Change], lis
 # ---- file modes: AP008 -----------------------------------------------------------------------
 
 
-# What a Windows lock leaves: the icacls recipe of winacl.lock_args.
-WINDOWS_LOCK = "access list -> owner, SYSTEM and Administrators only"
+# What a Windows lock does (the icacls call of winacl.lock_args): no more than that is claimed,
+# since entries that let nobody else read the file are kept.
+WINDOWS_LOCK = "access list: other users removed"
 OTHER_OWNER = "the file belongs to another user; left as is"
+ALREADY_PRIVATE = "the file is already private"
 NO_ACLS = (
     "agentprint cannot make the file private on this drive (it keeps no permissions); left as is"
 )
+ADMIN_OWNED = (
+    "the file is owned by Administrators (made by a program run as administrator); run "
+    "agentprint as administrator to make it private; left as is"
+)
+DENIED = "Windows denied the change (access denied); left as is"
 
 
 def _plan_locks(findings: list[Finding], pack: bool) -> tuple[list[Change], list[Manual]]:
@@ -1265,12 +1272,12 @@ def _apply_lock(changes: list[Change], journal: Journal) -> list[Result]:
                 results.append(Result(change, CHANGED))
                 continue
             if hasattr(os, "getuid") and st.st_uid != os.getuid():
-                results.append(Result(change, "the file belongs to another user; left as is"))
+                results.append(Result(change, OTHER_OWNER))
                 continue
             old = stat.S_IMODE(st.st_mode)
             new = old & ~0o077
             if new == old:
-                results.append(Result(change, "the file is already private"))
+                results.append(Result(change, ALREADY_PRIVATE))
                 continue
             os.chmod(change.path, new)
             results.append(Result(change, None, {"mode": old, "now": new}))
@@ -1283,11 +1290,13 @@ def _apply_lock(changes: list[Change], journal: Journal) -> list[Result]:
 
 def _icacls_failed(code: int) -> str:
     if code == winacl.ERROR_ACCESS_DENIED:
-        return OTHER_OWNER
+        return DENIED
     if code == winacl.ERROR_NOT_SUPPORTED:
         return NO_ACLS
     if code < 0:
-        return "agentprint could not run icacls; left as is"
+        return (
+            "agentprint could not run Windows' icacls.exe, so the file was not locked; left as is"
+        )
     return f"icacls could not change the file's permissions (exit code {code}); left as is"
 
 
@@ -1304,6 +1313,8 @@ def _lock_windows(change: Change) -> Result:
             return Result(change, NO_ACLS)
         before = winacl.read(where)
         me, elevated = winacl.current_user()
+        if before.owner == winacl.ADMINISTRATORS and not elevated:
+            return Result(change, ADMIN_OWNED)
         if not winacl.owned_by_me(before.owner, me, elevated):
             return Result(change, OTHER_OWNER)
         access = winacl.classify(before.aces, {me, before.owner})
@@ -1313,9 +1324,12 @@ def _lock_windows(change: Change) -> Result:
                 f"agentprint could not check who can read the file ({access.unknown}); left as is",
             )
         if not access.readers:
-            return Result(change, "the file is already private")
+            return Result(change, ALREADY_PRIVATE)
         code = winacl.lock(where, me, access.explicit)
-        after = winacl.read(where)
+        try:
+            after = winacl.read(where)
+        except (OSError, ValueError):
+            return _roll_back(change, where, before.sddl, "its access list could not be read again")
         if code != 0 and after.sddl == before.sddl:
             return Result(change, _icacls_failed(code))
         mine = {me, winacl.ADMINISTRATORS} if elevated else {me}
@@ -1330,21 +1344,26 @@ def _lock_windows(change: Change) -> Result:
             why = f"icacls stopped with exit code {code}"
         else:
             why = "you would have lost access" if not keeps else "others could still read it"
-        try:
-            winacl.restore(where, before.sddl)
-        except (OSError, ValueError) as exc:
-            return Result(
-                change,
-                f"the lock did not work ({why}) and the old permissions could not be put back "
-                f"({_why(exc)}); check them with icacls",
-            )
-        return Result(change, f"the lock did not work ({why}); the old permissions are back")
+        return _roll_back(change, where, before.sddl, why)
     except FileNotFoundError:
         return Result(change, GONE)
     except (OSError, ValueError) as exc:
         return Result(
             change, f"agentprint could not change the file's permissions ({_why(exc)}); left as is"
         )
+
+
+def _roll_back(change: Change, where: str, sddl: str, why: str) -> Result:
+    """Put the access list back as it was before a lock that did not work."""
+    try:
+        winacl.restore(where, sddl)
+    except (OSError, ValueError) as exc:
+        return Result(
+            change,
+            f"the lock did not work ({why}) and the old permissions could not be put back "
+            f"({_why(exc)}); check them with icacls",
+        )
+    return Result(change, f"the lock did not work ({why}); the old permissions are back")
 
 
 def _why(exc: Exception) -> str:

@@ -308,7 +308,7 @@ def test_fix_locks_with_icacls_journals_the_list_and_undo_puts_it_back(win, expo
     [change] = p.changes
     assert (change.kind, change.shown, change.old_mode) == ("lock", fix.WINDOWS_LOCK, None)
     [row] = fixreport.rows(p.changes, p.findings)
-    assert fixreport.describe(row) == f"{fix.WINDOWS_LOCK} (private to the owner)"
+    assert fixreport.describe(row) == fix.WINDOWS_LOCK == "access list: other users removed"
 
     outcome = fix.apply(p, home)
 
@@ -364,6 +364,34 @@ def test_lock_leaves_a_file_now_owned_by_someone_else(win, exposed_home):
     assert win.calls == []
 
 
+def test_lock_of_a_file_owned_by_administrators_says_to_run_as_administrator(win, exposed_home):
+    home, history = exposed_home
+    reason = _skip_reason(home, lambda: win.set(history, EXPOSED, owner=winacl.ADMINISTRATORS))
+    assert reason == fix.ADMIN_OWNED and "run agentprint as administrator" in reason
+    assert win.calls == []
+
+
+def test_a_list_that_cannot_be_read_after_icacls_is_rolled_back(win, exposed_home, monkeypatch):
+    home, history = exposed_home
+    before = win.get(history)
+    reads = {"n": 0}
+    real_read = win.read
+
+    def flaky(path):
+        reads["n"] += 1
+        if reads["n"] > 1 and win.calls:  # the read right after icacls
+            raise OSError(32, "in use")
+        return real_read(path)
+
+    monkeypatch.setattr(winacl, "read", flaky)
+    reason = _skip_reason(home, lambda: None)
+    assert reason == (
+        "the lock did not work (its access list could not be read again); the old permissions "
+        "are back"
+    )
+    assert win.restored and win.get(history).sddl == before.sddl
+
+
 def test_lock_on_a_drive_without_permissions(win, exposed_home):
     home, _ = exposed_home
     reason = _skip_reason(home, lambda: setattr(win, "no_acls", True))
@@ -381,9 +409,9 @@ def test_lock_of_a_file_already_private_or_not_checkable(win, exposed_home):
 @pytest.mark.parametrize(
     ("code", "reason"),
     [
-        (5, "the file belongs to another user; left as is"),
+        (5, "Windows denied the change (access denied); left as is"),
         (50, "cannot make the file private on this drive"),
-        (-1, "agentprint could not run icacls; left as is"),
+        (-1, "agentprint could not run Windows' icacls.exe, so the file was not locked"),
         (1, "icacls could not change the file's permissions (exit code 1); left as is"),
     ],
 )
@@ -461,7 +489,9 @@ def test_the_person_sees_the_access_list_not_a_mode(win, tmp_path):
 
     change = fix.Change("lock", tmp_path / "f", None, "AP008", fix.WINDOWS_LOCK)
     row = fixreport.Row("lock", "AP008", tmp_path / "f", None, (change,))
-    assert fixview._what(row).plain == "access list → owner, SYSTEM and Administrators only"
+    assert fixview._what(row).plain == "access list → other users removed"
+    two = fixreport.Row("lock", "AP008", tmp_path, None, (change, change))
+    assert fixview._what(two).plain == "2 files: access list → other users removed"
 
 
 def test_a_folder_of_locks_is_one_icacls_row(win, tmp_path):
@@ -469,7 +499,9 @@ def test_a_folder_of_locks_is_one_icacls_row(win, tmp_path):
         fix.Change("lock", tmp_path / f"f{i}", None, "AP008", fix.WINDOWS_LOCK) for i in range(2)
     ]
     row = fixreport.Row("lock", "AP008", tmp_path, None, tuple(changes))
-    assert fixreport.describe(row) == "2 files made private to the owner (icacls)"
+    assert fixreport.describe(row) == (
+        "2 files: other users removed from their access lists (icacls)"
+    )
 
 
 def test_cli_fix_on_windows_plans_applies_and_reports_the_lock(win, exposed_home, tmp_path):
@@ -481,7 +513,7 @@ def test_cli_fix_on_windows_plans_applies_and_reports_the_lock(win, exposed_home
     assert [(c["kind"], c["shown"]) for c in planned["planned"]] == [("lock", fix.WINDOWS_LOCK)]
     assert "not_checked" not in planned
     result = CliRunner().invoke(app, [*args[:-1], "agent", "--yes"])
-    assert "lock AP008" in result.output and "private to the owner" in result.output
+    assert "lock AP008" in result.output and fix.WINDOWS_LOCK in result.output
     assert "chmod" not in result.output
     assert winacl.classify(win.get(history).aces, {ME}) == winacl.Access()
 
@@ -494,7 +526,9 @@ def test_real_windows_ap008_lock_and_undo(tmp_path):
     home = tmp_path / "home"
     history = _file(home / ".claude" / "history.jsonl", '{"display": "ls"}\n')
     where = str(history.resolve())
-    grant = [winacl.icacls(), where, "/grant", "*S-1-1-0:R"]
+    exe = winacl.icacls()
+    assert exe, "icacls.exe is not in %SYSTEMROOT%\\System32"
+    grant = [exe, where, "/grant", "*S-1-1-0:R"]
     subprocess.run(grant, check=True, capture_output=True, **platform.subprocess_kwargs())
     saved = winacl.read(where).sddl
 
