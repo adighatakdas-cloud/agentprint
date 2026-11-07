@@ -165,15 +165,17 @@ def benchmark_page(results: dict) -> str:
         else "All three tools were included in this run."
     )
     rows = [
-        "| Tool | Version | Recall | Precision | Keys found | False positives |",
-        "|---|---|---|---|---|---|",
+        "| Tool | Version | Recall | Precision | Keys found | False positives"
+        " | Recall, any hit in file |",
+        "|---|---|---|---|---|---|---|",
     ]
     for t in tools:
         r = results["tools"][t]
         o = r["overall"]
         rows.append(
             f"| {t} | {r['version']} | {_pct(o['recall'])} | {_pct(o['precision'])} "
-            f"| {o['tp']} of {o['tp'] + o['fn']} | {o['fp']} of {o['fp'] + o['tn']} |"
+            f"| {o['tp']} of {o['tp'] + o['fn']} | {o['fp']} of {o['fp'] + o['tn']} "
+            f"| {_pct(o['any_hit']['recall'])} |"
         )
     overall = "\n".join(rows)
     cats = {}

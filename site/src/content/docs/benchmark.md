@@ -7,57 +7,61 @@ description: How many fake keys agentprint, gitleaks and trufflehog find in AI-a
 
 A public, repeatable test of how well agentprint finds keys in the files AI coding agents write, next to two well-known scanners. The corpus is synthetic and the labels are ours, so read it as a regression check you can rerun, not as a ranking.
 
-**Run of 2026-11-07.** Corpus: 147 cases, 84 with one fake key and 63 with look-alikes only. Tools: agentprint 0.1.0. Not included in this run: gitleaks, trufflehog (not installed where it ran). Their columns are left out rather than guessed.
+**Run of 2026-11-07.** Corpus: 147 cases, 84 with one fake key and 63 with look-alikes only. Tools: agentprint 0.1.0, gitleaks 8.30.1, trufflehog 3.99.8. All three tools were included in this run.
 
 ## Overall
 
-| Tool | Version | Recall | Precision | Keys found | False positives |
-|---|---|---|---|---|---|
-| agentprint | 0.1.0 | 68% | 89% | 57 of 84 | 7 of 63 |
+| Tool | Version | Recall | Precision | Keys found | False positives | Recall, any hit in file |
+|---|---|---|---|---|---|---|
+| agentprint | 0.1.0 | 71% | 90% | 60 of 84 | 7 of 63 | 71% |
+| gitleaks | 8.30.1 | 58% | 78% | 49 of 84 | 14 of 63 | 58% |
+| trufflehog | 3.99.8 | 57% | 100% | 48 of 84 | 0 of 63 | 57% |
 
-*Recall* is the share of keys a tool found: found / (found + missed). *Precision* is found / (found + false positives). A case counts as found when the tool reports anything in that case's file, so a tool that flags only a fragment of an obfuscated key still gets credit. The obfuscation rows can therefore overstate how well a key is caught.
+**How a case is scored, the same for every tool.** Each fake key sits on known lines of its file (the manifest records the span when the corpus is built). A key counts as *found* only if a finding's reported line falls inside that span. *Recall* is found / (found + missed). A negative case (look-alikes, no key) counts as a *false positive* if the tool reports anything in its file. *Precision* is found / (found + false positives); it is file-level, not per-finding. The last column is the looser reading, any finding anywhere in a key's file, shown so the two can be compared.
 
 ## Keys the tool should find
 
-Plain rows are keys in the form an agent writes them (a history line, an allowlist entry, an MCP `env` block). The other rows hide the same kind of key in one trick. Each row holds seven cases, one per key format: Anthropic, OpenAI, GitHub, AWS, Stripe, Slack, Google.
+Plain rows are keys in the form an agent writes them (a history line, an allowlist entry, an MCP `env` block). The other rows hide the same kind of key in one trick. Each row holds seven cases, one per key format: Anthropic, OpenAI, GitHub, AWS, Stripe, Slack, Google. In the plain AWS cases a fake secret access key (40 characters, FAKE first) sits next to the key ID, because some scanners only report an AWS key as a pair; the key's span covers both. Hidden AWS cases have no pair, so a visible secret never rescues a hidden one.
 
-| Key written as | Cases | agentprint |
-|---|---|---|
-| plain, in claude history | 7 | 7 of 7 |
-| plain, in claude mcp | 7 | 7 of 7 |
-| plain, in claude settings | 7 | 7 of 7 |
-| plain, in codex toml | 7 | 7 of 7 |
-| plain, in cursor mcp | 7 | 7 of 7 |
-| plain, in hermes yaml | 7 | 7 of 7 |
-| hidden: base64 | 7 | 0 of 7 |
-| hidden: line continuation | 7 | 4 of 7 |
-| hidden: split concat | 7 | 1 of 7 |
-| hidden: split string | 7 | 4 of 7 |
-| hidden: yaml folded | 7 | 4 of 7 |
-| hidden: zero width | 7 | 2 of 7 |
+| Key written as | Cases | agentprint | gitleaks | trufflehog |
+|---|---|---|---|---|
+| plain, in claude history | 7 | 7 of 7 | 6 of 7 | 6 of 7 |
+| plain, in claude mcp | 7 | 7 of 7 | 6 of 7 | 6 of 7 |
+| plain, in claude settings | 7 | 7 of 7 | 6 of 7 | 6 of 7 |
+| plain, in codex toml | 7 | 7 of 7 | 6 of 7 | 6 of 7 |
+| plain, in cursor mcp | 7 | 7 of 7 | 7 of 7 | 6 of 7 |
+| plain, in hermes yaml | 7 | 7 of 7 | 6 of 7 | 6 of 7 |
+| hidden: base64 | 7 | 0 of 7 | 7 of 7 | 5 of 7 |
+| hidden: line continuation | 7 | 4 of 7 | 0 of 7 | 1 of 7 |
+| hidden: split concat | 7 | 2 of 7 | 1 of 7 | 1 of 7 |
+| hidden: split string | 7 | 4 of 7 | 1 of 7 | 2 of 7 |
+| hidden: yaml folded | 7 | 4 of 7 | 2 of 7 | 2 of 7 |
+| hidden: zero width | 7 | 4 of 7 | 1 of 7 | 1 of 7 |
 
 ## Look-alikes the tool should leave alone
 
 Each of these is a file in an agent shape holding text that looks random but is not a key. Lower is better.
 
-| Look-alike | Cases | agentprint |
-|---|---|---|
-| base64 image | 7 | 0 flagged |
-| git sha | 7 | 0 flagged |
-| jwt in token field | 7 | 7 flagged |
-| jwt shaped | 7 | 0 flagged |
-| lorem ipsum | 7 | 0 flagged |
-| minified js | 7 | 0 flagged |
-| placeholder | 7 | 0 flagged |
-| sha256 | 7 | 0 flagged |
-| uuid | 7 | 0 flagged |
+| Look-alike | Cases | agentprint | gitleaks | trufflehog |
+|---|---|---|---|---|
+| base64 image | 7 | 0 flagged | 0 flagged | 0 flagged |
+| git sha | 7 | 0 flagged | 0 flagged | 0 flagged |
+| jwt in token field | 7 | 7 flagged | 7 flagged | 0 flagged |
+| jwt shaped | 7 | 0 flagged | 7 flagged | 0 flagged |
+| lorem ipsum | 7 | 0 flagged | 0 flagged | 0 flagged |
+| minified js | 7 | 0 flagged | 0 flagged | 0 flagged |
+| placeholder | 7 | 0 flagged | 0 flagged | 0 flagged |
+| sha256 | 7 | 0 flagged | 0 flagged | 0 flagged |
+| uuid | 7 | 0 flagged | 0 flagged | 0 flagged |
 
 ## Method
 
 - The corpus is built at run time by `bench/build_corpus.py` with a fixed seed (20261107), so every run sees the same files. Nothing key-shaped is committed to the repository.
 - Keys use the real format of each provider (prefix, alphabet, length). Bodies are random characters that start with the marker FAKE, so they are not credentials. They are never sent anywhere or tested.
 - Every case is one folder with one agent file at the path that agent uses: Claude Code `history.jsonl`, `settings.local.json` and `.mcp.json`, Codex `config.toml`, Cursor `mcp.json`, Hermes `config.yaml`.
-- agentprint runs through its public command line, once per case: `agentprint scan --home <case> --format json <case>`, so the numbers describe whatever version is installed. gitleaks runs with `gitleaks dir` and trufflehog with `trufflehog filesystem --json --no-verification`, both with default rules, offline, over the whole corpus.
+- agentprint runs through its public command line, once per case, and the numbers describe whatever version is installed: `agentprint scan --home <case> --format json --fail-on none --plain <case>`. Only its secret checks are counted (AP001 history, AP002 settings, AP005 MCP config); permission, hook and file-mode findings are not key detection and are ignored.
+- gitleaks runs once over the whole corpus: `gitleaks dir <corpus> --no-banner --redact --exit-code 0 --report-format json --report-path <file>`. trufflehog runs once too: `trufflehog filesystem <corpus> --json --no-verification --no-update`. Both use default rules, offline. Their versions are pinned, with checksums, in the Benchmark workflow (`.github/workflows/benchmark.yml`); the version used is in the table above.
+- Before results are written, each tool must have found at least one plain key and reported inside a hidden agent folder (`.claude`, `.codex`, ...); otherwise the run fails instead of publishing a broken number.
 - Only counts, case ids and versions are stored. No key value, matched text or finding detail is printed or saved.
 
 ## Limits

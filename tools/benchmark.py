@@ -31,42 +31,34 @@ TOOLS = ("agentprint", "gitleaks", "trufflehog")
 TIMEOUT = 300
 
 
+Hits = dict[str, list[tuple[int, int]]]  # case id -> line ranges the tool reported there
+
+# agentprint checks that report a secret. Permission, hook and file-mode checks (AP003, AP004,
+# AP007, AP008) are not key detection and are never counted.
+AGENTPRINT_SECRET_CHECKS = ("AP001", "AP002", "AP005")
+
+
 def rate(num: int, den: int) -> float | None:
     """num/den rounded to 4 places; None when there is nothing to divide by."""
     return round(num / den, 4) if den else None
 
 
-def score(cases: Sequence[Case], flagged: set[str]) -> dict:
-    """Per-category and overall numbers for one tool, given the ids of cases it flagged.
+def _overlaps(span: tuple[int, int], reported: Sequence[tuple[int, int]]) -> bool:
+    return any(start <= span[1] and end >= span[0] for start, end in reported)
 
-    Positive case: flagged = found (TP), else missed (FN). Negative case: flagged = false
-    positive (FP), else clean (TN). recall = TP/(TP+FN). precision = TP/(TP+FP).
-    """
-    cats: dict[str, dict] = {}
-    by_cat: dict[str, list[Case]] = defaultdict(list)
-    for c in cases:
-        by_cat[c.category].append(c)
-    for name, group in by_cat.items():
-        hit = sum(c.id in flagged for c in group)
-        if group[0].positive:
-            cats[name] = {
-                "kind": "positive",
-                "cases": len(group),
-                "found": hit,
-                "recall": rate(hit, len(group)),
-            }
-        else:
-            cats[name] = {
-                "kind": "negative",
-                "cases": len(group),
-                "false_positives": hit,
-                "false_positive_rate": rate(hit, len(group)),
-            }
+
+def key_matched(case: Case, hits: Hits) -> bool:
+    """One rule for every tool: a finding counts for a positive case only if its reported
+    line(s) overlap the line span of the injected key. A finding with no line never counts."""
+    return case.lines is not None and _overlaps(case.lines, hits.get(case.id, []))
+
+
+def _summary(cases: Sequence[Case], flagged: set[str]) -> dict:
     tp = sum(c.id in flagged for c in cases if c.positive)
     fn = sum(c.positive for c in cases) - tp
     fp = sum(c.id in flagged for c in cases if not c.positive)
     tn = sum(not c.positive for c in cases) - fp
-    overall = {
+    return {
         "tp": tp,
         "fn": fn,
         "fp": fp,
@@ -74,6 +66,48 @@ def score(cases: Sequence[Case], flagged: set[str]) -> dict:
         "recall": rate(tp, tp + fn),
         "precision": rate(tp, tp + fp),
         "false_positive_rate": rate(fp, fp + tn),
+    }
+
+
+def score(cases: Sequence[Case], hits: Hits) -> dict:
+    """Per-category and overall numbers for one tool, given what it reported where.
+
+    Headline (key-matched): a positive case is found when a finding overlaps the injected
+    key's lines, missed otherwise; a negative case is a false positive when the tool reports
+    anything in its file. recall = TP/(TP+FN); precision = TP/(TP+FP), file-level.
+    `any_hit` is the looser reading: any finding anywhere in a positive case's file counts.
+    """
+    matched = {c.id for c in cases if c.positive and key_matched(c, hits)}
+    anywhere = {c.id for c in cases if c.positive and hits.get(c.id)}
+    negatives = {c.id for c in cases if not c.positive and hits.get(c.id)}
+    cats: dict[str, dict] = {}
+    by_cat: dict[str, list[Case]] = defaultdict(list)
+    for c in cases:
+        by_cat[c.category].append(c)
+    for name, group in by_cat.items():
+        if group[0].positive:
+            found = sum(c.id in matched for c in group)
+            loose = sum(c.id in anywhere for c in group)
+            cats[name] = {
+                "kind": "positive",
+                "cases": len(group),
+                "found": found,
+                "recall": rate(found, len(group)),
+                "any_hit": loose,
+            }
+        else:
+            fp = sum(c.id in negatives for c in group)
+            cats[name] = {
+                "kind": "negative",
+                "cases": len(group),
+                "false_positives": fp,
+                "false_positive_rate": rate(fp, len(group)),
+            }
+    overall = _summary(cases, matched | negatives)
+    overall["any_hit"] = {
+        k: v
+        for k, v in _summary(cases, anywhere | negatives).items()
+        if k in ("tp", "recall", "precision")
     }
     return {"overall": overall, "categories": dict(sorted(cats.items()))}
 
@@ -88,6 +122,54 @@ def case_of(path: str, cases_dir: Path) -> str | None:
         except ValueError:
             return None
     return rel.parts[0] if rel.parts else None
+
+
+def _add(hits: Hits, case: str | None, start: object, end: object) -> None:
+    """Record one finding; a missing or non-numeric line is stored as (0, 0), which never
+    overlaps a real span but still marks the file as flagged."""
+    if case is None:
+        return
+    if isinstance(start, int) and isinstance(end, int):
+        hits.setdefault(case, []).append((start, end))
+    else:
+        hits.setdefault(case, []).append((0, 0))
+
+
+def parse_agentprint(report: dict, case: str) -> Hits:
+    """From `agentprint scan --format json`: secret checks only, using each finding's line."""
+    hits: Hits = {}
+    for f in report["findings"]:
+        if f.get("check_id") in AGENTPRINT_SECRET_CHECKS:
+            _add(hits, case, f.get("line"), f.get("line"))
+    return hits
+
+
+def parse_gitleaks(report: list | None, cases_dir: Path) -> Hits:
+    """From a gitleaks JSON report: File, StartLine, EndLine. The matched text is never read."""
+    hits: Hits = {}
+    for item in report or []:
+        _add(
+            hits,
+            case_of(item.get("File", ""), cases_dir),
+            item.get("StartLine"),
+            item.get("EndLine"),
+        )
+    return hits
+
+
+def parse_trufflehog(lines: Sequence[str], cases_dir: Path) -> Hits:
+    """From `trufflehog --json` output: SourceMetadata.Data.Filesystem.{file,line}. Raw is
+    never read."""
+    hits: Hits = {}
+    for line in lines:
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        fs = (((item.get("SourceMetadata") or {}).get("Data") or {}).get("Filesystem")) or {}
+        if fs.get("file"):
+            _add(hits, case_of(fs["file"], cases_dir), fs.get("line"), fs.get("line"))
+    return hits
 
 
 def _run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -108,10 +190,10 @@ def version_agentprint() -> str:
     return out.stdout.strip().removeprefix("agentprint").strip() or "unknown"
 
 
-def flagged_agentprint(cases: Sequence[Case], cases_dir: Path) -> set[str]:
+def hits_agentprint(cases: Sequence[Case], cases_dir: Path) -> Hits:
     cmd = _agentprint_cmd()
 
-    def one(case: Case) -> str | None:
+    def one(case: Case) -> Hits:
         folder = cases_dir / case.id
         # --home so history files (which live in a home folder) are read too.
         out = _run(
@@ -119,35 +201,32 @@ def flagged_agentprint(cases: Sequence[Case], cases_dir: Path) -> set[str]:
              "--plain", str(folder)]
         )  # fmt: skip
         try:
-            findings = json.loads(out.stdout)["findings"]
+            return parse_agentprint(json.loads(out.stdout), case.id)
         except (ValueError, KeyError):
             raise RuntimeError(f"agentprint gave no JSON for case {case.id}") from None
-        return case.id if findings else None
 
+    merged: Hits = {}
     with ThreadPoolExecutor(max_workers=4) as pool:
-        return {c for c in pool.map(one, cases) if c}
+        for part in pool.map(one, cases):
+            merged |= part
+    return merged
 
 
 def version_gitleaks() -> str:
     return _run(["gitleaks", "version"]).stdout.strip().removeprefix("v")
 
 
-def flagged_gitleaks(cases: Sequence[Case], cases_dir: Path) -> set[str]:
+def hits_gitleaks(cases: Sequence[Case], cases_dir: Path) -> Hits:
     with tempfile.TemporaryDirectory() as tmp:
         report = Path(tmp) / "report.json"
-        base = ["--redact", "--report-format", "json", "--report-path", str(report)]
-        out = _run(["gitleaks", "dir", str(cases_dir), "--no-banner", "--exit-code", "0", *base])
-        if out.returncode != 0:  # gitleaks before 8.19 has no `dir`
-            out = _run(
-                ["gitleaks", "detect", "--no-git", "--source", str(cases_dir), "--no-banner",
-                 "--exit-code", "0", *base]
-            )  # fmt: skip
+        out = _run(
+            ["gitleaks", "dir", str(cases_dir), "--no-banner", "--redact", "--exit-code", "0",
+             "--report-format", "json", "--report-path", str(report)]
+        )  # fmt: skip
         if out.returncode != 0:
-            raise RuntimeError(f"gitleaks exited {out.returncode}")
+            raise RuntimeError(f"gitleaks dir exited {out.returncode}; need gitleaks 8.19 or newer")
         data = json.loads(report.read_text(encoding="utf-8")) if report.exists() else []
-        # Read only the file path of each finding; the matched text is never touched.
-        files = [item.get("File", "") for item in data or []]
-    return {c for c in (case_of(f, cases_dir) for f in files) if c}
+    return parse_gitleaks(data, cases_dir)
 
 
 def version_trufflehog() -> str:
@@ -155,32 +234,31 @@ def version_trufflehog() -> str:
     return (out.stdout + out.stderr).strip().removeprefix("trufflehog").strip()
 
 
-def flagged_trufflehog(cases: Sequence[Case], cases_dir: Path) -> set[str]:
+def hits_trufflehog(cases: Sequence[Case], cases_dir: Path) -> Hits:
     out = _run(
         ["trufflehog", "filesystem", str(cases_dir), "--json", "--no-verification", "--no-update"]
     )
     if out.returncode != 0:
         raise RuntimeError(f"trufflehog exited {out.returncode}")
-    found: set[str] = set()
-    for line in out.stdout.splitlines():
-        try:
-            item = json.loads(line)
-        except ValueError:
-            continue
-        file = (((item.get("SourceMetadata") or {}).get("Data") or {}).get("Filesystem") or {}).get(
-            "file", ""
-        )
-        case = case_of(file, cases_dir) if file else None
-        if case:
-            found.add(case)
-    return found
+    return parse_trufflehog(out.stdout.splitlines(), cases_dir)
 
 
-RUNNERS: dict[str, tuple[Callable[[], str], Callable[[Sequence[Case], Path], set[str]]]] = {
-    "agentprint": (version_agentprint, flagged_agentprint),
-    "gitleaks": (version_gitleaks, flagged_gitleaks),
-    "trufflehog": (version_trufflehog, flagged_trufflehog),
+RUNNERS: dict[str, tuple[Callable[[], str], Callable[[Sequence[Case], Path], Hits]]] = {
+    "agentprint": (version_agentprint, hits_agentprint),
+    "gitleaks": (version_gitleaks, hits_gitleaks),
+    "trufflehog": (version_trufflehog, hits_trufflehog),
 }
+
+
+def sanity_check(tool: str, cases: Sequence[Case], hits: Hits) -> None:
+    """Fail loudly if a tool plainly did not run as intended: it must find at least one plain
+    key, and have reported something inside a hidden folder (.claude, .codex, ...)."""
+    plain = [c for c in cases if c.category.startswith("plain-") and key_matched(c, hits)]
+    if not plain:
+        raise RuntimeError(f"{tool} found none of the plain keys; the run is not valid")
+    hidden = [c for c in plain if c.file.startswith(".")]
+    if not hidden:
+        raise RuntimeError(f"{tool} found nothing inside hidden agent folders; run is not valid")
 
 
 def installed(tool: str) -> bool:
@@ -200,7 +278,9 @@ def run_all(tools: Sequence[str] = TOOLS) -> dict:
                 continue
             version, flag = RUNNERS[tool]
             entry = {"version": version()}
-            entry |= score(cases, flag(cases, root / "cases"))
+            hits = flag(cases, root / "cases")
+            sanity_check(tool, cases, hits)
+            entry |= score(cases, hits)
             results[tool] = entry
     positives = sum(c.positive for c in cases)
     return {
@@ -224,7 +304,8 @@ def summary(results: dict) -> str:
         o = r["overall"]
         lines.append(
             f"{name} {r['version']}: recall {o['recall']} precision {o['precision']} "
-            f"(found {o['tp']}/{o['tp'] + o['fn']}, false positives {o['fp']}/{o['fp'] + o['tn']})"
+            f"(key found {o['tp']}/{o['tp'] + o['fn']}, any hit in file recall "
+            f"{o['any_hit']['recall']}, false positives {o['fp']}/{o['fp'] + o['tn']})"
         )
     if results["not_run"]:
         lines.append("not installed, skipped: " + ", ".join(results["not_run"]))

@@ -69,6 +69,11 @@ def make_key(kind: str, rng: random.Random) -> str:
     raise ValueError(kind)
 
 
+def make_secret_access_key(rng: random.Random) -> str:
+    """The paired AWS secret access key (40 chars, FAKE first) that scanners look for."""
+    return _body(rng, ALNUM + "/+", 40)
+
+
 KINDS = ("anthropic", "openai", "github", "aws", "stripe", "slack", "google")
 ENV_NAMES = {
     "anthropic": "ANTHROPIC_API_KEY",
@@ -87,24 +92,25 @@ class Case:
     category: str
     positive: bool
     file: str  # path of the agent file, relative to the case folder
+    lines: tuple[int, int] | None = None  # 1-based line span of the injected key; None = negative
 
 
 # --- file shapes: each takes a payload (a key, a transformed key or a look-alike) -------------
 
-Shape = Callable[
-    [str, str, random.Random], tuple[str, str]
-]  # (payload, env name, rng) -> path, text
+Entries = list[tuple[str, str]]  # (variable name, value); the first value holds the key
+Shape = Callable[[Entries], tuple[str, str]]  # entries -> (path, text)
 
 
-def _j(obj: object, ascii_only: bool = False) -> str:
-    return json.dumps(obj, indent=2, ensure_ascii=ascii_only) + "\n"
+def _j(obj: object) -> str:
+    return json.dumps(obj, indent=2, ensure_ascii=False) + "\n"
 
 
-def history(payload: str, env: str, rng: random.Random) -> tuple[str, str]:
+def history(entries: Entries) -> tuple[str, str]:
+    exports = " ".join(f"{n}={v}" for n, v in entries)
     lines = [
         {"display": "fix the failing test in auth_test.py", "timestamp": 1762500000000},
         {
-            "display": f"export {env}={payload} && npm run dev",
+            "display": f"export {exports} && npm run dev",
             "timestamp": 1762500060000,
             "project": "/Users/dev/shop",
         },
@@ -113,33 +119,35 @@ def history(payload: str, env: str, rng: random.Random) -> tuple[str, str]:
     return ".claude/history.jsonl", "".join(json.dumps(x, ensure_ascii=False) + "\n" for x in lines)
 
 
-def claude_settings(payload: str, env: str, rng: random.Random) -> tuple[str, str]:
+def claude_settings(entries: Entries) -> tuple[str, str]:
+    headers = " ".join(f"-H '{n}: {v}'" for n, v in entries)
     data = {
         "permissions": {
             "allow": [
                 "Bash(git status)",
                 "Bash(npm run test)",
-                f"Bash(curl -s -H 'Authorization: {payload}' https://api.example.com/v1/ping)",
+                f"Bash(curl -s {headers} https://api.example.com/v1/ping)",
             ]
         }
     }
     return ".claude/settings.local.json", _j(data)
 
 
-def claude_mcp(payload: str, env: str, rng: random.Random) -> tuple[str, str]:
+def claude_mcp(entries: Entries) -> tuple[str, str]:
     data = {
         "mcpServers": {
             "search": {
                 "command": "npx",
                 "args": ["-y", "@example/search-mcp"],
-                "env": {env: payload},
+                "env": dict(entries),
             }
         }
     }
     return ".mcp.json", _j(data)
 
 
-def codex_toml(payload: str, env: str, rng: random.Random) -> tuple[str, str]:
+def codex_toml(entries: Entries) -> tuple[str, str]:
+    env = "".join(f'{n} = "{v}"\n' for n, v in entries)
     text = (
         'model = "gpt-5"\n'
         'approval_policy = "on-request"\n\n'
@@ -147,23 +155,22 @@ def codex_toml(payload: str, env: str, rng: random.Random) -> tuple[str, str]:
         'command = "npx"\n'
         'args = ["-y", "@example/search-mcp"]\n\n'
         "[mcp_servers.search.env]\n"
-        f'{env} = "{payload}"\n'
+        f"{env}"
     )
     return ".codex/config.toml", text
 
 
-def cursor_mcp(payload: str, env: str, rng: random.Random) -> tuple[str, str]:
-    data = {
-        "mcpServers": {"search": {"command": "npx", "args": ["-y", "x"], "env": {env: payload}}}
-    }
+def cursor_mcp(entries: Entries) -> tuple[str, str]:
+    data = {"mcpServers": {"search": {"command": "npx", "args": ["-y", "x"], "env": dict(entries)}}}
     return ".cursor/mcp.json", _j(data)
 
 
-def hermes_yaml(payload: str, env: str, rng: random.Random) -> tuple[str, str]:
+def hermes_yaml(entries: Entries) -> tuple[str, str]:
+    env = "".join(f"      {n}: {v}\n" for n, v in entries)
     text = (
         "approvals:\n  mode: manual\n"
         "mcp_servers:\n  search:\n    command: npx\n    args: [-y, '@example/search-mcp']\n"
-        f"    env:\n      {env}: {payload}\n"
+        f"    env:\n{env}"
     )
     return ".hermes/config.yaml", text
 
@@ -283,21 +290,41 @@ NEGATIVES: dict[str, tuple[Callable[[random.Random], str], str]] = {
 }
 
 
-def _negative_file(category: str, value: str, shape: str, rng: random.Random) -> tuple[str, str]:
+def _negative_file(category: str, value: str, shape: str) -> tuple[str, str]:
     """The shape's file with a look-alike where a key would sit, under a harmless name."""
     if shape == "claude-history":
-        path, _ = history("x", "X", rng)
         lines = [
             {"display": "show me what changed since the last release", "timestamp": 1762500000000},
             {"display": f"git show {value}" if category == "neg-git-sha" else value[:600]},
         ]
         if category == "neg-uuid":
             lines[1] = {"display": f"resume session {value}", "sessionId": value}
-        return path, "".join(json.dumps(x) + "\n" for x in lines)
+        return ".claude/history.jsonl", "".join(json.dumps(x) + "\n" for x in lines)
     name = {"neg-sha256": "SHA256_DIGEST", "neg-jwt-in-token-field": "TEST_TOKEN"}.get(
         category, "EXAMPLE"
     )
-    return SHAPES[shape](value, name, rng)
+    return SHAPES[shape]([(name, value)])
+
+
+SENTINEL = "PAYLOADSENTINEL"
+
+
+def key_span(shape: Shape, names: list[str], payload: str, secret: str | None) -> tuple[int, int]:
+    """1-based line span of the injected key (and its paired secret) in the written file.
+
+    The file is rendered once with sentinels in place of the values to find their lines, then
+    with the real values; extra lines the key itself adds (continuation, folded block) extend
+    the span's end.
+    """
+    sentinels: Entries = [(names[0], SENTINEL + "0")]
+    if secret is not None:
+        sentinels.append((names[1], SENTINEL + "1"))
+    _, template = shape(sentinels)
+    hits = [i + 1 for i, line in enumerate(template.split("\n")) if SENTINEL in line]
+    entries: Entries = [(names[0], payload)] + ([(names[1], secret)] if secret is not None else [])
+    _, real = shape(entries)
+    extra = real.count("\n") - template.count("\n")
+    return hits[0], hits[-1] + extra
 
 
 def build(root: Path, seed: int = SEED) -> list[Case]:
@@ -305,9 +332,23 @@ def build(root: Path, seed: int = SEED) -> list[Case]:
     rng = random.Random(seed)
     cases: list[Case] = []
 
-    def add(category: str, positive: bool, n: int, path: str, text: str) -> None:
-        case = Case(f"{category}-{n}", category, positive, path)
-        target = root / "cases" / case.id / path
+    def add_positive(
+        category: str, n: int, shape: Shape, kind: str, payload: str, pair: bool = False
+    ) -> None:
+        names = [ENV_NAMES[kind]]
+        secret = None
+        if kind == "aws" and pair:
+            # plain cases only, so a hidden key is never rescued by a visible one.
+            # trufflehog's AWS detector needs the secret access key beside the key ID.
+            names.append("AWS_SECRET_ACCESS_KEY")
+            secret = make_secret_access_key(rng)
+        entries: Entries = [(names[0], payload)] + ([(names[1], secret)] if secret else [])
+        path, text = shape(entries)
+        span = key_span(shape, names, payload, secret)
+        write(Case(f"{category}-{n}", category, True, path, span), text)
+
+    def write(case: Case, text: str) -> None:
+        target = root / "cases" / case.id / case.file
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8", newline="\n")
         target.chmod(0o600)
@@ -315,20 +356,25 @@ def build(root: Path, seed: int = SEED) -> list[Case]:
 
     for shape_name, shape in SHAPES.items():
         for n, kind in enumerate(KINDS):
-            path, text = shape(make_key(kind, rng), ENV_NAMES[kind], rng)
-            add(f"plain-{shape_name}", True, n, path, text)
+            add_positive(f"plain-{shape_name}", n, shape, kind, make_key(kind, rng), pair=True)
     for category, (obfuscate, shape_name) in OBFUSCATIONS.items():
         for n, kind in enumerate(KINDS):
             payload = obfuscate(make_key(kind, rng), rng)
-            path, text = SHAPES[shape_name](payload, ENV_NAMES[kind], rng)
-            add(category, True, n, path, text)
+            add_positive(category, n, SHAPES[shape_name], kind, payload)
     for category, (make, shape_name) in NEGATIVES.items():
         for n in range(7):
-            path, text = _negative_file(category, make(rng), shape_name, rng)
-            add(category, False, n, path, text)
+            path, text = _negative_file(category, make(rng), shape_name)
+            write(Case(f"{category}-{n}", category, False, path), text)
 
     manifest = [
-        {"id": c.id, "category": c.category, "positive": c.positive, "file": c.file} for c in cases
+        {
+            "id": c.id,
+            "category": c.category,
+            "positive": c.positive,
+            "file": c.file,
+            "lines": list(c.lines) if c.lines else None,
+        }
+        for c in cases
     ]
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return cases
@@ -336,7 +382,16 @@ def build(root: Path, seed: int = SEED) -> list[Case]:
 
 def load_manifest(root: Path) -> list[Case]:
     raw = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-    return [Case(r["id"], r["category"], r["positive"], r["file"]) for r in raw]
+    return [
+        Case(
+            r["id"],
+            r["category"],
+            r["positive"],
+            r["file"],
+            tuple(r["lines"]) if r["lines"] else None,
+        )
+        for r in raw
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:

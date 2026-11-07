@@ -69,41 +69,114 @@ def test_every_key_body_carries_the_fake_marker():
         assert "FAKE" in build_corpus.make_key(kind, rng), kind
 
 
-def test_score_math():
-    cases = [
-        Case("p-0", "plain-x", True, "f"),
-        Case("p-1", "plain-x", True, "f"),
-        Case("o-0", "obf-y", True, "f"),
+def _cases():
+    return [
+        Case("p-0", "plain-x", True, "f", (2, 2)),
+        Case("p-1", "plain-x", True, "f", (2, 2)),
+        Case("o-0", "obf-y", True, "f", (3, 5)),
         Case("n-0", "neg-z", False, "f"),
         Case("n-1", "neg-z", False, "f"),
         Case("n-2", "neg-z", False, "f"),
         Case("n-3", "neg-z", False, "f"),
     ]
-    result = benchmark.score(cases, {"p-0", "o-0", "n-1"})
-    assert result["overall"] == {
-        "tp": 2,
-        "fn": 1,
-        "fp": 1,
-        "tn": 3,
-        "recall": 0.6667,
-        "precision": 0.6667,
-        "false_positive_rate": 0.25,
-    }
+
+
+def test_score_math():
+    hits = {"p-0": [(2, 2)], "o-0": [(5, 6)], "n-1": [(1, 1)]}
+    result = benchmark.score(_cases(), hits)
+    overall = result["overall"]
+    assert overall["tp"] == 2 and overall["fn"] == 1 and overall["fp"] == 1 and overall["tn"] == 3
+    assert overall["recall"] == 0.6667 and overall["precision"] == 0.6667
+    assert overall["false_positive_rate"] == 0.25
     cats = result["categories"]
-    assert cats["plain-x"] == {"kind": "positive", "cases": 2, "found": 1, "recall": 0.5}
-    assert cats["obf-y"]["recall"] == 1.0
-    assert cats["neg-z"] == {
-        "kind": "negative",
-        "cases": 4,
-        "false_positives": 1,
-        "false_positive_rate": 0.25,
-    }
+    assert cats["plain-x"]["found"] == 1 and cats["plain-x"]["recall"] == 0.5
+    assert cats["obf-y"]["recall"] == 1.0  # a multi-line span is matched by overlap
+    assert cats["neg-z"]["false_positives"] == 1 and cats["neg-z"]["false_positive_rate"] == 0.25
+
+
+def test_a_finding_off_the_key_line_does_not_count_but_shows_in_any_hit():
+    hits = {"p-0": [(9, 9)], "p-1": [(0, 0)], "o-0": [(1, 2)]}
+    result = benchmark.score(_cases(), hits)
+    assert result["overall"]["tp"] == 0 and result["overall"]["recall"] == 0.0
+    assert result["overall"]["any_hit"]["tp"] == 3 and result["overall"]["any_hit"]["recall"] == 1.0
+    assert result["categories"]["plain-x"]["any_hit"] == 2
+
+
+def test_negative_findings_are_false_positives_on_any_line():
+    result = benchmark.score(_cases(), {"n-0": [(7, 7)], "n-3": [(0, 0)]})
+    assert result["overall"]["fp"] == 2 and result["overall"]["precision"] == 0.0
 
 
 def test_score_with_nothing_flagged_or_nothing_to_find():
-    cases = [Case("n-0", "neg-z", False, "f")]
-    o = benchmark.score(cases, set())["overall"]
+    o = benchmark.score([Case("n-0", "neg-z", False, "f")], {})["overall"]
     assert o["recall"] is None and o["precision"] is None and o["false_positive_rate"] == 0.0
+
+
+def test_agentprint_parser_counts_only_secret_checks():
+    report = {
+        "findings": [
+            {"check_id": "AP002", "line": 4},
+            {"check_id": "AP003", "line": 4},  # permission
+            {"check_id": "AP004", "line": 4},  # hook
+            {"check_id": "AP008", "line": None},  # file mode
+            {"check_id": "AP001", "line": None},  # secret, no line: flagged, never key-matched
+        ]
+    }
+    assert benchmark.parse_agentprint(report, "c") == {"c": [(4, 4), (0, 0)]}
+
+
+def test_gitleaks_parser_reads_file_and_lines_only(tmp_path):
+    cases = tmp_path / "cases"
+    report = [
+        {"File": str(cases / "a-0" / ".claude" / "h.jsonl"), "StartLine": 2, "EndLine": 3,
+         "Secret": "REDACTED", "Match": "REDACTED"},
+        {"File": "/elsewhere/x", "StartLine": 1, "EndLine": 1},
+    ]  # fmt: skip
+    assert benchmark.parse_gitleaks(report, cases) == {"a-0": [(2, 3)]}
+    assert benchmark.parse_gitleaks(None, cases) == {}
+
+
+def test_trufflehog_parser_reads_file_and_line_only(tmp_path):
+    cases = tmp_path / "cases"
+    item = {
+        "DetectorName": "OpenAI",
+        "Raw": "REDACTED",
+        "SourceMetadata": {
+            "Data": {"Filesystem": {"file": str(cases / "b-1" / "x.toml"), "line": 6}}
+        },
+    }
+    lines = [json.dumps(item), "not json", json.dumps({"SourceMetadata": {}})]
+    assert benchmark.parse_trufflehog(lines, cases) == {"b-1": [(6, 6)]}
+
+
+def test_sanity_check_fails_loudly(tmp_path):
+    cases = _build(tmp_path)
+    plain = next(c for c in cases if c.category == "plain-claude-history")
+    assert plain.lines
+    with pytest.raises(RuntimeError, match="none of the plain keys"):
+        benchmark.sanity_check("t", cases, {})
+    with pytest.raises(RuntimeError, match="none of the plain keys"):
+        benchmark.sanity_check("t", cases, {plain.id: [(99, 99)]})  # found, but not on the key
+    benchmark.sanity_check("t", cases, {plain.id: [plain.lines]})
+
+
+def test_spans_cover_the_key_and_the_aws_pair(tmp_path):
+    cases = _build(tmp_path)
+    for c in cases:
+        if not c.positive:
+            assert c.lines is None
+            continue
+        assert c.lines
+        lines = (tmp_path / "cases" / c.id / c.file).read_text(encoding="utf-8").split("\n")
+        start, end = c.lines
+        assert 1 <= start <= end <= len(lines), c.id
+        span = "\n".join(lines[start - 1 : end])
+        if c.category.startswith("plain-"):
+            assert find_secrets(span), c.id  # the span holds the key
+        if c.category.startswith("plain-") and c.id.endswith("-3"):
+            assert "AWS_SECRET_ACCESS_KEY" in span  # AWS is kind index 3
+        if c.category == "obf-yaml-folded":
+            assert end - start >= 2
 
 
 def test_case_of_maps_a_reported_path_to_its_case(tmp_path):

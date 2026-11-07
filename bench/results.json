@@ -11,13 +11,18 @@
     "agentprint": {
       "version": "0.1.0",
       "overall": {
-        "tp": 57,
-        "fn": 27,
+        "tp": 60,
+        "fn": 24,
         "fp": 7,
         "tn": 56,
-        "recall": 0.6786,
-        "precision": 0.8906,
-        "false_positive_rate": 0.1111
+        "recall": 0.7143,
+        "precision": 0.8955,
+        "false_positive_rate": 0.1111,
+        "any_hit": {
+          "tp": 60,
+          "recall": 0.7143,
+          "precision": 0.8955
+        }
       },
       "categories": {
         "neg-base64-image": {
@@ -78,79 +83,402 @@
           "kind": "positive",
           "cases": 7,
           "found": 0,
-          "recall": 0.0
+          "recall": 0.0,
+          "any_hit": 0
         },
         "obf-line-continuation": {
           "kind": "positive",
           "cases": 7,
           "found": 4,
-          "recall": 0.5714
+          "recall": 0.5714,
+          "any_hit": 4
         },
         "obf-split-concat": {
           "kind": "positive",
           "cases": 7,
-          "found": 1,
-          "recall": 0.1429
+          "found": 2,
+          "recall": 0.2857,
+          "any_hit": 2
         },
         "obf-split-string": {
           "kind": "positive",
           "cases": 7,
           "found": 4,
-          "recall": 0.5714
+          "recall": 0.5714,
+          "any_hit": 4
         },
         "obf-yaml-folded": {
           "kind": "positive",
           "cases": 7,
           "found": 4,
-          "recall": 0.5714
+          "recall": 0.5714,
+          "any_hit": 4
         },
         "obf-zero-width": {
           "kind": "positive",
           "cases": 7,
-          "found": 2,
-          "recall": 0.2857
+          "found": 4,
+          "recall": 0.5714,
+          "any_hit": 4
         },
         "plain-claude-history": {
           "kind": "positive",
           "cases": 7,
           "found": 7,
-          "recall": 1.0
+          "recall": 1.0,
+          "any_hit": 7
         },
         "plain-claude-mcp": {
           "kind": "positive",
           "cases": 7,
           "found": 7,
-          "recall": 1.0
+          "recall": 1.0,
+          "any_hit": 7
         },
         "plain-claude-settings": {
           "kind": "positive",
           "cases": 7,
           "found": 7,
-          "recall": 1.0
+          "recall": 1.0,
+          "any_hit": 7
         },
         "plain-codex-toml": {
           "kind": "positive",
           "cases": 7,
           "found": 7,
-          "recall": 1.0
+          "recall": 1.0,
+          "any_hit": 7
         },
         "plain-cursor-mcp": {
           "kind": "positive",
           "cases": 7,
           "found": 7,
-          "recall": 1.0
+          "recall": 1.0,
+          "any_hit": 7
         },
         "plain-hermes-yaml": {
           "kind": "positive",
           "cases": 7,
           "found": 7,
-          "recall": 1.0
+          "recall": 1.0,
+          "any_hit": 7
+        }
+      }
+    },
+    "gitleaks": {
+      "version": "8.30.1",
+      "overall": {
+        "tp": 49,
+        "fn": 35,
+        "fp": 14,
+        "tn": 49,
+        "recall": 0.5833,
+        "precision": 0.7778,
+        "false_positive_rate": 0.2222,
+        "any_hit": {
+          "tp": 49,
+          "recall": 0.5833,
+          "precision": 0.7778
+        }
+      },
+      "categories": {
+        "neg-base64-image": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
+        "neg-git-sha": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
+        "neg-jwt-in-token-field": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 7,
+          "false_positive_rate": 1.0
+        },
+        "neg-jwt-shaped": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 7,
+          "false_positive_rate": 1.0
+        },
+        "neg-lorem-ipsum": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
+        "neg-minified-js": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
+        "neg-placeholder": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
+        "neg-sha256": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
+        "neg-uuid": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
+        "obf-base64": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 7,
+          "recall": 1.0,
+          "any_hit": 7
+        },
+        "obf-line-continuation": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 0,
+          "recall": 0.0,
+          "any_hit": 0
+        },
+        "obf-split-concat": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 1,
+          "recall": 0.1429,
+          "any_hit": 1
+        },
+        "obf-split-string": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 1,
+          "recall": 0.1429,
+          "any_hit": 1
+        },
+        "obf-yaml-folded": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 2,
+          "recall": 0.2857,
+          "any_hit": 2
+        },
+        "obf-zero-width": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 1,
+          "recall": 0.1429,
+          "any_hit": 1
+        },
+        "plain-claude-history": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 6,
+          "recall": 0.8571,
+          "any_hit": 6
+        },
+        "plain-claude-mcp": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 6,
+          "recall": 0.8571,
+          "any_hit": 6
+        },
+        "plain-claude-settings": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 6,
+          "recall": 0.8571,
+          "any_hit": 6
+        },
+        "plain-codex-toml": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 6,
+          "recall": 0.8571,
+          "any_hit": 6
+        },
+        "plain-cursor-mcp": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 7,
+          "recall": 1.0,
+          "any_hit": 7
+        },
+        "plain-hermes-yaml": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 6,
+          "recall": 0.8571,
+          "any_hit": 6
+        }
+      }
+    },
+    "trufflehog": {
+      "version": "3.99.8",
+      "overall": {
+        "tp": 48,
+        "fn": 36,
+        "fp": 0,
+        "tn": 63,
+        "recall": 0.5714,
+        "precision": 1.0,
+        "false_positive_rate": 0.0,
+        "any_hit": {
+          "tp": 48,
+          "recall": 0.5714,
+          "precision": 1.0
+        }
+      },
+      "categories": {
+        "neg-base64-image": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
+        "neg-git-sha": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
+        "neg-jwt-in-token-field": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
+        "neg-jwt-shaped": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
+        "neg-lorem-ipsum": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
+        "neg-minified-js": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
+        "neg-placeholder": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
+        "neg-sha256": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
+        "neg-uuid": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
+        "obf-base64": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 5,
+          "recall": 0.7143,
+          "any_hit": 5
+        },
+        "obf-line-continuation": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 1,
+          "recall": 0.1429,
+          "any_hit": 1
+        },
+        "obf-split-concat": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 1,
+          "recall": 0.1429,
+          "any_hit": 1
+        },
+        "obf-split-string": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 2,
+          "recall": 0.2857,
+          "any_hit": 2
+        },
+        "obf-yaml-folded": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 2,
+          "recall": 0.2857,
+          "any_hit": 2
+        },
+        "obf-zero-width": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 1,
+          "recall": 0.1429,
+          "any_hit": 1
+        },
+        "plain-claude-history": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 6,
+          "recall": 0.8571,
+          "any_hit": 6
+        },
+        "plain-claude-mcp": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 6,
+          "recall": 0.8571,
+          "any_hit": 6
+        },
+        "plain-claude-settings": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 6,
+          "recall": 0.8571,
+          "any_hit": 6
+        },
+        "plain-codex-toml": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 6,
+          "recall": 0.8571,
+          "any_hit": 6
+        },
+        "plain-cursor-mcp": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 6,
+          "recall": 0.8571,
+          "any_hit": 6
+        },
+        "plain-hermes-yaml": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 6,
+          "recall": 0.8571,
+          "any_hit": 6
         }
       }
     }
   },
-  "not_run": [
-    "gitleaks",
-    "trufflehog"
-  ]
+  "not_run": []
 }
