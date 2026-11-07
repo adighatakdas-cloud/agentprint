@@ -70,7 +70,7 @@ def known_dicts(known: Sequence[Known], moment: Moment = Moment.scan) -> list[di
     its ask_human (rotate it): accepting a key does not make it safe."""
     out = []
     for k in known:
-        data = {
+        data: dict[str, object] = {
             "check_id": k.finding.check_id,
             "severity": k.finding.severity.name.lower(),
             "path": clean(k.path),
