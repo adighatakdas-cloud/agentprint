@@ -137,8 +137,45 @@ def claude_code() -> dict[Path, str]:
     }
 
 
+def codex() -> dict[Path, str]:
+    """https://developers.openai.com/codex/plugins/build (Agent Plugins 1.0 manifest)."""
+    folder = PLUGIN / "codex"
+    marketplace = {
+        "name": NAME,
+        "interface": {"displayName": NAME},
+        "plugins": [
+            {
+                "name": NAME,
+                "source": {"source": "local", "path": "./plugins/agentprint/codex"},
+                "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
+                "category": "Security",
+            }
+        ],
+    }
+    manifest = {
+        "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+        "name": NAME,
+        "version": VERSION,
+        "description": DESCRIPTION,
+    }
+    mcp = {
+        "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+        "mcpServers": {NAME: {"type": "stdio", **plain_server()}},
+    }
+    return {
+        ROOT / ".agents" / "plugins" / "marketplace.json": _json(marketplace),
+        folder / "plugin.json": _json(manifest),
+        folder / "hooks" / "hooks.json": install_text("codex", "hook"),
+        folder / "mcp.json": _json(mcp),
+        folder / "skills" / NAME / "SKILL.md": skill(),
+    }
+
+
 def files() -> dict[Path, str]:
     out: dict[Path, str] = {}
-    for part in (claude_code,):
+    for part in (
+        claude_code,
+        codex,
+    ):
         out |= part()
     return out

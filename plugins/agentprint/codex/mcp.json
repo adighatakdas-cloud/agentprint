@@ -1,0 +1,15 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "agentprint": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "agentprint==0.1.1",
+        "agentprint",
+        "mcp"
+      ]
+    }
+  }
+}

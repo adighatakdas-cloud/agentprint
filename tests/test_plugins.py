@@ -37,6 +37,7 @@ pytestmark = pytest.mark.skipif(not PLUGIN.is_dir(), reason="not in the sdist")
 # agent -> (the plugin's hook file, how to find the agentprint hook command in it)
 HOOK_FILES = {
     "claude-code": PLUGIN / "hooks" / "hooks.json",
+    "codex": PLUGIN / "codex" / "hooks" / "hooks.json",
 }
 
 
@@ -289,3 +290,28 @@ def test_claude_code_plugin_hook_replays_through_run_hook(project):
     decision = json.loads(reply.stdout)["hookSpecificOutput"]
     assert decision["permissionDecision"] == "deny"
     assert decision["permissionDecisionReason"].startswith("agentprint: BLOCK")
+
+
+# ---- Codex ---------------------------------------------------------------------------------------
+
+
+def test_codex_marketplace_and_manifest():
+    market = _load(ROOT / ".agents" / "plugins" / "marketplace.json")
+    assert market["name"] == "agentprint"
+    [entry] = market["plugins"]
+    assert entry["name"] == "agentprint" and entry["category"]
+    assert entry["source"]["source"] == "local"
+    path = entry["source"]["path"]
+    assert path.startswith("./") and (ROOT / path / "plugin.json").is_file()
+    assert entry["policy"]["installation"] in {"AVAILABLE", "INSTALLED_BY_DEFAULT", "NOT_AVAILABLE"}
+    assert entry["policy"]["authentication"]
+    manifest = _load(PLUGIN / "codex" / "plugin.json")
+    assert manifest["$schema"] == "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
+    assert {"name", "version", "description"} <= set(manifest)
+    assert manifest["version"] == __version__
+
+
+def test_codex_mcp_is_a_stdio_server():
+    mcp = _load(PLUGIN / "codex" / "mcp.json")
+    assert mcp["mcpServers"]["agentprint"]["type"] == "stdio"
+    assert (PLUGIN / "codex" / "skills" / "agentprint" / "SKILL.md").is_file()
