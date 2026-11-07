@@ -51,7 +51,10 @@ addopts = "-m 'not integration and not live'"
 [dependency-groups]
 dev = [
     "fonttools>=4.68.0",
+    "hypothesis==6.170.15",
     "jsonschema>=4.26.0",
+    "libcst==1.8.6",
+    "mutmut==3.4.0",
     "pyright==1.1.414",
     "pytest>=9.1.1",
     "pytest-cov==7.1.0",
@@ -69,3 +72,21 @@ pythonPlatform = "All"  # so Windows-only code (msvcrt) is checked on any machin
 
 [tool.coverage.run]
 source = ["agentprint"]
+
+[tool.mutmut]
+paths_to_mutate = [
+    "agentprint/fix.py",
+    "agentprint/pack.py",
+    "agentprint/guard.py",
+    "agentprint/secrets.py",
+]
+# Only the test files that exercise these four modules, so a mutant run stays short.
+tests_dir = [
+    "tests/test_properties.py",
+    "tests/test_fix_mask.py",
+    "tests/test_guard.py",
+    "tests/test_secrets.py",
+    "tests/test_pack.py",
+]
+also_copy = ["agentprint/", "tests/", "pyproject.toml", "README.md"]
+pytest_add_cli_args = ["-p", "no:cacheprovider", "-q"]
