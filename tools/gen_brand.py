@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -162,12 +163,89 @@ def favicon_svg() -> str:
     return _svg("0 0 32 32", style + mascot)
 
 
+SHARE_URL = "adighatakdas-cloud.github.io/agentprint"
+SHARE_TAGLINE = "The security check your AI coding agent runs for you."
+# Colours the share image uses beyond PALETTE["dark"] (spec: text, dim text, clear/low).
+TEXT, DIM, CLEAR = "#E8EEF5", "#8DA2B5", "#5CC8FF"
+
+
+@cache
+def _font() -> tuple[Any, Any, Any, int]:
+    font = TTFont(FONT)
+    cmap = font.getBestCmap()
+    if cmap is None:
+        raise ValueError(f"{FONT} has no character map")
+    head: Any = font["head"]  # fontTools' table classes are untyped
+    return cmap, font.getGlyphSet(), font["hmtx"], head.unitsPerEm
+
+
+def _outline(text: str, em: float, x: float, baseline: float, fill: str) -> tuple[str, float]:
+    """`text` as one outlined <path> with its left edge at x; returns (svg, width in px).
+
+    Outlined, not <text>, so it looks the same in every viewer. The mono font gives every
+    glyph the same advance, so the width is len(text) * advance.
+    """
+    cmap, glyphs, hmtx, units = _font()
+    pen = SVGPathPen(glyphs, ntos=lambda v: str(round(v)))
+    pen_x = 0
+    for ch in text:
+        name = cmap[ord(ch)]
+        glyphs[name].draw(TransformPen(pen, (1, 0, 0, 1, pen_x, 0)))
+        pen_x += hmtx[name][0]
+    s = em / units
+    transform = f'transform="translate({_num(x)} {_num(baseline)}) scale({s:.5f} {-s:.5f})"'
+    label = text.replace("&", "&amp;").replace('"', "&quot;")
+    path = f'<path aria-label="{label}" fill="{fill}" {transform} d="{pen.getCommands()}"/>'
+    return path, pen_x * s
+
+
+def share_svg() -> str:
+    """The 1280x640 social preview: mascot, wordmark, tagline, BLOCK -> fix -> CLEAR, URL."""
+    pal = PALETTE["dark"]
+    margin, pixel = 96, 16
+    mw, mh = max(len(r) for r in FULL) * pixel, len(FULL) * pixel
+    my = 92
+    wm = _Wordmark()
+    cap = 84
+    s = cap / wm.cap
+    wx = margin + mw + 44 - wm.left * s
+    baseline = my + mh / 2 + wm.xh * s / 2
+    transform = f'transform="translate({_num(wx)} {_num(baseline)}) scale({s:.5f} {-s:.5f})"'
+    word = "".join(f'<path fill="{pal[p]}" {transform} d="{wm.paths[p]}"/>' for p in WORD)
+    parts = [
+        "<title>agentprint: the security check your AI coding agent runs for you</title>",
+        f'<rect width="1280" height="640" fill="{GROUND}"/>',
+        _mascot_group(FULL, pixel, margin, my, _fills("dark")),
+        word,
+        _outline(SHARE_TAGLINE, 33, margin, 366, TEXT)[0],
+        f'<rect x="{margin}" y="420" width="1088" height="2" fill="{DIM}" opacity="0.35"/>',
+    ]
+    x = margin
+    strip = (
+        ("BLOCK", pal["body"]),
+        (" → ", DIM),
+        ("agentprint fix", pal["frame"]),
+        (" → ", DIM),
+        ("CLEAR", CLEAR),
+    )
+    for text, fill in strip:
+        path, width = _outline(text, 46, x, 506, fill)
+        parts.append(path)
+        x += width
+    parts.append(_outline(SHARE_URL, 24, margin, 584, DIM)[0])
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" '
+        f'width="1280" height="640">{"".join(parts)}</svg>\n'
+    )
+
+
 def outputs() -> dict[Path, str]:
     """Every generated file: absolute path -> file text."""
     files = {
         "docs/brand/logo-dark.svg": logo_svg("dark", "full"),
         "docs/brand/logo-light.svg": logo_svg("light", "full"),
         "docs/brand/avatar.svg": avatar_svg(),
+        "docs/brand/social-preview.svg": share_svg(),
         "site/src/assets/logo-small-dark.svg": logo_svg("dark", "small"),
         "site/src/assets/logo-small-light.svg": logo_svg("light", "small"),
         "site/public/favicon.svg": favicon_svg(),
