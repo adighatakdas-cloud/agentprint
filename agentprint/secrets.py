@@ -720,6 +720,9 @@ def _windows(text: str, joins: list[Join]) -> Iterator[tuple[int, int, list[Join
 # generic rules.
 _GENERIC_WORDS = tuple(word for rule in RULES if rule.id == "generic" for word in rule.needs)
 _SPECIFIC_RULES = tuple(rule for rule in RULES if rule.id != "generic")
+# No rule matches fewer characters than this (a Slack token: xoxb- and ten more; a test checks
+# every rule), so a shorter view holds no key.
+_SHORTEST_MATCH = 12
 
 
 @dataclass
@@ -792,6 +795,8 @@ def _in_view(view: _View, plain_wins: bool) -> Iterator[SecretMatch]:
     plain key: a view joins pieces with no separator, so a rule with a loose length (anthropic,
     openai, generic, ...) would read a plain key plus the next word as one longer key, and the
     plain key is what is reported. Redaction keeps them, to hide every character either way."""
+    if len(view.text) < _SHORTEST_MATCH:
+        return
     folded = _fold(view.text)
     rules = RULES if any(word in folded for word in _GENERIC_WORDS) else _SPECIFIC_RULES
     cuts = view.cuts

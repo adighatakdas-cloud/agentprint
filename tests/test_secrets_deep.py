@@ -225,6 +225,9 @@ def test_every_key_that_short_base64_can_hold_is_read():
         if r.group == 0 and sre_parser.parse(r.pattern.pattern).getwidth()[0] <= 29
     }
     assert short == {"aws", "slack", "gitlab"}
+    # A view shorter than every rule's shortest match is skipped: none can hold a key.
+    shortest = min(sre_parser.parse(r.pattern.pattern).getwidth()[0] for r in secrets.RULES)
+    assert shortest >= secrets._SHORTEST_MATCH
     for key in (fakes.AWS, fakes.SLACK, fakes.NEW["gitlab"], "AS" + fakes.AWS[2:]):
         assert key.startswith(secrets._SHORT_KEY_STARTS)
         assert [m.value for m in find_hidden(_b64(key))] == [key]
