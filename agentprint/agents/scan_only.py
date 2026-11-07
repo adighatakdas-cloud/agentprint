@@ -12,9 +12,6 @@ settings are flagged; shared-by-design config, rules and instruction files (AGEN
 Paths from each agent's docs, checked 2026-11-05 (none of these agents is installed on the
 verification Mac except Warp, whose database name was checked by name only):
 aider  https://aider.chat/docs/config/aider_conf.html, github.com/Aider-AI/aider aider/args.py
-kilo   https://kilo.ai/docs/code-with-ai/agents/session-history, https://kilo.ai/docs/automate/mcp
-crush  github.com/charmbracelet/crush README and schema.json (data_directory ".crush")
-goose  https://goose-docs.ai/docs/guides/config-files, https://goose-docs.ai/docs/guides/logs
 zed    github.com/zed-industries/zed crates/agent/src/db.rs (threads/threads.db)
 pi     github.com/earendil-works/pi packages/coding-agent/docs/{configuration,mcp}.md
 openclaw https://docs.openclaw.ai/help/environment, .../gateway/security/secrets-and-storage
@@ -94,40 +91,6 @@ SCAN_ONLY_AGENTS: tuple[ScanOnlyAgent, ...] = (
             (".aider.llm.history", Kind.HISTORY, True),
             (".aider.conf.yml", Kind.SETTINGS, True),
         ),
-    ),
-    _agent(
-        "kilo",
-        [
-            (
-                r"(^|/)\.local/share/kilo/",  # kilo.db, auth.json; not any file named kilo.db
-                H,
-                "Kilo Code session database, snapshots or auth.json.",
-            ),
-            (r"(^|/)\.kilo/kilo\.jsonc?$|(^|/)\.kilocode/mcp\.json$", L, MCP_WHY),
-        ],
-    ),
-    _agent(
-        "crush",
-        [
-            (
-                r"(^|/)\.crush/",
-                H,
-                "Crush data folder: crush.db transcripts, logs, overrides that can hold keys.",
-            ),
-            (r"(^|/)\.local/share/crush/", H, "Crush global data: provider API keys."),
-        ],
-        ((".crush/crush.db", Kind.HISTORY, True), (".crush/logs", Kind.HISTORY, True)),
-    ),
-    _agent(
-        "goose",
-        [
-            (
-                r"(^|/)\.config/goose/secrets\.yaml$|(^|/)\.local/share/goose/sessions/"
-                r"|(^|/)\.local/state/goose/logs/",
-                H,
-                "Goose plain-text secrets, sessions or raw LLM request logs.",
-            ),
-        ],
     ),
     _agent("zed", [(r"(?i)(^|/)zed/threads/threads\.db$", H, "Zed agent thread database.")]),
     _agent(

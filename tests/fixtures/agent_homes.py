@@ -207,3 +207,72 @@ def qwen(home: Path) -> None:
     # Qwen Code's own key stores: never secret-scanned.
     write(base / "oauth_creds.json", json.dumps({"access_token": fakes.GENERIC_VALUE}))
     write(base / ".env", f"OPENAI_API_KEY={fakes.OPENAI}\n")
+
+
+# --- SQLite stores: Goose, Kilo Code, Crush ---------------------------------------------------
+
+
+def goose(home: Path) -> None:
+    config = home / ".config" / "goose"
+    write(
+        config / "config.yaml",
+        "GOOSE_PROVIDER: anthropic\n"
+        "extensions:\n"
+        "  github:\n    type: stdio\n    name: github\n    cmd: npx\n"
+        "    args: [-y, '@modelcontextprotocol/server-github']\n"
+        f"    envs:\n      GITHUB_PERSONAL_ACCESS_TOKEN: {fakes.GITHUB}\n"
+        "  developer:\n    type: builtin\n    name: developer\n    enabled: true\n",
+    )
+    write(config / "secrets.yaml", f"ANTHROPIC_API_KEY: {fakes.ANTHROPIC}\n")  # key store
+    write(config / "history.txt", "hello\n")
+    sessions = home / ".local" / "share" / "goose" / "sessions"
+    sqlite(sessions / "sessions.db", "messages", [("m1", f"aws {fakes.AWS}")])
+    logs = home / ".local" / "state" / "goose" / "logs"
+    write(logs / "llm_request.0.jsonl", jsonl({"request": {"messages": [f"key {fakes.STRIPE}"]}}))
+    hook = {"type": "command", "command": "curl -s https://hooks.example.invalid/x"}
+    plugin = home / ".agents" / "plugins" / "notify" / "hooks" / "hooks.json"
+    write(plugin, json.dumps({"hooks": {"Stop": [{"hooks": [hook]}]}}))
+
+
+def goose_windows(home: Path) -> None:
+    block = home / WIN_APPDATA / "Block" / "goose"
+    write(block / "config" / "secrets.yaml", f"OPENAI_API_KEY: {fakes.OPENAI}\n")
+    sqlite(block / "data" / "sessions" / "sessions.db", "messages", [("m1", f"k {fakes.SLACK}")])
+
+
+def kilo(home: Path) -> None:
+    data = home / ".local" / "share" / "kilo"
+    sqlite(data / "kilo.db", "part", [("prt_1", f"anthropic key {fakes.ANTHROPIC}")])
+    write(data / "auth.json", json.dumps({"anthropic": {"type": "api", "key": fakes.ANTHROPIC}}))
+    local = {
+        "type": "local",
+        "command": ["npx", "-y", "gh-mcp"],
+        "environment": {"GH_TOKEN": fakes.GITHUB},
+    }
+    config = {"$schema": "https://app.kilo.ai/config.json", "mcp": {"gh": local}}
+    write(home / ".config" / "kilo" / "kilo.jsonc", "// my config\n" + json.dumps(config))
+
+
+def kilo_project(root: Path) -> None:
+    write(
+        root / "kilo.jsonc",
+        json.dumps({"mcp": {"api": {"type": "remote", **remote(fakes.OPENAI)}}}),
+    )
+
+
+def crush(home: Path) -> None:
+    write(home / ".config" / "crush" / "crushrc", f"provider set openai --api-key {fakes.OPENAI}\n")
+    # Crush's own key store (pasted keys): never secret-scanned.
+    data = {"providers": {"anthropic": {"api_key": fakes.ANTHROPIC}}}
+    write(home / ".local" / "share" / "crush" / "crush.json", json.dumps(data))
+
+
+def crush_project(root: Path) -> None:
+    data = root / ".crush"
+    write(data / ".gitignore", "*\n")
+    sqlite(data / "crush.db", "messages", [("m1", f"key {fakes.AWS}")])
+    write(data / "logs" / "crush.log", f"token {fakes.SLACK}\n")
+    write(data / "crush.json", json.dumps({"providers": {"openai": {"api_key": fakes.OPENAI}}}))
+    hook = {"matcher": "^bash$", "command": "curl -s https://hooks.example.invalid/x"}
+    config = {"mcp": {"gh": stdio("GITHUB_TOKEN", fakes.GITHUB)}, "hooks": {"PreToolUse": [hook]}}
+    write(root / "crush.json", json.dumps(config))

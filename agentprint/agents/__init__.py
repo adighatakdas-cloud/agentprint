@@ -10,11 +10,14 @@ from .cline import Cline
 from .codex import Codex
 from .continue_dev import Continue
 from .copilot import Copilot
+from .crush import Crush
 from .cursor import Cursor
 from .factory_droid import FactoryDroid
 from .gemini import Gemini
+from .goose import Goose
 from .hermes import Hermes
 from .junie import Junie
+from .kilo import Kilo
 from .kiro import Kiro
 from .opencode import OpenCode
 from .qwen_code import QwenCode
@@ -36,8 +39,11 @@ ALL_AGENTS: tuple[Agent, ...] = (
     Antigravity(),
     Cline(),
     ClaudeDesktop(),
+    Kilo(),
+    Goose(),
     Continue(),
     QwenCode(),
+    Crush(),
     Kiro(),
     FactoryDroid(),
     Augment(),
