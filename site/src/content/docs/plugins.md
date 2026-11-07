@@ -6,7 +6,7 @@ description: Add agentprint to an AI coding agent as its own plugin or extension
 `agentprint install` edits each agent's config files for you. If you would rather add agentprint the way you add any other plugin, each agent below has one. Both ways give the agent the same three things: a hook that checks a package publish or `git push` before it runs, the agentprint MCP server, and the short note on when to check.
 
 :::caution[Use the plugin or `agentprint install`, not both]
-For each agent, pick one. With both, the same check runs twice and the agent sees two agentprint MCP servers. `agentprint status` says when it finds both for one agent ("armed twice") and how to take one out. To keep the plugin, run `agentprint uninstall --agent <name>`.
+For each agent, pick one. With both, the same check runs twice and the agent sees two agentprint MCP servers. `agentprint status` says when it finds both for one agent ("armed twice", for a plugin it can see is enabled) and how to take one out. To keep the plugin, run `agentprint uninstall --agent <name>`.
 :::
 
 ## What each plugin includes
@@ -136,7 +136,7 @@ Antigravity can also import an installed Gemini CLI extension with `agy plugin i
 | Hermes Agent | `hermes plugins disable agentprint`, then delete `~/.hermes/plugins/agentprint` |
 | VS Code | remove the agentprint server from the MCP server list |
 
-`agentprint status` finds a plugin by the folder the agent installs it into, so it counts a plugin you have disabled but not removed.
+`agentprint status` counts a plugin as arming an agent only when the agent's own records say it is installed and enabled: for Claude Code, `~/.claude/plugins/installed_plugins.json` and `enabledPlugins` in `~/.claude/settings.json` (a version folder marked `.orphaned_at` doesn't count); for Codex, `[plugins."agentprint@agentprint"]` in `~/.codex/config.toml`; for Hermes Agent, `plugins.enabled` in `~/.hermes/config.yaml`. For Copilot CLI, Gemini CLI, Cursor and Antigravity, where the plugin is turned on or off isn't documented, so status sees only the plugin's folder. It says "agentprint plugin found, not checked whether it is enabled", doesn't count the agent as armed, and never calls it "armed twice".
 
 ## The MCP registry
 

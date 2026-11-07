@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .install import State
 from .integrations import ALL_INTEGRATIONS
-from .plugins import plugin_found
+from .plugins import ENABLED, plugin_state
 from .report import _plural
 
 
@@ -19,17 +19,18 @@ class AgentState:
     label: str
     found: bool
     armed: bool  # by `agentprint install`
-    plugin: bool = False  # the agent's own plugin folder holds agentprint
+    # The agentprint plugin: None (not there), or plugins.ENABLED / DISABLED / UNKNOWN.
+    plugin: str | None = None
 
     @property
     def guarded(self) -> bool:
-        """agentprint is in this agent one way or the other."""
-        return self.armed or self.plugin
+        """agentprint is in this agent: through install, or as a plugin known to be enabled."""
+        return self.armed or self.plugin == ENABLED
 
     @property
     def twice(self) -> bool:
-        """agentprint is in both as a plugin and through install: one should go."""
-        return self.armed and self.plugin
+        """In both as an enabled plugin and through install: one should go."""
+        return self.armed and self.plugin == ENABLED
 
 
 SHORT_NAMES = {
@@ -58,7 +59,7 @@ def roster(home: Path, env: Mapping[str, str]) -> list[AgentState]:
             SHORT_NAMES.get(name, integ.label),
             integ.installed(home, env),
             name in armed,
-            plugin_found(name, home, env),
+            plugin_state(name, home, env),
         )
         for name, integ in ALL_INTEGRATIONS.items()
     ]

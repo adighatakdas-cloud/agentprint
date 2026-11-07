@@ -776,13 +776,13 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
         return 2
     fmt = _auto_format(fmt, StatusFormat.agent, StatusFormat.table)
     states = roster(home_dir, env)
-    twice = [s for s in states if s.found and s.twice]
+    notes = [note for s in states if s.found and (note := _keep_one(s))]
     if fmt is StatusFormat.json:
         agents = []
         for s in states:
             agent = {"name": s.name, "label": s.label, "found": s.found, "armed": s.armed}
-            if s.plugin:  # only when one is found, so the usual output stays as it was
-                agent["plugin"] = True
+            if s.plugin:  # only when one is there, so the usual output stays as it was
+                agent["plugin"] = s.plugin  # "enabled", "disabled" or "unknown"
             agents.append(agent)
         typer.echo(json_lib.dumps({"tool": "agentprint", "version": __version__, "agents": agents}))
     elif fmt is StatusFormat.agent:
@@ -790,8 +790,8 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
             typer.echo(f"{clean(s.name)} {_status_word(s)}")
         if any(s.found and not s.guarded for s in states):
             typer.echo("Arm unarmed agents with: agentprint install")
-        for s in twice:
-            typer.echo(_keep_one(s))
+        for note in notes:
+            typer.echo(note)
     else:
         out = themed_console(env or dict(os.environ), plain=plain)
         out.print(Text(f"agentprint {__version__} · roster", style="ap.dim"))
@@ -808,31 +808,48 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
             body = Text(", ".join(missing), style="ap.dim")
             for line in hang(Text("not found: ", style="ap.dim"), body, out.width):
                 out.print(line)
-        for s in twice:
-            for line in hang("", _keep_one(s), out.width):
+        for note in notes:
+            for line in hang("", note, out.width):
                 out.print(line)
     return 0
 
 
 def _status_word(s: AgentState) -> str:
+    from .plugins import DISABLED, ENABLED, UNKNOWN
+
     if not s.found:
         return "not found"
     if s.twice:
         return "armed twice (plugin and install)"
-    if s.plugin:
+    if s.plugin == ENABLED:
         return "armed (plugin)"
-    return "armed" if s.armed else "unarmed"
+    word = "armed" if s.armed else "unarmed"
+    if s.plugin == UNKNOWN:
+        return f"{word} (agentprint plugin found, not checked whether it is enabled)"
+    if s.plugin == DISABLED:
+        return f"{word} (agentprint plugin installed, not enabled)"
+    return word
 
 
 def _keep_one(s: AgentState) -> str:
-    """What to do when agentprint is in an agent both as a plugin and through install."""
-    from .plugins import REMOVE_PLUGIN
+    """What to do when agentprint may be in an agent both as a plugin and through install."""
+    from .plugins import REMOVE_PLUGIN, UNKNOWN
 
-    return (
-        f"{s.label} has agentprint twice, as a plugin and through agentprint install: keep one. "
+    ways = (
         f"To keep the plugin, run: agentprint uninstall --agent {s.name}. To keep install, "
         f"remove the plugin: {REMOVE_PLUGIN.get(s.name, 'in the agent')}."
     )
+    if s.twice:
+        return (
+            f"{s.label} has agentprint twice, as a plugin and through agentprint install: "
+            f"keep one. {ways}"
+        )
+    if s.armed and s.plugin == UNKNOWN:
+        return (
+            f"{s.label} also has the agentprint plugin, and agentprint could not check whether "
+            f"it is enabled. If it is, keep one. {ways}"
+        )
+    return ""
 
 
 @app.command()
