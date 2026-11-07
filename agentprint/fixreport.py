@@ -14,13 +14,17 @@ import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from . import __version__
 from .advice import Moment
 from .fix import Change, Outcome, Plan
 from .models import Finding
-from .report import DATA_NOTE, FailOn, exit_code, finding_dict, summary
+from .report import DATA_NOTE, FailOn, add_known, exit_code, finding_dict, known_line, summary
 from .sanitize import clean, quote
+
+if TYPE_CHECKING:
+    from .baseline import Known
 
 UNDOABLE = ("ignore", "lock")  # the kinds of change `agentprint fix --undo` can put back
 RERUN = "re-run with --yes to apply"
@@ -122,10 +126,14 @@ def to_agent_fix(
     *,
     dry_run: bool = False,
     not_checked: Sequence[str] = (),
+    known: Sequence[Known] = (),
 ) -> str:
-    """Compact text for an AI agent, then one `not_checked:` line per thing this machine could
-    not be checked for (so a clean result is never read as covering it)."""
+    """Compact text for an AI agent, then the `known:` line (findings the project accepted,
+    left alone) and one `not_checked:` line per thing this machine could not be checked for
+    (so a clean result is never read as covering it)."""
     text = _to_agent_fix(plan, outcome, after, fail_on, dry_run=dry_run)
+    if known:
+        text += "\n" + known_line(known)
     return text + "".join(f"\nnot_checked: {clean(note)}" for note in not_checked)
 
 
@@ -225,6 +233,7 @@ def to_json_fix(
     *,
     pack: bool = False,
     not_checked: Sequence[str] = (),
+    known: Sequence[Known] = (),
 ) -> str:
     """The plan, what was applied or skipped, what needs the human, and the re-check. One entry
     per change (a folder of 28 locked files is 28 entries)."""
@@ -245,6 +254,7 @@ def to_json_fix(
     }
     if not_checked:  # absent when everything was checked
         data["not_checked"] = list(not_checked)
+    add_known(data, known, data["after"]["summary"])
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 

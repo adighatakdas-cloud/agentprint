@@ -16,6 +16,7 @@ import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.text import Text
@@ -26,7 +27,10 @@ from agentprint.models import Finding
 from agentprint.report import FailOn, _short, exit_code
 from agentprint.sanitize import clean
 from agentprint.ui.layout import hang
-from agentprint.ui.results import DETAIL_INDENT, STUB, verdict_lines, where_line
+from agentprint.ui.results import DETAIL_INDENT, STUB, known_section, verdict_lines, where_line
+
+if TYPE_CHECKING:
+    from agentprint.baseline import Known
 
 VERBS = ("mask", "env", "ignore", "lock")
 PLACE = " " * (2 + max(len(v) for v in VERBS) + 2)  # where the place starts: under it, the rest
@@ -190,6 +194,7 @@ def render_outcome(
     plan: Plan | None = None,
     note: str | None = None,
     not_checked: Sequence[str] = (),
+    known: Sequence[Known] = (),
 ) -> None:
     """After the plan (and the y/N question): what was fixed and what was not, what still
     blocks, then the verdict of the re-check (BLOCK or CLEAR, from ui.results). `outcome` None:
@@ -224,12 +229,14 @@ def render_outcome(
                 # "fix masked it", and this key is still in its file.
                 for line in hang(DETAIL_INDENT, _prose(f.detail), width):
                     console.print(line)
+    if known:  # findings the project accepted: left alone, shown apart
+        known_section(known, blocks.next(), gap=False)
     for gap in not_checked:
         blocks.next()
         for line in hang(Text("not checked  ", style="ap.dim"), clean(gap), width):
             console.print(line)
     blocks.next()
-    for line in verdict_lines(after_findings, fail_on, width):
+    for line in verdict_lines(after_findings, fail_on, width, len(known)):
         console.print(line)
 
 

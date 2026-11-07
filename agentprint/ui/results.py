@@ -12,15 +12,19 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.text import Text
 
 from agentprint.models import Finding, Severity
-from agentprint.report import FailOn, _plural, _short, exit_code, summary
+from agentprint.report import KNOWN_WORD, FailOn, _plural, _short, exit_code, known_groups, summary
 from agentprint.sanitize import clean, safe_step
 from agentprint.ui.layout import hang
 from agentprint.ui.theme import SEVERITY_STYLE
+
+if TYPE_CHECKING:
+    from agentprint.baseline import Known
 
 # What redact() in agentprint/secrets.py prints for a key: its first 4 characters and length.
 STUB = re.compile(r"\S{1,4}…\(len \d+\)")
@@ -50,20 +54,38 @@ def _detail(f: Finding) -> Text:
     return line
 
 
-def verdict_lines(findings: list[Finding], fail_on: FailOn, width: int | None) -> list[Text]:
+def verdict_lines(
+    findings: list[Finding], fail_on: FailOn, width: int | None, known: int = 0
+) -> list[Text]:
     prints = _plural(len(findings), "print")
+    masked = f"{known} known · keys masked" if known else "keys masked"
     if exit_code(findings, fail_on):
         counts = " · ".join(f"{n} {name}" for name, n in summary(findings).items() if n)
-        label, text = (" BLOCK ", "ap.block"), f"{prints} · {counts} · keys masked"
+        label, text = (" BLOCK ", "ap.block"), f"{prints} · {counts} · {masked}"
     elif not findings:
-        label, text = (" CLEAR ", "ap.clear_label"), "no prints · keys masked"
+        label, text = (" CLEAR ", "ap.clear_label"), f"no prints · {masked}"
     elif fail_on is FailOn.none:
         label = (" CLEAR ", "ap.clear_label")
-        text = f"{prints} · --fail-on none (report only) · keys masked"
+        text = f"{prints} · --fail-on none (report only) · {masked}"
     else:
         label = (" CLEAR ", "ap.clear_label")
-        text = f"{prints} · none at or above --fail-on {fail_on} · keys masked"
+        text = f"{prints} · none at or above --fail-on {fail_on} · {masked}"
     return hang(Text.assemble(label, "  "), text, width)
+
+
+def known_section(known: Sequence[Known], console: Console, gap: bool = True) -> None:
+    """Findings the project accepted (baseline, ignore rules): dim, with counts and reasons,
+    then (with `gap`) a blank line. Nothing when there are none."""
+    if not known:
+        return
+    console.print(Text(f"{'known':<10}{len(known)}", style="ap.dim"))
+    for check_id, via, reason, n in known_groups(known):
+        lead = Text(f"  {check_id}  ", style="ap.dim")
+        body = Text(f"{n} {KNOWN_WORD.get(via, via)} · {reason}", style="ap.dim")
+        for line in hang(lead, body, console.width):
+            console.print(line)
+    if gap:
+        console.print()
 
 
 def render(
@@ -73,6 +95,7 @@ def render(
     fail_on: FailOn = FailOn.high,
     header: str | None = None,
     not_checked: Sequence[str] = (),
+    known: Sequence[Known] = (),
 ) -> None:
     width = console.width
     if header is not None:
@@ -100,8 +123,9 @@ def render(
             for line in hang(lead, safe_step(fix), width):
                 console.print(line)
         console.print()
+    known_section(known, console)
     for note in not_checked:
         for line in hang(Text("not checked  ", style="ap.dim"), clean(note), width):
             console.print(line)
-    for line in verdict_lines(findings, fail_on, width):
+    for line in verdict_lines(findings, fail_on, width, len(known)):
         console.print(line)

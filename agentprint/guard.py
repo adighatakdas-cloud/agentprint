@@ -22,6 +22,8 @@ from pathlib import Path
 import yaml
 
 from .advice import Moment
+from .baseline import Known, Project, defaults, settle
+from .baseline import load as load_project
 from .checks import PACKAGE_WANT, check_package
 from .commands import NODE, ROOT_RELEASERS, WORKSPACE_RELEASERS, Action, Risky, detect
 from .gitcheck import check_push
@@ -89,21 +91,52 @@ def strict_block(why: str) -> Verdict:
 
 
 def evaluate(
-    command: str, cwd: Path, fail_on: FailOn = FailOn.high, strict: bool = False
+    command: str,
+    cwd: Path,
+    fail_on: FailOn | None = None,
+    strict: bool = False,
+    project: Project | None = None,
 ) -> Verdict | None:
     """None when the command neither publishes nor pushes.
 
-    With `strict`, an internal error or a publish/push that cannot be checked blocks."""
+    With `strict`, an internal error or a publish/push that cannot be checked blocks. The
+    project config and baseline of `cwd` (or `project`) apply: `fail_on` None means the
+    config's, else high, and its `strict = true` turns strict mode on."""
     try:
         risky = detect(command, cwd)
     except Exception as exc:  # noqa: BLE001 - a parser bug must never block work
+        strict = strict or _project(cwd, project).config.strict
         return _failed(exc, strict and bool(_LOOKS_RISKY.search(command)))
     if not risky:
         return None
+    project = _project(cwd, project)
+    strict = strict or project.config.strict
     try:
-        return _decide(command, risky, fail_on, strict)
+        return _decide(command, risky, fail_on, strict, project)
     except Exception as exc:  # noqa: BLE001 - fail open (unless strict), but say so
         return _failed(exc, strict)
+
+
+def _project(cwd: Path, project: Project | None) -> Project:
+    """The project config and baseline. Never raises: on a bug, the defaults (nothing known)."""
+    if project is not None:
+        return project
+    try:
+        return load_project(cwd)
+    except Exception:  # noqa: BLE001 - a config bug must never stop the check
+        return defaults(cwd)
+
+
+def _settle(
+    findings: list[Finding], fail_on: FailOn | None, project: Project | None
+) -> tuple[list[Finding], FailOn, list[Known], list[str]]:
+    """What counts, the fail_on, what is known, and the config's warnings. Ruling C1: a key on
+    its way out always counts, whatever the config or baseline says."""
+    if project is None:
+        return findings, fail_on or FailOn.high, [], []
+    settled = settle(findings, project, fail_on, publishing=True, package=None)
+    notes = [f"agentprint: {clean(note)}." for note in project.warnings]
+    return settled.active, settled.fail_on, settled.known, notes
 
 
 def _failed(exc: Exception, strict: bool) -> Verdict:
@@ -122,7 +155,13 @@ def _internal(exc: Exception) -> str:
     )
 
 
-def _decide(command: str, risky: list[Risky], fail_on: FailOn, strict: bool = False) -> Verdict:
+def _decide(
+    command: str,
+    risky: list[Risky],
+    fail_on: FailOn | None,
+    strict: bool = False,
+    project: Project | None = None,
+) -> Verdict:
     os.environ.setdefault("NPM_CONFIG_UPDATE_NOTIFIER", "false")  # keep npm pack offline
     findings: list[Finding] = []
     warnings: list[str] = []
@@ -139,11 +178,14 @@ def _decide(command: str, risky: list[Risky], fail_on: FailOn, strict: bool = Fa
             warnings.append(f"agentprint could not check this {what}: {clean(str(exc))}.")
     moment = Moment.publish if any(r.action is Action.publish for r in risky) else Moment.push
     warning = " ".join(warnings) or None
-    if exit_code(findings, fail_on):
-        return Verdict(True, to_agent(findings, fail_on, moment, rerun=command), warning)
+    findings, threshold, known, notes = _settle(findings, fail_on, project)
+    shown = " ".join([*warnings, *notes]) or None  # config warnings never trip strict mode
+    if exit_code(findings, threshold):
+        reason = to_agent(findings, threshold, moment, rerun=command, known=known)
+        return Verdict(True, reason, shown)
     if strict and warnings:
         return strict_block(warning or "")
-    return Verdict(False, warning=warning)
+    return Verdict(False, warning=shown)
 
 
 def _built(cwd: Path, patterns: tuple[str, ...]) -> list[PackageListing]:

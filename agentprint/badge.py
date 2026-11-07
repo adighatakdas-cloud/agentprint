@@ -27,8 +27,10 @@ def badge_data(verdict: str) -> dict:
     }
 
 
-def verdict_data(*, command: str, fail_on: FailOn, findings: list[Finding]) -> dict:
-    return {
+def verdict_data(*, command: str, fail_on: FailOn, findings: list[Finding], known: int = 0) -> dict:
+    """`known`: findings the project's baseline or ignore rules accepted. They don't change the
+    verdict, so the count is recorded (only when there are any) for whoever reads it."""
+    data = {
         "tool": "agentprint",
         "version": __version__,
         "command": command,
@@ -36,6 +38,9 @@ def verdict_data(*, command: str, fail_on: FailOn, findings: list[Finding]) -> d
         "verdict": verdict_of(findings, fail_on),
         "summary": summary(findings),
     }
+    if known:
+        data["summary"]["known"] = known
+    return data
 
 
 def _dump(data: dict) -> str:
@@ -43,10 +48,10 @@ def _dump(data: dict) -> str:
 
 
 def write(
-    directory: Path, *, command: str, fail_on: FailOn, findings: list[Finding]
+    directory: Path, *, command: str, fail_on: FailOn, findings: list[Finding], known: int = 0
 ) -> tuple[Path, Path]:
     """Write badge.json and verdict.json into an existing directory; OSError if it can't."""
-    verdict = verdict_data(command=command, fail_on=fail_on, findings=findings)
+    verdict = verdict_data(command=command, fail_on=fail_on, findings=findings, known=known)
     badge_path, verdict_path = directory / "badge.json", directory / "verdict.json"
     badge_path.write_text(_dump(badge_data(verdict["verdict"])), encoding="utf-8")
     verdict_path.write_text(_dump(verdict), encoding="utf-8")

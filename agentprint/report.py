@@ -7,6 +7,7 @@ import os
 from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich.console import Console
 
@@ -14,6 +15,9 @@ from . import __version__
 from .advice import Moment, advise
 from .models import Finding, Severity
 from .sanitize import clean, quote, safe_step
+
+if TYPE_CHECKING:
+    from .baseline import Known
 
 
 class FailOn(StrEnum):
@@ -44,7 +48,10 @@ def finding_dict(finding: Finding, moment: Moment = Moment.scan) -> dict:
 
 
 def to_json(
-    findings: list[Finding], moment: Moment = Moment.scan, not_checked: Sequence[str] = ()
+    findings: list[Finding],
+    moment: Moment = Moment.scan,
+    not_checked: Sequence[str] = (),
+    known: Sequence[Known] = (),
 ) -> str:
     data: dict = {
         "tool": "agentprint",
@@ -54,7 +61,55 @@ def to_json(
     }
     if not_checked:  # absent when everything was checked, so existing output is unchanged
         data["not_checked"] = list(not_checked)
+    add_known(data, known)
     return json.dumps(data, indent=2, ensure_ascii=False)
+
+
+def known_dicts(known: Sequence[Known]) -> list[dict]:
+    """Known findings for JSON: where and why, never the finding's text (no stub needed)."""
+    return [
+        {
+            "check_id": k.finding.check_id,
+            "severity": k.finding.severity.name.lower(),
+            "path": clean(k.path),
+            "via": k.via,
+            "reason": clean(k.reason),
+        }
+        for k in known
+    ]
+
+
+def add_known(data: dict, known: Sequence[Known], counts: dict | None = None) -> None:
+    """Known findings into a JSON report: counted in the summary (`counts`, default
+    data["summary"]), listed under "known". Absent when there are none, so output without a
+    config or baseline is unchanged."""
+    if known:
+        (data["summary"] if counts is None else counts)["known"] = len(known)
+        data["known"] = known_dicts(known)
+
+
+def known_groups(known: Sequence[Known]) -> list[tuple[str, str, str, int]]:
+    """(check id, via, reason, how many), in first-seen order."""
+    groups: dict[tuple[str, str, str], int] = {}
+    for k in known:
+        key = (k.finding.check_id, k.via, clean(k.reason))
+        groups[key] = groups.get(key, 0) + 1
+    return [(*key, n) for key, n in groups.items()]
+
+
+KNOWN_WORD = {"baseline": "in the baseline", "ignore": "ignored by config"}
+
+
+def known_line(known: Sequence[Known]) -> str:
+    """The agent text's `known:` line: counts and reasons. Nothing for the AI to do."""
+    parts = [
+        f"{n} {check_id} {KNOWN_WORD.get(via, via)} {quote(reason)}"
+        for check_id, via, reason, n in known_groups(known)
+    ]
+    return (
+        f"known: {len(known)} accepted by this project, not counted (nothing to do): "
+        + "; ".join(parts)
+    )
 
 
 def _short(location: str) -> str:
@@ -76,11 +131,12 @@ def print_table(
     fail_on: FailOn = FailOn.high,
     header: str | None = None,
     not_checked: Sequence[str] = (),
+    known: Sequence[Known] = (),
 ) -> None:
     """The human view: findings grouped by severity, the fixes, then BLOCK or CLEAR."""
     from .ui.results import render  # ui.results builds on this module
 
-    render(findings, console, fail_on=fail_on, header=header, not_checked=not_checked)
+    render(findings, console, fail_on=fail_on, header=header, not_checked=not_checked, known=known)
 
 
 def exit_code(findings: list[Finding], fail_on: FailOn) -> int:
@@ -123,10 +179,14 @@ def to_agent(
     moment: Moment,
     rerun: str | None = None,
     not_checked: Sequence[str] = (),
+    known: Sequence[Known] = (),
 ) -> str:
     """Compact output for an AI agent. Line 1 is always the verdict; `not_checked` says what
-    this machine could not be checked for, so "OK" is never read as covering it."""
+    this machine could not be checked for, so "OK" is never read as covering it. `known`
+    findings (baseline, ignore rules) are one `known:` line with counts and reasons."""
     text = _to_agent(findings, fail_on, moment, rerun)
+    if known:
+        text += "\n" + known_line(known)
     return text + "".join(f"\nnot_checked: {clean(note)}" for note in not_checked)
 
 
