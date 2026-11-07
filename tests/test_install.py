@@ -13,10 +13,6 @@ from agentprint import install
 from agentprint.cli import app
 from tests import fakes
 
-# POSIX-only: asserts the /bin/sh launcher, hook command strings and file modes (Windows installs
-# only the MCP server and the note; see tests/test_windows_gate.py).
-pytestmark = pytest.mark.posix_only
-
 runner = CliRunner()
 AGENTPRINT = ["/opt/agentprint/bin/agentprint"]
 
@@ -74,6 +70,7 @@ def test_dry_run_changes_nothing_but_shows_diffs(home):
     assert any("agentprint" in line for line in added) and "dry run" in result.output.lower()
 
 
+@pytest.mark.posix_only
 def test_install_wires_every_detected_agent(home):
     result = run("install", "--home", str(home))
     assert result.exit_code == 0, result.output
@@ -201,6 +198,7 @@ def test_output_never_shows_a_full_key(home):
         assert fakes.GITHUB not in result.output
 
 
+@pytest.mark.posix_only
 def test_backups_are_private(home):
     run("install", "--home", str(home))
     backups = [p for p in (home / ".agentprint" / "backups").rglob("*") if p.is_file()]
@@ -208,6 +206,7 @@ def test_backups_are_private(home):
     assert all(stat.S_IMODE(p.stat().st_mode) == 0o600 for p in backups)
 
 
+@pytest.mark.posix_only
 def test_symlinked_rules_file_is_edited_in_place(tmp_path):
     home = tmp_path / "home"
     dotfiles = tmp_path / "dotfiles" / "CLAUDE.md"
@@ -243,6 +242,7 @@ def test_setup_help_lists_every_agent_and_does_not_overclaim():
     assert "exactly" not in uninstall_help
 
 
+@pytest.mark.posix_only
 def test_relative_home_gives_hooks_an_absolute_launcher_path(home, monkeypatch):
     # Agents run hooks from any folder, so a relative launcher path would never be found.
     monkeypatch.chdir(home.parent)

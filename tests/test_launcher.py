@@ -16,10 +16,6 @@ from agentprint.guard import Verdict
 from agentprint.integrations import ALL_INTEGRATIONS
 from agentprint.integrations.base import BLOCK_EXIT
 
-# POSIX-only: asserts the /bin/sh launcher, hook command strings and file modes (Windows installs
-# only the MCP server and the note; see tests/test_windows_gate.py).
-pytestmark = pytest.mark.posix_only
-
 AGENTS = sorted(ALL_INTEGRATIONS)
 # Documented semantics, per agent: (exit code that blocks, how a block is expressed).
 BLOCKS = {
@@ -51,6 +47,9 @@ def test_every_agent_has_documented_block_semantics():
     assert set(BLOCKS) == set(ALL_INTEGRATIONS)
 
 
+@pytest.mark.posix_only
+@pytest.mark.posix_only
+@pytest.mark.posix_only
 @pytest.mark.parametrize("agent", AGENTS)
 def test_allow_passes_through_with_exit_0(tmp_path, agent):
     allow = ALL_INTEGRATIONS[agent].reply(None)
@@ -85,6 +84,7 @@ def test_any_failure_allows_with_exit_0_and_a_warning(tmp_path, agent, failure):
         json.loads(result.stdout)
 
 
+@pytest.mark.posix_only
 def test_missing_agentprint_allows_with_exit_0(tmp_path):
     script = tmp_path / "agentprint-hook"
     script.write_text(install.launcher_script([str(tmp_path / "gone" / "agentprint")]))
