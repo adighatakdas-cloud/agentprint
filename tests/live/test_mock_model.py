@@ -88,6 +88,7 @@ def test_side_requests_without_tools_get_text(script):
     assert reply["content"][0]["type"] == "text"
 
 
+@pytest.mark.posix_only  # sh shims for npm/git
 def test_shims_mark_publish_and_push_and_list_the_package(tmp_path):
     bin_dir, markers = tmp_path / "bin", tmp_path / "markers"
     make_shims(bin_dir, markers)
@@ -102,6 +103,7 @@ def test_shims_mark_publish_and_push_and_list_the_package(tmp_path):
     assert (markers / "PUSHED").exists()
 
 
+@pytest.mark.posix_only  # needs a POSIX login shell
 @pytest.mark.parametrize("shell", ["bash", "zsh"])
 def test_login_shells_still_find_the_fake_npm(tmp_path, shell):
     import shutil

@@ -46,7 +46,15 @@ CASES = {
 }
 
 
-@pytest.mark.parametrize("case", CASES)
+# The scan snapshots hold POSIX tmp paths and no "not checked on Windows" note; Windows output
+# legitimately differs (drive paths, the AP008 note), and the pack snapshots below run everywhere.
+CASE_PARAMS = [
+    pytest.param(name, marks=pytest.mark.posix_only) if name.startswith("scan") else name
+    for name in CASES
+]
+
+
+@pytest.mark.parametrize("case", CASE_PARAMS)
 def test_snapshot(case, tmp_path, fake_home, fake_project, monkeypatch):
     # SARIF's originalUriBaseIds is built from the process cwd; pin it so it becomes <TMP>/.
     monkeypatch.chdir(tmp_path)

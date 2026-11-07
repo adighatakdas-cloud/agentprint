@@ -189,7 +189,8 @@ def test_tape_command_runs_and_redacts(command, world):
         assert _snapshot(home) == before  # a scan changes nothing
     elif verb == "fix":
         assert result.exit_code == 0, result.output
-        assert "5 fixes ready" in result.output
+        ready = "3" if os.name == "nt" else "5"  # the 2 permission fixes are POSIX-only
+        assert f"{ready} fixes ready" in result.output
         assert "CLEAR" in result.output and "BLOCK" not in result.output
         assert "Rotate the OpenAI API key" in result.output  # what only the human can do
         assert "FAKEFAKE" not in (home / ".claude" / "history.jsonl").read_text()

@@ -8,10 +8,6 @@ import yaml
 
 from agentprint import install
 
-# POSIX-only: asserts the /bin/sh launcher, hook command strings and file modes (Windows installs
-# only the MCP server and the note; see tests/test_windows_gate.py).
-pytestmark = pytest.mark.posix_only
-
 QUIET = lambda line: None  # noqa: E731
 AGENTPRINT = "/opt/agentprint/bin/agentprint"
 
@@ -51,7 +47,7 @@ def _uninstall(home, names=None):
 
 def snapshot(root: Path) -> dict[str, bytes | None]:
     return {
-        str(p.relative_to(root)): (None if p.is_dir() else p.read_bytes())
+        p.relative_to(root).as_posix(): (None if p.is_dir() else p.read_bytes())
         for p in sorted(root.rglob("*"))
     }
 
@@ -73,6 +69,7 @@ def home(tmp_path) -> Path:
 # ---- GitHub Copilot ---------------------------------------------------------------------------
 
 
+@pytest.mark.posix_only
 def test_copilot_gets_a_hook_file_mcp_entry_and_instructions(home):
     _install(home, ["copilot"])
     hooks = json.loads((home / ".copilot" / "hooks" / "agentprint.json").read_text())
@@ -93,6 +90,7 @@ def test_copilot_gets_a_hook_file_mcp_entry_and_instructions(home):
 # ---- Hermes Agent -----------------------------------------------------------------------------
 
 
+@pytest.mark.posix_only
 def test_hermes_config_gets_hook_and_server_and_keeps_comments(home):
     out = _install(home, ["hermes"])
     text = (home / ".hermes" / "config.yaml").read_text()
@@ -116,6 +114,7 @@ def test_hermes_config_gets_hook_and_server_and_keeps_comments(home):
     assert "inactive until you approve it" in out and "hermes chat" in out
 
 
+@pytest.mark.posix_only  # asserts hook entries; Windows installs no hooks
 def test_hermes_users_lines_stay_byte_for_byte(home):
     _install(home, ["hermes"])
     lines = (home / ".hermes" / "config.yaml").read_text().splitlines()
@@ -123,6 +122,7 @@ def test_hermes_users_lines_stay_byte_for_byte(home):
     assert "    - matcher: terminal" in lines  # ours follow the file's own list style
 
 
+@pytest.mark.posix_only  # asserts hook entries; Windows installs no hooks
 def test_hermes_flush_list_style_is_followed(tmp_path):
     home = tmp_path / "home"
     flush = "hooks:\n  post_tool_call:\n  - matcher: terminal\n    command: x\n"
@@ -134,6 +134,7 @@ def test_hermes_flush_list_style_is_followed(tmp_path):
     assert "\n  - matcher: terminal\n    command: /" in text  # ours in the same flush style
 
 
+@pytest.mark.posix_only
 def test_hermes_without_config_yaml_is_left_alone_and_shown_the_snippet(tmp_path):
     # A config.yaml holding only agentprint's keys might stop Hermes applying its defaults, so
     # agentprint never creates one: it prints what to add and how to get Hermes to make it.
@@ -161,6 +162,7 @@ def test_hermes_unreadable_yaml_is_skipped_with_a_snippet(tmp_path):
 # ---- Google Antigravity -----------------------------------------------------------------------
 
 
+@pytest.mark.posix_only
 def test_antigravity_gets_hooks_mcp_and_a_rule_under_gemini_config(home):
     _install(home, ["antigravity"])
     config = home / ".gemini" / "config"
@@ -207,6 +209,7 @@ def test_round_trip_is_byte_identical_and_reinstall_changes_nothing(home, agent)
     assert snapshot(home) == before
 
 
+@pytest.mark.posix_only  # asserts hook entries; Windows installs no hooks
 def test_dry_run_over_all_nine_agents_is_a_coherent_plan(tmp_path):
     home = tmp_path / "home"
     for folder in (".claude", ".codex", ".cursor", ".codeium/windsurf", ".devin",

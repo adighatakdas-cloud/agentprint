@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
@@ -57,8 +58,16 @@ def to_json(
 
 
 def _short(location: str) -> str:
+    """The path with the home folder written as ~. Always with forward slashes after the ~ (also
+    on Windows, where PowerShell and Git Bash accept them), so the same output reads the same on
+    every OS; paths outside the home folder are left exactly as they are."""
     home = str(Path.home())
-    return "~" + location[len(home) :] if location.startswith(home) else location
+    if not os.path.normcase(location).startswith(os.path.normcase(home)):
+        return location
+    rest = location[len(home) :]
+    if rest and rest[0] not in "/\\" and not home.endswith(("/", "\\")):
+        return location  # /home/user2 is not inside /home/user
+    return "~" + (rest.replace("\\", "/") if os.sep == "\\" else rest)
 
 
 def print_table(

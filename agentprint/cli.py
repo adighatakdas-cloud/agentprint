@@ -9,7 +9,7 @@ from collections.abc import Collection, Iterator, Sequence
 from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Annotated, Any, TypeVar, cast
 
 import typer
 from rich.console import Console
@@ -26,6 +26,9 @@ from .sarif import to_sarif
 from .scanner import scan as run_scan
 from .ui.detect import is_agent, is_interactive, plain_help, should_animate
 from .ui.theme import console as themed_console
+
+if TYPE_CHECKING:
+    from .roster import AgentState
 
 AGENT_NAMES = ", ".join(ALL_INTEGRATIONS)  # help text stays in step with the integrations
 
@@ -648,6 +651,7 @@ def guard(
     """
     from .hook import run_hook  # imported here so other commands stay fast to start
 
+    platform.use_utf8_streams()  # a Windows console is cp1252 unless told otherwise
     reply = run_hook(agent, sys.stdin.read(), os.environ, fail_on, strict)
     if reply.stdout:
         typer.echo(reply.stdout)
@@ -760,7 +764,7 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
 
     from rich.text import Text
 
-    from .roster import roster, summary_line
+    from .roster import roster, scanned, summary_line
     from .sanitize import clean
     from .ui.layout import hang
 
@@ -773,34 +777,98 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
         return 2
     fmt = _auto_format(fmt, StatusFormat.agent, StatusFormat.table)
     states = roster(home_dir, env)
+    notes = [note for s in states if s.found and (note := _keep_one(s))]
+    # Agents a sweep reads in full but install can't arm yet: listed when found.
+    swept = scanned(home_dir)
     if fmt is StatusFormat.json:
-        agents = [
-            {"name": s.name, "label": s.label, "found": s.found, "armed": s.armed} for s in states
-        ]
-        typer.echo(json_lib.dumps({"tool": "agentprint", "version": __version__, "agents": agents}))
+        agents = []
+        for s in states:
+            agent = {"name": s.name, "label": s.label, "found": s.found, "armed": s.armed}
+            if s.plugin:  # only when one is there, so the usual output stays as it was
+                agent["plugin"] = s.plugin  # "enabled", "disabled" or "unknown"
+            agents.append(agent)
+        also = [{"name": s.name, "label": s.label, "found": s.found} for s in swept]
+        typer.echo(
+            json_lib.dumps(
+                {"tool": "agentprint", "version": __version__, "agents": agents, "scanned": also}
+            )
+        )
     elif fmt is StatusFormat.agent:
         for s in states:
-            word = ("armed" if s.armed else "unarmed") if s.found else "not found"
-            typer.echo(f"{clean(s.name)} {word}")
-        if any(s.found and not s.armed for s in states):
+            typer.echo(f"{clean(s.name)} {_status_word(s)}")
+        for s in swept:
+            if s.found:
+                typer.echo(f"{clean(s.name)} scanned (agentprint install can't arm it yet)")
+        if any(s.found and not s.guarded for s in states):
             typer.echo("Arm unarmed agents with: agentprint install")
+        for note in notes:
+            typer.echo(note)
     else:
         out = themed_console(env or dict(os.environ), plain=plain)
         out.print(Text(f"agentprint {__version__} · roster", style="ap.dim"))
-        for line in hang("", summary_line(states), out.width):
+        for line in hang("", summary_line(states, swept), out.width):
             out.print(line)
-        width = max([14, *(len(clean(s.label)) + 2 for s in states if s.found)])
+        shown = [s for s in [*states, *swept] if s.found]
+        width = max([14, *(len(clean(s.label)) + 2 for s in shown)])
         for s in states:
             if s.found:
                 line = Text(clean(s.label).ljust(width))
-                line.append(*(("armed", "ap.amber") if s.armed else ("unarmed", "ap.dim")))
+                line.append(_status_word(s), "ap.amber" if s.guarded else "ap.dim")
+                out.print(line)
+        for s in swept:
+            if s.found:
+                out.print(Text(clean(s.label).ljust(width)).append("scanned", "ap.dim"))
+        if any(s.found for s in swept):
+            note = "scanned = agentprint scan reads its files; agentprint install can't arm it yet"
+            for line in hang("", Text(note, style="ap.dim"), out.width):
                 out.print(line)
         missing = [clean(s.label) for s in states if not s.found]
         if missing:
             body = Text(", ".join(missing), style="ap.dim")
             for line in hang(Text("not found: ", style="ap.dim"), body, out.width):
                 out.print(line)
+        for note in notes:
+            for line in hang("", note, out.width):
+                out.print(line)
     return 0
+
+
+def _status_word(s: AgentState) -> str:
+    from .plugins import DISABLED, ENABLED, UNKNOWN
+
+    if not s.found:
+        return "not found"
+    if s.twice:
+        return "armed twice (plugin and install)"
+    if s.plugin == ENABLED:
+        return "armed (plugin)"
+    word = "armed" if s.armed else "unarmed"
+    if s.plugin == UNKNOWN:
+        return f"{word} (agentprint plugin found, not checked whether it is enabled)"
+    if s.plugin == DISABLED:
+        return f"{word} (agentprint plugin installed, not enabled)"
+    return word
+
+
+def _keep_one(s: AgentState) -> str:
+    """What to do when agentprint may be in an agent both as a plugin and through install."""
+    from .plugins import REMOVE_PLUGIN, UNKNOWN
+
+    ways = (
+        f"To keep the plugin, run: agentprint uninstall --agent {s.name}. To keep install, "
+        f"remove the plugin: {REMOVE_PLUGIN.get(s.name, 'in the agent')}."
+    )
+    if s.twice:
+        return (
+            f"{s.label} has agentprint twice, as a plugin and through agentprint install: "
+            f"keep one. {ways}"
+        )
+    if s.armed and s.plugin == UNKNOWN:
+        return (
+            f"{s.label} also has the agentprint plugin, and agentprint could not check whether "
+            f"it is enabled. If it is, keep one. {ways}"
+        )
+    return ""
 
 
 @app.command()

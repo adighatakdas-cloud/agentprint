@@ -625,6 +625,7 @@ def test_metadata_headers_are_read_up_to_a_limit_and_never_half_a_line():
         # base64 that runs on, then stops short of the end of the file
         b"x;\n//# sourceMappingURL=data:application/json;base64," + b"A" * (10 * MB) + b"!",
     ],
+    ids=["endless media-type parameters", "base64 that stops short"],
 )  # fmt: skip
 def test_hostile_inline_maps_are_linear(bundle):
     listing = _npm("UNLICENSED", **{"dist/index.js": bundle})

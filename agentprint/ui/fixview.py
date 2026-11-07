@@ -13,6 +13,7 @@ never see this layout: they get fixreport.to_agent_fix.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from rich.console import Console
 from rich.text import Text
 
 from agentprint.fix import Outcome, Plan
-from agentprint.fixreport import UNDOABLE, Row, fixes, rows, server_name, skipped_rows
+from agentprint.fixreport import UNDOABLE, Row, env_field, fixes, rows, server_name, skipped_rows
 from agentprint.models import Finding
 from agentprint.report import FailOn, _short, exit_code
 from agentprint.sanitize import clean
@@ -46,7 +47,9 @@ def _what(row: Row) -> Text:
             text.append(f" (×{places})", style="ap.dim")
         return text
     if row.kind == "env":
-        return Text(f"{clean(server_name(first), 60)}.env.{first.var} → ${{{first.var}}}")
+        reference = first.reference or "${" + first.var + "}"
+        where = f"{clean(server_name(first), 60)}.{env_field(first)}.{first.var}"
+        return Text(f"{where} → {clean(reference)}")
     if row.kind == "ignore":
         text = Text(f"+ {clean(first.line_text)}")
         if not os.path.lexists(first.path):
@@ -62,6 +65,11 @@ def _what(row: Row) -> Text:
     return Text(clean(first.shown))
 
 
+def _slashes(rest: str) -> str:
+    """The part of a path after ~, with forward slashes on Windows (doubled ones are JSON's)."""
+    return rest.replace("\\\\", "/").replace("\\", "/") if os.sep == "\\" else rest
+
+
 def _prose(text: str) -> Text:
     """A "needs you" sentence: quoted paths under the home folder shown from ~, masked key
     stubs in amber (as the results show them). Shell commands are never touched: agentprint
@@ -69,7 +77,13 @@ def _prose(text: str) -> Text:
     home = str(Path.home())
     text = clean(text, None)
     if home not in ("", "/"):
-        text = text.replace(f'"{home}/', '"~/').replace(f'"{home}"', '"~"')
+        # Display paths are JSON-quoted, so on Windows a backslash arrives doubled: match both.
+        homes = "|".join(re.escape(v) for v in {home, home.replace("\\", "\\\\")})
+        text = re.sub(
+            f'"(?:{homes})' + r'(?=[/\\"])([/\\][^"]*)?',
+            lambda m: '"~' + _slashes(m.group(1) or ""),
+            text,
+        )
     out = Text()
     end = 0
     for stub in STUB.finditer(text):

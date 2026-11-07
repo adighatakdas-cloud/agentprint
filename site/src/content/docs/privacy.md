@@ -9,6 +9,6 @@ description: agentprint is offline, has no telemetry, masks every key it finds, 
 - **Credential stores are never read.** Files where a key belongs (`~/.codex/auth.json`, `~/.hermes/.env`, and others) are only checked for who can read them.
 - **Downloads happen only when you start them:** `uvx` or `npx` fetching agentprint, and `pack` running your own `npm pack --dry-run` or `uv build`.
 
-Chat databases (SQLite) are opened read-only, and at most 64 MB of text is read from each. Archives are read in memory and never unpacked to disk.
+Chat databases (SQLite) are opened read-only, and reading one creates no file next to it; at most 64 MB of text is read from each. Archives are read in memory and never unpacked to disk.
 
 For how this is built, see [How it works](/agentprint/how-it-works/#safety-decisions).

@@ -76,6 +76,12 @@ Do these once, before the first tag. Step 2 is a decision, the rest are clicks.
 
    Then run `uv run python -m tools.gen_docs` and commit what it changes. The landing page's
    welcome fragment shows `__version__`, so without this the drift test fails CI on the release PR.
+   It also rewrites every plugin manifest, plugin hook and MCP command under `plugins/`, the root
+   manifests (`.claude-plugin/`, `.agents/plugins/`, `.github/plugin/`, `.cursor-plugin/`,
+   `gemini-extension.json`, `hooks/`), `server.json` and the version pins on the CI page
+   (GitHub Action, pre-commit, lefthook, husky), all pinned to the new version. The
+   plugins' install commands name the tag `v<version>`, so they work once the tag is pushed.
+   Nothing is listed in a plugin marketplace or the MCP registry by the release.
 
    **First release only:** in the same change, delete the `> **Pre-release:**` line from
    `README.md` (it becomes the PyPI and npm page), and make sure `docs/demo.gif` has been

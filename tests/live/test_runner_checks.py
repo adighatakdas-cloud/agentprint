@@ -22,6 +22,7 @@ def outcome(*results: str) -> Outcome:
     return Outcome(False, False, list(results), "", "", Path("."))
 
 
+@pytest.mark.posix_only  # POSIX stdin is not a tty here; Windows stdin differs
 def test_probe_prints_names_never_values():
     env = {"PATH": os.environ.get("PATH", ""), "CLAUDECODE": "s3cret-value", "NO_COLOR": "1",
            "GEMINI_CLI": ""}  # fmt: skip

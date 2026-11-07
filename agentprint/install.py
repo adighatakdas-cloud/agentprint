@@ -116,7 +116,13 @@ def reported_version(agentprint: list[str]) -> tuple[int, ...] | None:
     """The version `<agentprint> --version` prints, or None if it cannot be run or read."""
     try:
         done = subprocess.run(
-            [*agentprint, "--version"], capture_output=True, text=True, timeout=30, check=False
+            [*agentprint, "--version"],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+            **platform.subprocess_kwargs(),
         )
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
@@ -211,6 +217,24 @@ def _read(path: Path) -> str | None:
         raise Unsupported(f"it can't be read ({exc.strerror or type(exc).__name__})") from exc
 
 
+def _uses_crlf(text: str | None) -> bool:
+    """True when every line end in the text is CRLF (a file saved on Windows)."""
+    return bool(text) and "\r\n" in text and text.count("\n") == text.count("\r\n")
+
+
+def _through_edits(text: str | None, edits: list[Edit], *, revert: bool = False) -> str | None:
+    """Apply (or take out) the edits on LF text and give the result the file's own line ends,
+    so a CRLF file stays CRLF; unchanged text comes back as the very same string."""
+    crlf = _uses_crlf(text)
+    work = text.replace("\r\n", "\n") if crlf and text is not None else text
+    new = work
+    for edit in reversed(edits) if revert else edits:
+        new = edit.revert(new or "") if revert else edit.apply(new)
+    if new == work:
+        return text
+    return new.replace("\n", "\r\n") if crlf and new is not None else new
+
+
 def _mkdirs(directory: Path) -> list[str]:
     created: list[str] = []
     missing = []
@@ -243,7 +267,9 @@ def _backup_path(home: Path, path: Path) -> Path:
 
 def _shown(home: Path, path: Path) -> str:
     text = str(path)
-    return "~" + text[len(str(home)) :] if text.startswith(str(home) + os.sep) else text
+    if not text.startswith(str(home) + os.sep):
+        return text
+    return "~" + text[len(str(home)) :].replace(os.sep, "/")  # the same ~/.x on every OS
 
 
 def _redact_line(line: str) -> str:
@@ -280,11 +306,11 @@ def _data(text: str, edits: list[Edit]) -> object:
     its anchors would expand it past MAX_EXPANDED values (checked before anything walks it)."""
     if any(isinstance(e, YamlEdit) for e in edits):
         try:
-            data = yaml.safe_load((text or "").lstrip("﻿")) or {}
+            data = yaml.safe_load((text or "").lstrip("\ufeff")) or {}
         except yaml.YAMLError as exc:
             raise ValueError(str(exc)) from exc
     elif any(isinstance(e, JsonEdit) for e in edits):
-        data = json.loads(text or "{}")
+        data = json.loads(text.removeprefix("\ufeff") if text else "{}")
     else:
         raise ValueError("not a data file")
     expanded_size(data)
@@ -353,9 +379,7 @@ def _would_change(path: Path, edits: list[Edit]) -> bool:
     """True if installing `edits` into `path` would change it (no output, nothing written)."""
     try:
         old = _read(path)
-        new = old
-        for edit in edits:
-            new = edit.apply(new)
+        new = _through_edits(old, edits)
     except Exception:  # noqa: BLE001 - a file that can't be edited won't change
         return False
     return new != old
@@ -493,9 +517,7 @@ def _install_file(
     whats = "; ".join(edit.what for edit in edits)
     try:
         old = _read(path)
-        new = old
-        for edit in edits:
-            new = edit.apply(new)
+        new = _through_edits(old, edits)
         if new is not None:
             new.encode("utf-8")  # catch unwritable text before anything is shown or written
         if new != old and _read_only(path):
@@ -669,8 +691,7 @@ def _uninstall_file(
     # bytes back (formatting included) when what remains is the same as the backup.
     restored: str | None = current
     try:
-        for edit in reversed(edits):
-            restored = edit.revert(restored)
+        restored = _through_edits(restored, edits, revert=True) or ""
     except Unsupported as exc:
         echo(f"  ! {_shown(home, path)}: left alone because {exc}. Remove agentprint by hand.")
         return "kept"

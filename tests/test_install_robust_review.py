@@ -42,6 +42,7 @@ def _hermes(tmp_path, config: str | bytes) -> Path:
 # ---- 4. odd YAML values and one failing file never stop the rest -------------------------------
 
 
+@pytest.mark.posix_only  # asserts hook entries; Windows installs no hooks
 def test_dates_in_hermes_hooks_do_not_stop_install(tmp_path):
     config = "hooks:\n  pre_tool_call:\n    - command: x\n      since: 2026-01-01\n"
     home = _hermes(tmp_path, config)
@@ -76,6 +77,7 @@ def test_one_failing_file_does_not_stop_uninstall_or_lose_state(tmp_path, monkey
 # ---- 5. Hermes config.yaml: anchors, layout, line endings, comments ----------------------------
 
 
+@pytest.mark.posix_only  # asserts hook entries; Windows installs no hooks
 @pytest.mark.parametrize(
     "config",
     [
@@ -118,12 +120,13 @@ def test_crlf_and_bom_are_kept(tmp_path):
     home = _hermes(tmp_path, raw)
     _install(home, ["hermes"])
     after = (home / ".hermes" / "config.yaml").read_bytes()
-    assert after.startswith("﻿".encode()) and b"agentprint-hook" in after
+    assert after.startswith("﻿".encode()) and b"agentprint" in after  # our entry (hook or MCP)
     assert after.count(b"\n") == after.count(b"\r\n")  # every line still ends in CRLF
     _uninstall(home)
     assert (home / ".hermes" / "config.yaml").read_bytes() == raw
 
 
+@pytest.mark.posix_only  # asserts hook entries; Windows installs no hooks
 def test_trailing_comment_stays_after_the_users_hooks(tmp_path):
     config = (
         "hooks:\n  post_tool_call:\n    - command: y\n  # end of my hooks\n"
@@ -135,6 +138,7 @@ def test_trailing_comment_stays_after_the_users_hooks(tmp_path):
     assert text.index("agentprint-hook") < text.index("command: y") < text.index("# end of my")
 
 
+@pytest.mark.posix_only  # asserts hook entries; Windows installs no hooks
 def test_hooks_key_with_only_comments_counts_as_empty(tmp_path):
     config = "hooks:\n  # add hooks here\nmodel: x\n"
     home = _hermes(tmp_path, config)
@@ -144,6 +148,7 @@ def test_hooks_key_with_only_comments_counts_as_empty(tmp_path):
     assert data["model"] == "x" and data["hooks"]["pre_tool_call"]
 
 
+@pytest.mark.posix_only  # asserts hook entries; Windows installs no hooks
 def test_messages_for_yaml_do_not_say_json(tmp_path):
     home = _hermes(tmp_path, "hooks: [not, a, mapping]\n")
     out = _install(home, ["hermes"])
@@ -163,19 +168,19 @@ BOMB = (
 
 
 def test_alias_bomb_is_refused_quickly(tmp_path):
-    import time
+    from tests.timing import best_of, bound
 
     home = _hermes(tmp_path, BOMB)
-    start = time.perf_counter()
-    out = _install(home, ["hermes"])
-    assert time.perf_counter() - start < 5
-    assert "skipped" in out
+    outputs: list[str] = []
+    assert best_of(lambda: outputs.append(_install(home, ["hermes"]))) < bound(5)
+    assert "skipped" in outputs[0]
     assert (home / ".hermes" / "config.yaml").read_text() == BOMB
 
 
 # ---- 6. Gemini CLI is found by its own files, not by ~/.gemini --------------------------------
 
 
+@pytest.mark.posix_only  # asserts hook entries; Windows installs no hooks
 def test_antigravity_only_home_gets_no_gemini_cli_files(tmp_path):
     home = tmp_path / "home"
     (home / ".gemini" / "antigravity").mkdir(parents=True)
