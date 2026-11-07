@@ -267,7 +267,9 @@ def _backup_path(home: Path, path: Path) -> Path:
 
 def _shown(home: Path, path: Path) -> str:
     text = str(path)
-    return "~" + text[len(str(home)) :] if text.startswith(str(home) + os.sep) else text
+    if not text.startswith(str(home) + os.sep):
+        return text
+    return "~" + text[len(str(home)) :].replace(os.sep, "/")  # the same ~/.x on every OS
 
 
 def _redact_line(line: str) -> str:

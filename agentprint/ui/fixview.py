@@ -13,6 +13,7 @@ never see this layout: they get fixreport.to_agent_fix.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -69,7 +70,12 @@ def _prose(text: str) -> Text:
     home = str(Path.home())
     text = clean(text, None)
     if home not in ("", "/"):
-        text = text.replace(f'"{home}/', '"~/').replace(f'"{home}"', '"~"')
+        text = text.replace(f'"{home}"', '"~"')
+        text = re.sub(
+            f'"{re.escape(home)}' + r'([/\\][^"]*)',
+            lambda m: '"~' + (m.group(1).replace("\\", "/") if os.sep == "\\" else m.group(1)),
+            text,
+        )
     out = Text()
     end = 0
     for stub in STUB.finditer(text):

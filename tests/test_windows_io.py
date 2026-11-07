@@ -231,3 +231,15 @@ def test_git_calls_read_utf8_and_do_not_quote_paths(tmp_path, monkeypatch):
         assert "core.quotepath=false" in call["cmd"]
         assert call["encoding"] == "utf-8" and call["errors"] == "replace"
         assert call["creationflags"] == 0x08000000
+
+
+def test_paths_under_home_show_from_tilde_with_forward_slashes(monkeypatch):
+    from agentprint import report
+
+    monkeypatch.setattr(report.Path, "home", staticmethod(lambda: "C:\\Users\\ana"))
+    monkeypatch.setattr(report.os, "sep", "\\")
+    monkeypatch.setattr(report.os.path, "normcase", lambda p: p.lower().replace("/", "\\"))
+    assert report._short("C:\\Users\\ana\\.claude\\settings.json") == "~/.claude/settings.json"
+    assert report._short("c:\\users\\ana") == "~"
+    assert report._short("C:\\Users\\anabel\\x") == "C:\\Users\\anabel\\x"  # not inside home
+    assert report._short("D:\\work\\app") == "D:\\work\\app"
