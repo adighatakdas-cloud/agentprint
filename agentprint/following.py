@@ -393,11 +393,17 @@ def _own_folder(text: str, folder: PurePath) -> str:
 
 
 def _script(
-    arg: str, cwd: Path, depth: int, runner: str | None = None, unknown: str = ""
+    arg: str,
+    cwd: Path,
+    depth: int,
+    runner: str | None = None,
+    unknown: str = "",
+    argv: list[str] | None = None,
 ) -> list[c.Risky]:
     """`./release.sh`, `bash scripts/release.sh`, `python release.py`: what the file runs.
 
-    `unknown` is set when an earlier `cd` went somewhere only known at run time."""
+    `unknown` is set when an earlier `cd` went somewhere only known at run time; `argv` is what
+    the script is given, filled in for "$@", $1... (a wrapper: `./with-env.sh npm publish`)."""
     file = _read(arg, cwd)
     if file is None:
         return _lost(arg, cwd, depth, unknown)
@@ -407,11 +413,42 @@ def _script(
     if file.text is None:
         return _unread(file, cwd, program, _is_shell(program))
     reading = _reading(cwd)
-    key = (file.path, cwd, program, depth, reading.peeking)
+    argv = argv or []
+    key = (file.path, cwd, program, depth, reading.peeking, tuple(argv))
     if key not in reading.results:
-        text = _own_folder(file.text, file.path.parent) if _is_shell(program) else file.text
+        text = file.text
+        if _is_shell(program):
+            text = _with_args(_own_folder(text, file.path.parent), argv)
         reading.results[key] = _step(recipes.Step(text, program), file.name, cwd, depth)
     return list(reading.results[key])
+
+
+_POSITIONAL = re.compile(
+    r'"\$[@*]"|"\$\{[@*]\}"|\$\{[@*]\}|\$[@*]|"\$\{?([1-9])\}?"|\$\{?([1-9])\}?|\$#'
+)
+MAX_ARGS_TEXT = 4096  # what a wrapper's "$@" may grow into, per use
+
+
+def _with_args(text: str, argv: list[str]) -> str:
+    """A shell script with "$@", "$*", $1..$9 and $# filled in from the arguments it was run
+    with, so a wrapper that forwards them is read as what it runs. Left alone with no
+    arguments (and inside a function they'd mean something else, so this is a best effort)."""
+    if not argv:
+        return text
+    everything = shlex.join(argv)
+    if len(everything) > MAX_ARGS_TEXT:
+        return text
+
+    def fill(match: re.Match[str]) -> str:
+        if match.group(0) == "$#":
+            return str(len(argv))
+        number = match.group(1) or match.group(2)
+        if number is None:
+            return everything
+        index = int(number) - 1
+        return shlex.quote(argv[index]) if index < len(argv) else "''"
+
+    return _POSITIONAL.sub(fill, text)
 
 
 def _lost(arg: str, cwd: Path, depth: int, unknown: str) -> list[c.Risky]:

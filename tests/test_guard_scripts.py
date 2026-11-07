@@ -463,3 +463,29 @@ def test_a_missing_release_script_after_an_unknown_cd_on_the_command_line(tmp_pa
     assert not verdict.block and 'could not check "./publish.sh"' in verdict.warning
     assert evaluate('cd "$PKG" && ./publish.sh', tmp_path, strict=True).block
     assert evaluate('cd "$BUILD" && ./configure', tmp_path) is None  # never cry wolf
+
+
+# ---- wrappers that forward their arguments ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("files", "command"),
+    [
+        ({"with-env.sh": '#!/bin/sh\nset -e\nexport FOO=1\nexec "$@"\n'},
+         "./with-env.sh npm publish demo-1.0.0.tgz"),
+        ({"npmw": '#!/bin/sh\nnpm "$@"\n'}, "./npmw publish demo-1.0.0.tgz"),
+        ({"wrap.sh": '#!/bin/bash\n"$@"\n'}, "bash wrap.sh npm publish demo-1.0.0.tgz"),
+        ({"pub.sh": '#!/bin/sh\nnpm publish "$1"\n'}, "./pub.sh demo-1.0.0.tgz"),
+        ({"run.sh": "#!/bin/sh\nexec $*\n"}, "./run.sh npm publish demo-1.0.0.tgz"),
+    ],
+    ids=["exec-all", "npm-all", "bash-script", "first-arg", "star"],
+)  # fmt: skip
+def test_a_wrapper_is_followed_with_the_arguments_it_is_given(leaky, files, command):
+    _repo(leaky, files)
+    assert evaluate(command, leaky).block
+
+
+def test_a_wrapper_given_nothing_to_publish_stays_quiet(tmp_path):
+    _repo(tmp_path, {"with-env.sh": '#!/bin/sh\nexec "$@"\n'})
+    assert evaluate("./with-env.sh npm test", tmp_path) is None
+    assert evaluate("./with-env.sh", tmp_path) is None

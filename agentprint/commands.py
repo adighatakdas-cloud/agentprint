@@ -321,10 +321,13 @@ def _segment(words: list[str], where: _Where, found: list[Risky], depth: int, se
         if script is not None:
             found.extend(detect(script, where.cwd, depth + 1))
         elif (file := following._shell_file_arg(args)) is not None:
-            found.extend(following._script(file, where.cwd, depth, program, where.unknown))
+            rest = args[args.index(file) + 1 :]  # what the script gets as "$@"
+            found.extend(following._script(file, where.cwd, depth, program, where.unknown, rest))
     elif words[0] in {"source", "."}:
         if args:
-            found.extend(following._script(args[0], where.cwd, depth, "sh", where.unknown))
+            found.extend(
+                following._script(args[0], where.cwd, depth, "sh", where.unknown, args[1:])
+            )
     elif program == "eval":
         found.extend(detect(" ".join(args), where.cwd, depth + 1))
     elif program == "git":
@@ -344,7 +347,7 @@ def _segment(words: list[str], where: _Where, found: list[Risky], depth: int, se
     elif following._interpreter(program):
         found.extend(following._interpreted(program, args, where.cwd, depth))
     elif "/" in words[0]:  # ./release.sh, scripts/release, /abs/path/in/project/x
-        found.extend(following._script(words[0], where.cwd, depth, None, where.unknown))
+        found.extend(following._script(words[0], where.cwd, depth, None, where.unknown, args))
     if where.unknown:
         found[before:] = [replace(r, unsure=r.unsure or where.unknown) for r in found[before:]]
     return where
