@@ -13,10 +13,8 @@ Paths from each agent's docs, checked 2026-11-05 (none of these agents is instal
 verification Mac except Warp, whose database name was checked by name only):
 aider  https://aider.chat/docs/config/aider_conf.html, github.com/Aider-AI/aider aider/args.py
 kilo   https://kilo.ai/docs/code-with-ai/agents/session-history, https://kilo.ai/docs/automate/mcp
-qwen   github.com/QwenLM/qwen-code docs/users/configuration/settings.md, features/memory.md
 crush  github.com/charmbracelet/crush README and schema.json (data_directory ".crush")
 goose  https://goose-docs.ai/docs/guides/config-files, https://goose-docs.ai/docs/guides/logs
-continue https://docs.continue.dev/faqs, github.com/continuedev/continue core/util/paths.ts
 zed    github.com/zed-industries/zed crates/agent/src/db.rs (threads/threads.db)
 pi     github.com/earendil-works/pi packages/coding-agent/docs/{configuration,mcp}.md
 openclaw https://docs.openclaw.ai/help/environment, .../gateway/security/secrets-and-storage
@@ -109,24 +107,6 @@ SCAN_ONLY_AGENTS: tuple[ScanOnlyAgent, ...] = (
         ],
     ),
     _agent(
-        "qwen-code",
-        [
-            (r"(^|/)\.qwen/\.env$", H, "Qwen Code API-key env file."),
-            (
-                r"(^|/)\.qwen/(projects|tmp|file-history)/"
-                r"|(^|/)\.qwen/(oauth_creds|mcp-oauth-tokens)\.json$",
-                H,
-                "Qwen Code chats, shell history, edit backups or login tokens.",
-            ),
-            (r"(^|/)\.qwen/QWEN\.local\.md$", M, "Personal Qwen Code notes meant to stay local."),
-            (r"(^|/)\.qwen/settings\.json$", L, MCP_WHY),
-        ],
-        (
-            (".qwen/.env", Kind.CREDENTIALS, True),
-            (".qwen/QWEN.local.md", Kind.PERSONAL, True),
-        ),
-    ),
-    _agent(
         "crush",
         [
             (
@@ -148,22 +128,6 @@ SCAN_ONLY_AGENTS: tuple[ScanOnlyAgent, ...] = (
                 "Goose plain-text secrets, sessions or raw LLM request logs.",
             ),
         ],
-    ),
-    _agent(
-        "continue",
-        [
-            (r"(^|/)\.continue/\.env$", H, "Continue secrets env file."),
-            (
-                r"(^|/)\.continue/(sessions|logs|dev_data|index)/|(^|/)\.continue/auth\.json$",
-                H,
-                "Continue sessions, full prompt logs or login.",
-            ),
-            (r"(^|/)\.continue/settings\.local\.json$", M, "Personal Continue settings."),
-        ],
-        (
-            (".continue/.env", Kind.CREDENTIALS, True),
-            (".continue/settings.local.json", Kind.SETTINGS, True),
-        ),
     ),
     _agent("zed", [(r"(?i)(^|/)zed/threads/threads\.db$", H, "Zed agent thread database.")]),
     _agent(

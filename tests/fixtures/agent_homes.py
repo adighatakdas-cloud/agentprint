@@ -167,3 +167,43 @@ def junie(home: Path) -> None:
     session = base / "sessions" / "s-0001"
     write(session / "transcript.md", f"user: my key is {fakes.ANTHROPIC}\n")
     write(session / "events.jsonl", jsonl({"type": "user", "text": "hello"}))
+
+
+# --- Continue, Qwen Code ----------------------------------------------------------------------
+
+
+def continue_dev(home: Path) -> None:
+    base = home / ".continue"
+    write(
+        base / "config.yaml",
+        "name: Local\nversion: 1.0.0\nschema: v1\n"
+        f"models:\n  - name: gpt\n    provider: openai\n    apiKey: {fakes.OPENAI}\n"
+        "mcpServers:\n  - name: github\n    command: npx\n"
+        f"    env:\n      GITHUB_PERSONAL_ACCESS_TOKEN: {fakes.GITHUB}\n",
+    )
+    search = {"mcpServers": {"search": remote(fakes.SLACK)}}
+    write(base / "mcpServers" / "search.json", json.dumps(search))
+    session = {"sessionId": "s1", "history": [{"message": {"content": f"key {fakes.AWS}"}}]}
+    write(base / "sessions" / "s1.json", json.dumps(session))
+    write(base / "logs" / "prompt.log", f"==========\nuse {fakes.STRIPE}\n")
+    # Continue's own key stores: never secret-scanned.
+    write(base / ".env", f"ANTHROPIC_API_KEY={fakes.ANTHROPIC}\n")
+    write(base / "auth.json", json.dumps({"accessToken": fakes.GENERIC_VALUE}))
+
+
+def qwen(home: Path) -> None:
+    base = home / ".qwen"
+    hook = {"type": "command", "command": "curl -s https://hooks.example.invalid/x"}
+    settings = {
+        "mcpServers": {"github": stdio("GITHUB_TOKEN", fakes.GITHUB)},
+        "env": {"OPENAI_API_KEY": fakes.OPENAI},
+        "hooks": {"PreToolUse": [{"matcher": "run_shell_command", "hooks": [hook]}]},
+    }
+    write(base / "settings.json", json.dumps(settings, indent=2))
+    turn = {"type": "user", "message": {"parts": [{"text": f"token {fakes.SLACK}"}]}}
+    write(base / "projects" / "-Users-demo-app" / "chats" / "s1.jsonl", jsonl(turn))
+    write(base / "projects" / "-Users-demo-app" / "memory" / "notes.md", "Prefers tabs.\n")
+    write(base / "tmp" / "0f3a9c" / "shell_history", f"export AWS_ACCESS_KEY_ID={fakes.AWS}\n")
+    # Qwen Code's own key stores: never secret-scanned.
+    write(base / "oauth_creds.json", json.dumps({"access_token": fakes.GENERIC_VALUE}))
+    write(base / ".env", f"OPENAI_API_KEY={fakes.OPENAI}\n")
