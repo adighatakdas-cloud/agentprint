@@ -1,4 +1,5 @@
-"""Run one real agent CLI against the mock model in a throwaway HOME, after `agentprint install`.
+"""Run one real agent CLI against the mock model in a throwaway HOME, after `agentprint install`
+(or, with a `Plugin`, after installing agentprint's plugin from plugins/ the agent's own way).
 
 Each live test describes its agent with an `AgentCLI` (how to run it headless and point it at
 the mock), and `run` does the rest: fake HOME, fake npm/git on PATH, a leaky or clean project,
@@ -27,11 +28,14 @@ import pytest
 from agentprint import install as installer
 from agentprint.integrations import ALL_INTEGRATIONS
 from agentprint.integrations.base import Launch
+from tests.fake_uvx import real_guard_uvx
 from tests.live import harness
 from tests.live.install_clis import binary
 from tests.live.mock_model import MockModel, Script
 
 TIMEOUT = 240
+REPO = Path(__file__).resolve().parents[2]
+PLUGINS = REPO / "plugins" / "agentprint"  # the Claude Code plugin; the others are below it
 # The clean-project actions: (command the model runs, prompt).
 CLEAN_ACTIONS = {
     "scan": (harness.SCAN, "Scan this project with agentprint."),
@@ -48,6 +52,28 @@ class AgentCLI:
     env: Callable[[Path, str], dict[str, str]]  # (home, mock url) -> extra environment
     setup: Callable[[Path, str], None] = lambda home, url: None  # before agentprint install
     folders: tuple[str, ...] = field(default_factory=tuple)  # created in HOME so it's "installed"
+
+
+@dataclass(frozen=True)
+class Plugin:
+    """agentprint as the agent's own plugin instead of `agentprint install`: `install` runs the
+    agent's plugin command in the throwaway HOME (home, agent environment, CLI binary, scratch
+    folder), and `args` go on the agent's command line. A fake uvx on PATH (tests/fake_uvx.py)
+    runs this checkout's agentprint for the plugin's pinned `uvx --from agentprint==...`."""
+
+    install: Callable[[Path, dict[str, str], Path, Path], None] = lambda h, e, x, t: None
+    args: tuple[str, ...] = ()
+
+
+def agent_command(argv: list[str], env: dict[str, str], cwd: Path) -> str:
+    """Run one of the agent's own setup commands (installing a plugin); fail with its output."""
+    done = subprocess.run(
+        argv, cwd=cwd, env=env, capture_output=True, text=True, timeout=TIMEOUT,
+        stdin=subprocess.DEVNULL,
+    )  # fmt: skip
+    if done.returncode != 0:
+        pytest.fail(f"{argv[1:]} exited {done.returncode}:\n{done.stdout}{done.stderr}")
+    return done.stdout + done.stderr
 
 
 @dataclass
@@ -80,7 +106,9 @@ def shared_cache(name: str) -> str | None:
     return str(folder)
 
 
-def run(agent: AgentCLI, tmp_path: Path, action: str, leaky: bool) -> Outcome:
+def run(
+    agent: AgentCLI, tmp_path: Path, action: str, leaky: bool, plugin: Plugin | None = None
+) -> Outcome:
     exe = find_cli(agent.cli)
     home = tmp_path / "home"
     for folder in agent.folders:
@@ -101,12 +129,16 @@ def run(agent: AgentCLI, tmp_path: Path, action: str, leaky: bool) -> Outcome:
     with MockModel(script) as url:
         agent.setup(home, url)
         lines: list[str] = []
-        installer.install(home, {}, [agent.name], False, lines.append)
         env = harness.agent_env(home, bin_dir, [exe.parent], **agent.env(home, url))
+        if plugin is None:
+            installer.install(home, {}, [agent.name], False, lines.append)
+        else:
+            real_guard_uvx(bin_dir)
+            plugin.install(home, env, exe, tmp_path)
         if action in CLEAN_ACTIONS:
             env = harness.color_terminal(env)
         result = subprocess.run(
-            agent.argv(exe, prompt),
+            [*agent.argv(exe, prompt), *(plugin.args if plugin else ())],
             cwd=project,
             env=env,
             capture_output=True,

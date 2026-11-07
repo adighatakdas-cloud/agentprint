@@ -1,9 +1,8 @@
-import time
-
 import pytest
 
 from agentprint.secrets import find_secrets, redact, shannon_entropy
 from tests import fakes
+from tests.timing import best_of, bound
 
 
 @pytest.mark.parametrize(("rule_id", "key"), sorted(fakes.ALL.items()))
@@ -54,9 +53,9 @@ def test_entropy_ranks_random_above_repetitive():
 
 def test_long_line_is_fast():
     line = ("x" * 1000 + " ") * 5000 + fakes.GITHUB  # ~5 MB, one line
-    start = time.perf_counter()
-    matches = find_secrets(line)
-    assert time.perf_counter() - start < 2.0
+    found: list = []
+    assert best_of(lambda: found.append(find_secrets(line))) < bound(2.0)
+    matches = found[0]
     assert [m.value for m in matches] == [fakes.GITHUB]
 
 
@@ -77,7 +76,8 @@ def test_generic_finds_assignments_in_common_shapes(text):
 
 
 def test_padded_keyword_is_fast():
-    start = time.perf_counter()
-    find_secrets("token" + " " * 40000 + "x")
-    find_secrets("tokentoken" * 50000)
-    assert time.perf_counter() - start < 2.0
+    def run():
+        find_secrets("token" + " " * 40000 + "x")
+        find_secrets("tokentoken" * 50000)
+
+    assert best_of(run) < bound(2.0)

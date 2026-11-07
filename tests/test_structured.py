@@ -36,6 +36,12 @@ def test_strip_jsonc_keeps_escaped_quotes_in_strings():
         ("deep.json", "[" * 100_000),
         ("empty.json", ""),
     ],
+    ids=[
+        "broken-json",
+        "broken-toml",
+        "deeply-nested-json",
+        "empty-json",
+    ],  # a 100 KB id breaks Windows
 )
 def test_broken_files_return_none_and_never_raise(tmp_path, name, text):
     f = tmp_path / name

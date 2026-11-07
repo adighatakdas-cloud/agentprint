@@ -58,6 +58,9 @@ class Launch:
 class HookCall:
     command: str
     cwd: Path
+    # False when the payload named no folder and `cwd` is only the hook's own working folder
+    # (a plugin hook's is the plugin's folder): a publish or push there "could not be checked".
+    cwd_known: bool = True
 
 
 @dataclass(frozen=True)
@@ -111,7 +114,7 @@ def _load_json(text: str | None) -> dict:
     if text is None or not text.strip():
         return {}
     try:
-        data = json.loads(text)
+        data = json.loads(text.removeprefix("\ufeff"))  # Notepad saves JSON with a BOM
     except json.JSONDecodeError as exc:
         raise Unsupported("it is not plain JSON (comments or trailing commas?)") from exc
     if not isinstance(data, dict):

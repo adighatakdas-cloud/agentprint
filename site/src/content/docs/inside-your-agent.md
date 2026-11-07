@@ -11,6 +11,8 @@ description: What agentprint install adds to each AI coding agent, what the agen
 
 Together, the hook and the check it runs are the tripwire. See [What `install` changes](/agentprint/agents/#what-install-changes) for the exact file each agent gets.
 
+Rather add agentprint through your agent's own plugin system? Most agents have an agentprint plugin with the same three things: see [Plugins and extensions](/agentprint/plugins/). Use the plugin or `install` for an agent, not both.
+
 ## What the agent reads
 
 Under a minute, start to finish:
@@ -71,7 +73,7 @@ Blocks to expect in strict mode, and what to do:
 
 - **Codex** runs a new hook only after you trust it. Type `/hooks` in Codex once after installing.
 - **Hermes Agent** asks before it runs any new hook, and agentprint never approves its own. Start `hermes chat` once and accept it. Until then, and in gateway or cron runs that never ask, the hook is off. The MCP server still works.
-- **Hooks need macOS or Linux.** On Windows, only the MCP server and the note are installed for now.
+- **Hooks need macOS or Linux.** On Windows, `agentprint install` adds only the MCP server and the note, and says so ("Hooks are not installed on Windows yet; the MCP server and the note are."). `status` and `uninstall` follow the same rule. Hooks for Windows come in a later step. The permission check (AP008) and its fix are not run on Windows yet and print a note saying so.
 - **agentprint only ever blocks, never approves.** Your agents' own approval rules still apply. If agentprint itself fails, the command runs, with a note that it could not check (unless you turn on strict mode, above).
 - **Spotting a publish is best effort.** agentprint reads the command line. It is not a shell. It follows `cd`, `&&`, `bash -c`, package scripts, workspaces and release tools. When agentprint is unsure what would be uploaded, it says "could not check", never "OK".
 - **It reads the scripts a command runs**, as long as they are inside the folder your agent works in. It follows scripts that run other scripts up to 4 levels deep:

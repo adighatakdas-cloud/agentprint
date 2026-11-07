@@ -11,7 +11,7 @@ never holds a key.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -121,8 +121,23 @@ def to_agent_fix(
     fail_on: FailOn,
     *,
     dry_run: bool = False,
+    not_checked: Sequence[str] = (),
 ) -> str:
-    """Compact text for an AI agent. Line 1 is the verdict after fixing. `outcome` is None when
+    """Compact text for an AI agent, then one `not_checked:` line per thing this machine could
+    not be checked for (so a clean result is never read as covering it)."""
+    text = _to_agent_fix(plan, outcome, after, fail_on, dry_run=dry_run)
+    return text + "".join(f"\nnot_checked: {clean(note)}" for note in not_checked)
+
+
+def _to_agent_fix(
+    plan: Plan,
+    outcome: Outcome | None,
+    after: list[Finding],
+    fail_on: FailOn,
+    *,
+    dry_run: bool,
+) -> str:
+    """The text for an AI agent. Line 1 is the verdict after fixing. `outcome` is None when
     nothing was applied (no --yes, a dry run, or nothing to apply); `after` is the re-check, or
     the scan itself when nothing changed."""
     planned = rows(plan.changes, plan.findings)
@@ -209,6 +224,7 @@ def to_json_fix(
     fail_on: FailOn,
     *,
     pack: bool = False,
+    not_checked: Sequence[str] = (),
 ) -> str:
     """The plan, what was applied or skipped, what needs the human, and the re-check. One entry
     per change (a folder of 28 locked files is 28 entries)."""
@@ -227,6 +243,8 @@ def to_json_fix(
             "findings": [finding_dict(f, moment) for f in after],
         },
     }
+    if not_checked:  # absent when everything was checked
+        data["not_checked"] = list(not_checked)
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 

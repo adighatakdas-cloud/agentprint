@@ -57,8 +57,9 @@ use what the agent module understood. When two checks see the same key (an API k
 MCP server entry is both AP002 and AP005), the more precise one claims it and the other drops
 it, so you get one finding.
 
-**`secrets.py`.** Key patterns (Anthropic, OpenAI, GitHub, AWS, Stripe, Slack, Google, and a
-generic name-plus-random-value rule with an entropy test) and `redact()`.
+**`secrets.py`.** Key patterns (Anthropic, OpenAI, GitHub, AWS, Stripe, Slack, Google, newer
+formats, four of them matched only next to the provider's name, and a generic
+name-plus-random-value rule with an entropy test) and `redact()`.
 
 **`pack.py` (what a package ships).** Asks the package manager itself: `npm pack --dry-run
 --ignore-scripts` (no package code runs) or `uv build` for Python projects, or reads an
@@ -69,6 +70,13 @@ against all agents' package rules and scans matching files for keys.
 gives the agent's config folder, the three edits `install` makes (hook, MCP server, note), how
 to read the agent's hook message (`parse_hook`: which command, in which folder) and how to
 answer (`reply`: the agent's own "deny" JSON or exit code). `install.py` applies the edits.
+
+**`plugins.py` and `plugins/` (agentprint as a plugin).** The same hook, MCP server and note,
+packaged as each agent's own plugin or extension. `tools/plugins.py` writes every file under
+`plugins/agentprint/` (and the manifests some ecosystems need at the repository root) from the
+integrations' own edits, so a plugin hook is the entry `install` writes with a pinned
+`uvx --from agentprint==<version>` command; `gen_docs --check` catches drift. `plugins.py` also
+tells `status` where each agent keeps installed plugins.
 
 **`commands.py` and `guard.py` (is this a publish?).** `commands.py` reads the shell command an
 agent is about to run and spots publishes and pushes. It is a careful reader, not a shell: it

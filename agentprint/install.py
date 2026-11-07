@@ -10,7 +10,8 @@ Ruling (how agents start agentprint): hooks call a small launcher script,
 ~/.agentprint/bin/agentprint-hook, which runs `<agentprint> guard`. <agentprint> is the absolute
 path of a permanent install if one is on PATH, else `uvx agentprint==<this version>` by absolute
 path. Absolute paths survive Gemini CLI's sanitized hook environment and GUI apps that don't
-see the shell PATH. Cost if wrong: one extra file on disk, and POSIX only (no Windows hooks).
+see the shell PATH. Cost if wrong: one extra file on disk. POSIX only: on Windows install adds
+just the MCP server and the note (no hooks, no launcher) until a Windows launcher exists.
 
 Launcher exit codes, from each agent's docs (rechecked 2026-11-05):
 - Claude Code: 0 = go on (stdout JSON read), 2 = block, others = non-blocking error.
@@ -45,7 +46,7 @@ from pathlib import Path
 
 import yaml
 
-from . import __version__
+from . import __version__, platform
 from .integrations import ALL_INTEGRATIONS
 from .integrations.base import (
     BLOCK_EXIT,
@@ -84,12 +85,14 @@ _THROWAWAY = (
     "/.cache/pipx/",  # pipx run on Linux
     "/tmp/",
     "/temp/",
+    "/uv/cache/archive-v",  # uvx on Windows: %LOCALAPPDATA%\\uv\\cache\\archive-v0\\...
+    "/appdata/local/temp/",  # %TEMP% on Windows
 )
 
 
 def _ephemeral(path: str) -> bool:
     """True for uvx / pipx run environments and temp dirs, which may vanish at any time."""
-    low = path.lower()
+    low = str(path).replace("\\", "/").lower()  # Windows paths too, POSIX ones unchanged
     return any(part in low for part in _THROWAWAY)
 
 
@@ -113,7 +116,13 @@ def reported_version(agentprint: list[str]) -> tuple[int, ...] | None:
     """The version `<agentprint> --version` prints, or None if it cannot be run or read."""
     try:
         done = subprocess.run(
-            [*agentprint, "--version"], capture_output=True, text=True, timeout=30, check=False
+            [*agentprint, "--version"],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+            **platform.subprocess_kwargs(),
         )
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
@@ -208,6 +217,24 @@ def _read(path: Path) -> str | None:
         raise Unsupported(f"it can't be read ({exc.strerror or type(exc).__name__})") from exc
 
 
+def _uses_crlf(text: str | None) -> bool:
+    """True when every line end in the text is CRLF (a file saved on Windows)."""
+    return bool(text) and "\r\n" in text and text.count("\n") == text.count("\r\n")
+
+
+def _through_edits(text: str | None, edits: list[Edit], *, revert: bool = False) -> str | None:
+    """Apply (or take out) the edits on LF text and give the result the file's own line ends,
+    so a CRLF file stays CRLF; unchanged text comes back as the very same string."""
+    crlf = _uses_crlf(text)
+    work = text.replace("\r\n", "\n") if crlf and text is not None else text
+    new = work
+    for edit in reversed(edits) if revert else edits:
+        new = edit.revert(new or "") if revert else edit.apply(new)
+    if new == work:
+        return text
+    return new.replace("\n", "\r\n") if crlf and new is not None else new
+
+
 def _mkdirs(directory: Path) -> list[str]:
     created: list[str] = []
     missing = []
@@ -231,7 +258,7 @@ def _backup_path(home: Path, path: Path) -> Path:
     try:
         rel = path.relative_to(home)
     except ValueError:
-        rel = Path("abs") / str(path).lstrip("/")
+        rel = Path("abs", *platform.drive_safe_parts(path))  # drive kept: C/x/y, UNC/host/share
     return home / STATE_DIR / "backups" / rel
 
 
@@ -240,7 +267,9 @@ def _backup_path(home: Path, path: Path) -> Path:
 
 def _shown(home: Path, path: Path) -> str:
     text = str(path)
-    return "~" + text[len(str(home)) :] if text.startswith(str(home) + os.sep) else text
+    if not text.startswith(str(home) + os.sep):
+        return text
+    return "~" + text[len(str(home)) :].replace(os.sep, "/")  # the same ~/.x on every OS
 
 
 def _redact_line(line: str) -> str:
@@ -277,11 +306,11 @@ def _data(text: str, edits: list[Edit]) -> object:
     its anchors would expand it past MAX_EXPANDED values (checked before anything walks it)."""
     if any(isinstance(e, YamlEdit) for e in edits):
         try:
-            data = yaml.safe_load((text or "").lstrip("﻿")) or {}
+            data = yaml.safe_load((text or "").lstrip("\ufeff")) or {}
         except yaml.YAMLError as exc:
             raise ValueError(str(exc)) from exc
     elif any(isinstance(e, JsonEdit) for e in edits):
-        data = json.loads(text or "{}")
+        data = json.loads(text.removeprefix("\ufeff") if text else "{}")
     else:
         raise ValueError("not a data file")
     expanded_size(data)
@@ -350,15 +379,20 @@ def _would_change(path: Path, edits: list[Edit]) -> bool:
     """True if installing `edits` into `path` would change it (no output, nothing written)."""
     try:
         old = _read(path)
-        new = old
-        for edit in edits:
-            new = edit.apply(new)
+        new = _through_edits(old, edits)
     except Exception:  # noqa: BLE001 - a file that can't be edited won't change
         return False
     return new != old
 
 
 # ---- install ----------------------------------------------------------------------------------
+
+
+def _hook_free(edits: list[Edit]) -> list[Edit]:
+    """On Windows only the MCP server and the note go in: hooks run through a /bin/sh launcher."""
+    if not platform.is_windows():
+        return edits
+    return [e for e in edits if not e.what.startswith("hook")]
 
 
 def _group(edits: list[Edit]) -> dict[Path, list[Edit]]:
@@ -400,11 +434,14 @@ def install(
     """Arm the agents found; returns how many files changed (or would, in a dry run).
 
     apply_hint ends a dry run's count line; the menu, which asks y/N itself, passes None."""
+    windows = platform.is_windows()  # no hooks there: only the MCP server and the note go in
     agentprint = resolve_agentprint()
     found = select(names, home, env)
     # Strict hooks must run an agentprint that honours --strict: an older permanent install is
     # passed over for uvx running this version, so the promise printed below holds.
-    stale = (agentprint[0], ignores_strict(agentprint)) if strict and found else None
+    stale = (
+        (agentprint[0], ignores_strict(agentprint)) if strict and found and not windows else None
+    )
     if stale and stale[1]:
         agentprint = pinned_uvx()
     launch = Launch(
@@ -416,7 +453,9 @@ def install(
         return 0
     echo("Agents found: " + ", ".join(i.label for i in found))
     echo("Agents will start agentprint with: " + " ".join(agentprint))
-    if stale and stale[1]:
+    if windows:
+        pass  # no hooks here: nothing below about how hooks start agentprint applies
+    elif stale and stale[1]:
         echo(
             f"  (the agentprint at {stale[0]} {stale[1]}, so hooks use uvx with agentprint "
             f"{__version__} instead. Upgrade it with `uv tool upgrade agentprint`, then install "
@@ -427,20 +466,22 @@ def install(
             "  (no permanent install found, so hooks use uvx. For faster offline hooks run "
             "`uv tool install agentprint`, then install again.)"
         )
-    if strict:
+    if windows:
+        echo(platform.NO_HOOKS_WINDOWS)
+    elif strict:
         echo("Strict mode: a publish or push agentprint cannot check will be blocked.")
     state = State.load(home)
     changed = 0
-    agents = [(i.name, i.label, i.edits(home, env, launch)) for i in found]
+    agents = [(i.name, i.label, _hook_free(i.edits(home, env, launch))) for i in found]
     agent_files = [(path, group) for _, _, edits in agents for path, group in _group(edits).items()]
     # The shared launcher goes in when an agent file will use it, or when a hook installed
     # earlier already uses it and the launcher is missing or out of date.
-    core_edits = _core_edits(home, agentprint)
+    core_edits = [] if windows else _core_edits(home, agentprint)
     needed = any(_would_change(path, group) for path, group in agent_files) or (
         any(_would_change(edit.path, [edit]) for edit in core_edits)
         and any(_uses_launcher(path) for path, _ in agent_files)
     )
-    core = [(CORE, "agentprint", core_edits)] if needed else []
+    core = [(CORE, "agentprint", core_edits)] if needed and core_edits else []
     sections = core + agents
     try:
         for name, label, edits in sections:
@@ -458,7 +499,7 @@ def install(
     else:
         echo(f"Done: {changed} file(s) changed. Backups: {_shown(home, home / STATE_DIR)}")
         echo("Undo everything with: agentprint uninstall")
-    for integration in found:
+    for integration in () if windows else found:  # the notes are about trusting hooks
         for note in integration.notes:
             echo(f"Note for {integration.label}: {note}")
     return changed
@@ -476,9 +517,7 @@ def _install_file(
     whats = "; ".join(edit.what for edit in edits)
     try:
         old = _read(path)
-        new = old
-        for edit in edits:
-            new = edit.apply(new)
+        new = _through_edits(old, edits)
         if new is not None:
             new.encode("utf-8")  # catch unwritable text before anything is shown or written
         if new != old and _read_only(path):
@@ -550,7 +589,7 @@ def uninstall(
     echo(f"agentprint uninstall{' (dry run: nothing is written)' if dry_run else ''}")
     grouped: dict[Path, list[Edit]] = {}
     for name in chosen:
-        grouped.update(_group(ALL_INTEGRATIONS[name].edits(home, env, launch)))
+        grouped.update(_group(_hook_free(ALL_INTEGRATIONS[name].edits(home, env, launch))))
     for key, entry in state.files.items():  # moved since install, e.g. AGENTS.override.md
         if Path(key) not in grouped and (entry.get("agent") in chosen or not names):
             grouped[Path(key)] = _marker_reverts(Path(key))
@@ -560,7 +599,7 @@ def uninstall(
         if entry.get("agent") != CORE and Path(key) not in grouped
     ]
     last = not others  # nothing of another agent left: the launcher and state go too
-    if last:
+    if last and not platform.is_windows():
         grouped.update(_group(_core_edits(home, ["agentprint"])))
     changed = 0
     exact = True
@@ -652,8 +691,7 @@ def _uninstall_file(
     # bytes back (formatting included) when what remains is the same as the backup.
     restored: str | None = current
     try:
-        for edit in reversed(edits):
-            restored = edit.revert(restored)
+        restored = _through_edits(restored, edits, revert=True) or ""
     except Unsupported as exc:
         echo(f"  ! {_shown(home, path)}: left alone because {exc}. Remove agentprint by hand.")
         return "kept"

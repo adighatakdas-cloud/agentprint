@@ -65,3 +65,18 @@ def test_agent_console_writes_no_escape_codes(monkeypatch):
     c = console({"CLAUDECODE": "1"}, file=out)
     c.print(Text.assemble(("strong", "ap.strong"), (" BLOCK ", "ap.block")))
     assert out.getvalue() == "strong BLOCK \n"
+
+
+def test_a_pipe_wraps_at_the_asked_width_even_where_rich_sees_a_legacy_windows_console(
+    monkeypatch,
+):
+    import io
+
+    import rich.console
+
+    from agentprint.ui import theme as theme_mod
+
+    monkeypatch.setattr(rich.console, "detect_legacy_windows", lambda: True)
+    out = theme_mod.console({"COLUMNS": "80"}, file=io.StringIO())
+    assert out.legacy_windows is False
+    assert out.width == 80

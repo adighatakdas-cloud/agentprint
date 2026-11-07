@@ -21,6 +21,7 @@ from agentprint.cli import app
 from agentprint.report import FailOn
 from agentprint.ui import menu
 from agentprint.ui.welcome import mark_welcome, seen_welcome
+from tests.conftest import home_vars, set_home
 
 runner = CliRunner()
 ANSI = re.compile(r"\x1b(\[[0-9;?]*[ -/]*[@-~]|[@-Z\\-_])")
@@ -64,7 +65,7 @@ def human(monkeypatch, tmp_path):
     """A person at a terminal whose home (a tmp folder) has already seen the welcome."""
     home = tmp_path / "home"
     home.mkdir()
-    monkeypatch.setenv("HOME", str(home))
+    set_home(monkeypatch, str(home))
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "is_interactive", lambda *a: True)
     monkeypatch.setattr(menu, "posix_reader", lambda stream: nullcontext(lambda timeout: None))
@@ -88,7 +89,7 @@ def _pick(monkeypatch, action):
 def test_first_run_plays_welcome_marks_and_exits(monkeypatch, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
-    monkeypatch.setenv("HOME", str(home))
+    set_home(monkeypatch, str(home))
     monkeypatch.setattr(cli, "is_interactive", lambda *a: True)
     monkeypatch.setattr(menu, "choose", lambda *a, **k: pytest.fail("menu on first run"))
     r = runner.invoke(app, [])
@@ -317,7 +318,7 @@ FORCED = {"GITHUB_ACTIONS": "true", "FORCE_COLOR": "1"}  # typer's console force
 
 
 def _piped(home: Path, args: list[str], **extra: str) -> subprocess.CompletedProcess:
-    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(home), **FORCED, **extra}
+    env = {"PATH": os.environ.get("PATH", ""), **home_vars(str(home)), **FORCED, **extra}
     return subprocess.run([*CHILD, *args], env=env, cwd=home, stdin=subprocess.DEVNULL,
                           capture_output=True, timeout=30)  # fmt: skip
 
@@ -354,7 +355,7 @@ def test_ctrl_c_in_menu_exits_130_without_traceback(human, monkeypatch):
 
 
 def test_ctrl_c_during_first_run_welcome_exits_130(monkeypatch, tmp_path):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    set_home(monkeypatch, str(tmp_path))
     monkeypatch.setattr(cli, "is_interactive", lambda *a: True)
 
     def boom(*a, **k):
@@ -387,7 +388,7 @@ def _env(home: Path, **extra: str) -> dict[str, str]:
     """Built from scratch: no CI, NO_COLOR or AI-agent markers leak in from the test runner."""
     return {
         "PATH": os.environ.get("PATH", ""),
-        "HOME": str(home),
+        **home_vars(str(home)),
         "TERM": "xterm-256color",
         **extra,
     }

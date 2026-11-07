@@ -1,7 +1,6 @@
 import io
 import json
 import tarfile
-import time
 import zipfile
 
 import pytest
@@ -9,6 +8,7 @@ import pytest
 from agentprint import guard
 from agentprint.guard import evaluate
 from tests import fakes
+from tests.timing import best_of, bound
 
 LEAKY = json.dumps({"permissions": {"allow": [f"Bash(export K={fakes.ANTHROPIC})"]}}).encode()
 
@@ -91,6 +91,4 @@ def test_unreadable_archive_warns_and_allows(tmp_path):
 @pytest.mark.parametrize("command", ["ls", "npm publish ok-1.0.0.tgz"])
 def test_guard_is_fast(tmp_path, command):
     _tgz(tmp_path / "ok-1.0.0.tgz", {"package/index.js": b"1"})
-    start = time.perf_counter()
-    evaluate(command, tmp_path)
-    assert time.perf_counter() - start < 0.5
+    assert best_of(lambda: evaluate(command, tmp_path)) < bound(0.5)

@@ -35,7 +35,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from . import sqlite_text, structured
+from . import platform, sqlite_text, structured
 from .advice import NO_LEAK, Advice, Moment, advise, agent_path, split_location
 from .agents import ALL_AGENTS, by_name
 from .checks.ap005_mcp_inline_secret import _MARKER as MCP_MARKER
@@ -754,6 +754,8 @@ def _plan_locks(findings: list[Finding], pack: bool) -> tuple[list[Change], list
     finding; fix does not work them out again)."""
     changes: dict[Path, Change] = {}
     manual: list[Manual] = []
+    if platform.is_windows():  # no go-rwx on Windows; the output says "not checked" (scan_notes)
+        return [], _leave_to_human(findings, pack)[1] if findings else []
     for finding in findings:
         if not finding.paths:
             manual += _leave_to_human([finding], pack)[1]
@@ -1213,7 +1215,7 @@ def _apply_ignore(changes: list[Change], journal: Journal) -> list[Result]:
         try:
             if exists:
                 journal.open()  # claims the run's stamp, which names its backup folder
-                copy = journal.backups / Path(*target.resolve().parts[1:])
+                copy = journal.backups / Path(*platform.drive_safe_parts(target.resolve()))
                 copy.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                 private_dir(journal.folder / "backups")
                 fd = os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

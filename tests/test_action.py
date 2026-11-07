@@ -176,6 +176,7 @@ def badge_dir(tmp_path):
     return d
 
 
+@pytest.mark.posix_only  # runs bash scripts
 @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 def test_publish_dry_run_pushes_nothing(tmp_path, badge_dir):
     remote = tmp_path / "remote.git"
@@ -189,6 +190,7 @@ def test_publish_dry_run_pushes_nothing(tmp_path, badge_dir):
     assert "FAKETOKEN123" not in (proc.stdout + proc.stderr).replace("::add-mask::FAKETOKEN123", "")
 
 
+@pytest.mark.posix_only  # runs bash scripts
 @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 @pytest.mark.parametrize("existing", [False, True])
 def test_publish_keeps_one_commit_whether_or_not_the_branch_exists(tmp_path, badge_dir, existing):
@@ -216,6 +218,7 @@ def test_publish_keeps_one_commit_whether_or_not_the_branch_exists(tmp_path, bad
     assert "FAKETOKEN123" not in proc.stdout.replace("::add-mask::FAKETOKEN123", "")
 
 
+@pytest.mark.posix_only  # runs bash scripts
 def test_publish_without_badge_files_is_an_error(tmp_path):
     proc = _publish(tmp_path, tmp_path, "dry-run")
     assert proc.returncode == 2 and "::error" in proc.stdout
@@ -303,6 +306,7 @@ DEFAULTS = {"fail-on": "high", "upload-sarif": "false"}
 RESULTS = {"clean-npm": 0, "leaky-npm": 2, "clean-repo": 0, "leaky-repo": 1}  # SARIF results
 
 
+@pytest.mark.posix_only  # runs the action steps with bash
 @pytest.mark.integration
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv not installed")
 @pytest.mark.parametrize("fixture", sorted(EXPECTED))
@@ -319,6 +323,7 @@ def test_action_exit_codes_and_sarif(action_env, fixture):
     assert fakes.ANTHROPIC not in sarif + proc.stdout + proc.stderr
 
 
+@pytest.mark.posix_only  # runs the action steps with bash
 @pytest.mark.integration
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv not installed")
 @pytest.mark.parametrize(
@@ -340,6 +345,7 @@ def test_action_fail_on_and_errors(action_env, inputs, expected):
         assert "sarif-file" not in outputs
 
 
+@pytest.mark.posix_only  # runs the action steps with bash
 @pytest.mark.integration
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv not installed")
 def test_action_passes_a_dash_path_as_a_path(action_env):

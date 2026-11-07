@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
 
+from . import platform
+
 MAX_CONTENT_BYTES = 10 * 1024 * 1024  # largest single file whose content is read
 MAX_TOTAL_CONTENT_BYTES = 64 * 1024 * 1024  # all content read from one archive, together
 MAX_MEMBERS = 100_000  # entries (files, folders, links) in one archive
@@ -204,7 +206,14 @@ def read_archive_fileobj(fileobj: IO[bytes], label: str, want: Want) -> PackageL
 def _run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True, check=False, timeout=TIMEOUT_SECONDS
+            cmd,
+            cwd=cwd,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=TIMEOUT_SECONDS,
+            **platform.subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired as exc:
         raise PackError(f"{Path(cmd[0]).name} timed out after {TIMEOUT_SECONDS}s") from exc

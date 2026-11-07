@@ -11,6 +11,7 @@ header and each "where") are printed whole, so a long path can still be copied i
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
 from rich.console import Console
 from rich.text import Text
@@ -71,6 +72,7 @@ def render(
     *,
     fail_on: FailOn = FailOn.high,
     header: str | None = None,
+    not_checked: Sequence[str] = (),
 ) -> None:
     width = console.width
     if header is not None:
@@ -98,5 +100,8 @@ def render(
             for line in hang(lead, safe_step(fix), width):
                 console.print(line)
         console.print()
+    for note in not_checked:
+        for line in hang(Text("not checked  ", style="ap.dim"), clean(note), width):
+            console.print(line)
     for line in verdict_lines(findings, fail_on, width):
         console.print(line)

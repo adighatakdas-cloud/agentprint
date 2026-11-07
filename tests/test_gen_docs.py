@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from agentprint import cli
+from agentprint import __version__, cli
 from agentprint import fix as fixer
 from agentprint.checks import SCAN_CHECKS
 from agentprint.checks import ap006_package_leak as ap006
@@ -16,6 +16,7 @@ from agentprint.integrations import ALL_INTEGRATIONS
 from agentprint.roster import SHORT_NAMES
 from agentprint.secrets import find_secrets
 from tests import fakes
+from tests.conftest import home_vars, set_home
 from tools import gen_docs
 
 SITE = gen_docs.ROOT / "site"
@@ -26,6 +27,9 @@ def _text(fragment: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", fragment))
 
 
+# The committed fragments are POSIX renderings (permission fixes and the AP008 sweep cannot be
+# reproduced on NTFS); Windows checks the engine-vs-fragment tests below instead.
+@pytest.mark.posix_only
 def test_generated_files_are_current():
     stale = [p for p, text in gen_docs.outputs().items() if p.read_text() != text]
     assert stale == []  # run: uv run python -m tools.gen_docs
@@ -80,6 +84,27 @@ def test_missing_readme_marker_fails_loudly():
         gen_docs.replace_block("no markers here", "x")
 
 
+def test_ci_page_pins_come_from_templates():
+    for name, template in gen_docs.CI_BLOCKS.items():
+        text = (gen_docs.ROOT / "tools" / "templates" / template).read_text()
+        assert "{{version}}" in text and not re.search(r"\d+\.\d+\.\d+", text), template
+        page = gen_docs.outputs()[SITE / "src/content/docs/ci.md"]
+        assert page.count(f"<!-- {name}:start -->") == 1
+
+
+def test_plugins_page_block_and_plugin_files_are_generated():
+    files = gen_docs.outputs()
+    page = files[SITE / "src/content/docs/plugins.md"]
+    block = page.split(gen_docs.PLUGINS_START)[1].split(gen_docs.PLUGINS_END)[0]
+    assert f"agentprint=={__version__}" in block
+    assert gen_docs.ROOT / "server.json" in files
+    assert gen_docs.ROOT / "plugins/agentprint/.claude-plugin/plugin.json" in files
+    with pytest.raises(ValueError, match="plugins.md needs exactly one <!-- plugins:start -->"):
+        gen_docs.replace_block(
+            "none", "x", gen_docs.PLUGINS_START, gen_docs.PLUGINS_END, "plugins.md"
+        )
+
+
 def test_fragments_show_real_renderer_output():
     f = gen_docs.terminal_fragments()
     assert list(f) == ["welcome", "scan", "fix", "agent"]  # the landing's order
@@ -115,7 +140,7 @@ def test_fragments_ignore_ambient_env(monkeypatch, tmp_path):
         "TERM": "dumb",
         "COLUMNS": "40",
         "FORCE_COLOR": "0",
-        "HOME": str(tmp_path),  # not the real home, and not the demo world's
+        **home_vars(str(tmp_path)),  # not the real home, and not the demo world's
         "GEMINI_CLI_HOME": str(tmp_path / "gemini"),
         "CODEX_HOME": str(tmp_path / "codex"),
         "CLAUDE_CONFIG_DIR": str(tmp_path / "claude"),
@@ -179,12 +204,13 @@ def test_scan_and_fix_tell_one_story():
 def _person_at_a_terminal(monkeypatch, home: Path, project: Path) -> None:
     for name in ("GEMINI_CLI_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("HOME", str(home))
+    set_home(monkeypatch, str(home))
     monkeypatch.chdir(project)
     monkeypatch.setattr(cli, "is_interactive", lambda *a: True)
     monkeypatch.setattr(cli, "is_agent", lambda env: False)
 
 
+@pytest.mark.posix_only  # POSIX rendering; Windows adds the AP008 'not checked' note
 def test_fix_fragment_is_what_agentprint_fix_prints(tmp_path, monkeypatch):
     """The landing's fix block, line for line, is the real command run in ~/code/my-app by a
     person who answers y."""
@@ -197,6 +223,7 @@ def test_fix_fragment_is_what_agentprint_fix_prints(tmp_path, monkeypatch):
     assert result.output == _text(gen_docs.terminal_fragments()["fix"])
 
 
+@pytest.mark.posix_only  # POSIX rendering; Windows adds the AP008 'not checked' note
 def test_scan_fragment_is_what_agentprint_scan_prints(tmp_path, monkeypatch):
     """Below its header (time and roster are fixed on the landing), the scan block is the real
     sweep of the same world."""

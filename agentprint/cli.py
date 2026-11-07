@@ -5,17 +5,17 @@ from __future__ import annotations
 import os
 import sys
 import time
-from collections.abc import Collection, Iterator
+from collections.abc import Collection, Iterator, Sequence
 from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Annotated, Any, TypeVar, cast
 
 import typer
 from rich.console import Console
 from typer.core import TyperCommand, TyperGroup
 
-from . import __version__
+from . import __version__, platform
 from .advice import Moment
 from .checks import PACKAGE_WANT, check_package
 from .integrations import ALL_INTEGRATIONS
@@ -26,6 +26,9 @@ from .sarif import to_sarif
 from .scanner import scan as run_scan
 from .ui.detect import is_agent, is_interactive, plain_help, should_animate
 from .ui.theme import console as themed_console
+
+if TYPE_CHECKING:
+    from .roster import AgentState
 
 AGENT_NAMES = ", ".join(ALL_INTEGRATIONS)  # help text stays in step with the integrations
 
@@ -245,16 +248,17 @@ def _emit(
     labels: Collection[str] = (),
     out: Console | None = None,
     header: str | None = None,
+    not_checked: Sequence[str] = (),
 ) -> None:
     if fmt is Format.json:
-        typer.echo(to_json(findings, moment))
+        typer.echo(to_json(findings, moment, not_checked))
     elif fmt is Format.sarif:
         typer.echo(to_sarif(findings, package=package, labels=labels))
     elif fmt is Format.agent:
-        typer.echo(to_agent(findings, fail_on, moment))
+        typer.echo(to_agent(findings, fail_on, moment, not_checked=not_checked))
     else:
         out = out or themed_console(dict(os.environ))
-        print_table(findings, out, fail_on=fail_on, header=header)
+        print_table(findings, out, fail_on=fail_on, header=header, not_checked=not_checked)
 
 
 def _roster_size(home: Path | None) -> int:
@@ -311,7 +315,15 @@ def run_scan_command(
         else:
             where = f"{'~' if home is None else _short(str(home))} + {path}"
             header = f"agentprint scan  {where} · roster {_roster_size(home)} · {secs:.2f}s"
-    _emit(findings, fmt, fail_on, Moment.scan, out=out, header=header)
+    _emit(
+        findings,
+        fmt,
+        fail_on,
+        Moment.scan,
+        out=out,
+        header=header,
+        not_checked=platform.scan_notes(),
+    )
     return _write_badge(badge_dir, "scan", fail_on, findings) or exit_code(findings, fail_on)
 
 
@@ -532,13 +544,18 @@ def run_fix_command(
             except PackError as exc:  # changes made, but the preflight can't run again
                 typer.secho(f"error: could not check again: {exc}", err=True, fg="red")
                 status = 2
+    gaps = () if pack else platform.scan_notes()  # a package check reads no permissions
     if fmt is FixFormat.json:
-        typer.echo(to_json_fix(the_plan, outcome, after, fail_on, pack=pack))
+        typer.echo(to_json_fix(the_plan, outcome, after, fail_on, pack=pack, not_checked=gaps))
     elif fmt is FixFormat.agent:
-        typer.echo(to_agent_fix(the_plan, outcome, after, fail_on, dry_run=dry_run))
+        typer.echo(
+            to_agent_fix(the_plan, outcome, after, fail_on, dry_run=dry_run, not_checked=gaps)
+        )
     else:
         assert out is not None
-        fixview.render_outcome(outcome, after, out, fail_on, plan=the_plan, note=note)
+        fixview.render_outcome(
+            outcome, after, out, fail_on, plan=the_plan, note=note, not_checked=gaps
+        )
     return status or exit_code(after, fail_on)
 
 
@@ -634,6 +651,7 @@ def guard(
     """
     from .hook import run_hook  # imported here so other commands stay fast to start
 
+    platform.use_utf8_streams()  # a Windows console is cp1252 unless told otherwise
     reply = run_hook(agent, sys.stdin.read(), os.environ, fail_on, strict)
     if reply.stdout:
         typer.echo(reply.stdout)
@@ -759,17 +777,22 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
         return 2
     fmt = _auto_format(fmt, StatusFormat.agent, StatusFormat.table)
     states = roster(home_dir, env)
+    notes = [note for s in states if s.found and (note := _keep_one(s))]
     if fmt is StatusFormat.json:
-        agents = [
-            {"name": s.name, "label": s.label, "found": s.found, "armed": s.armed} for s in states
-        ]
+        agents = []
+        for s in states:
+            agent = {"name": s.name, "label": s.label, "found": s.found, "armed": s.armed}
+            if s.plugin:  # only when one is there, so the usual output stays as it was
+                agent["plugin"] = s.plugin  # "enabled", "disabled" or "unknown"
+            agents.append(agent)
         typer.echo(json_lib.dumps({"tool": "agentprint", "version": __version__, "agents": agents}))
     elif fmt is StatusFormat.agent:
         for s in states:
-            word = ("armed" if s.armed else "unarmed") if s.found else "not found"
-            typer.echo(f"{clean(s.name)} {word}")
-        if any(s.found and not s.armed for s in states):
+            typer.echo(f"{clean(s.name)} {_status_word(s)}")
+        if any(s.found and not s.guarded for s in states):
             typer.echo("Arm unarmed agents with: agentprint install")
+        for note in notes:
+            typer.echo(note)
     else:
         out = themed_console(env or dict(os.environ), plain=plain)
         out.print(Text(f"agentprint {__version__} · roster", style="ap.dim"))
@@ -779,14 +802,55 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
         for s in states:
             if s.found:
                 line = Text(clean(s.label).ljust(width))
-                line.append(*(("armed", "ap.amber") if s.armed else ("unarmed", "ap.dim")))
+                line.append(_status_word(s), "ap.amber" if s.guarded else "ap.dim")
                 out.print(line)
         missing = [clean(s.label) for s in states if not s.found]
         if missing:
             body = Text(", ".join(missing), style="ap.dim")
             for line in hang(Text("not found: ", style="ap.dim"), body, out.width):
                 out.print(line)
+        for note in notes:
+            for line in hang("", note, out.width):
+                out.print(line)
     return 0
+
+
+def _status_word(s: AgentState) -> str:
+    from .plugins import DISABLED, ENABLED, UNKNOWN
+
+    if not s.found:
+        return "not found"
+    if s.twice:
+        return "armed twice (plugin and install)"
+    if s.plugin == ENABLED:
+        return "armed (plugin)"
+    word = "armed" if s.armed else "unarmed"
+    if s.plugin == UNKNOWN:
+        return f"{word} (agentprint plugin found, not checked whether it is enabled)"
+    if s.plugin == DISABLED:
+        return f"{word} (agentprint plugin installed, not enabled)"
+    return word
+
+
+def _keep_one(s: AgentState) -> str:
+    """What to do when agentprint may be in an agent both as a plugin and through install."""
+    from .plugins import REMOVE_PLUGIN, UNKNOWN
+
+    ways = (
+        f"To keep the plugin, run: agentprint uninstall --agent {s.name}. To keep install, "
+        f"remove the plugin: {REMOVE_PLUGIN.get(s.name, 'in the agent')}."
+    )
+    if s.twice:
+        return (
+            f"{s.label} has agentprint twice, as a plugin and through agentprint install: "
+            f"keep one. {ways}"
+        )
+    if s.armed and s.plugin == UNKNOWN:
+        return (
+            f"{s.label} also has the agentprint plugin, and agentprint could not check whether "
+            f"it is enabled. If it is, keep one. {ways}"
+        )
+    return ""
 
 
 @app.command()

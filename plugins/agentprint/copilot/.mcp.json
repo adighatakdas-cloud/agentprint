@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "agentprint": {
+      "type": "local",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "agentprint==0.1.1",
+        "agentprint",
+        "mcp"
+      ],
+      "tools": [
+        "*"
+      ]
+    }
+  }
+}

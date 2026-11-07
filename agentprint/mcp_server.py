@@ -10,7 +10,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
-from . import __version__
+from . import __version__, platform
 from .advice import Moment, explain
 from .gitcheck import check_push as run_check_push
 from .guard import CannotCheck, check_package_path
@@ -75,7 +75,7 @@ def build_server() -> MCPServer:
         if not project.is_dir():
             return _cannot(ValueError(f"{path} is not a folder"))
         findings = run_scan(Path.home() if include_home else None, project)
-        return to_agent(findings, FailOn.high, Moment.scan)
+        return to_agent(findings, FailOn.high, Moment.scan, not_checked=platform.scan_notes())
 
     @server.tool()
     def explain_finding(check_id: str) -> str:

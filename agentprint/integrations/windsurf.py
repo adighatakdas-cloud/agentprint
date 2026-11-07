@@ -35,6 +35,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .. import platform
 from ..guard import Verdict
 from .base import (
     BLOCK_EXIT,
@@ -127,6 +128,9 @@ WINDSURF_INTEGRATION = Integration(
 
 
 def devin_dir(home: Path, env: Env) -> Path:
+    if platform.is_windows():  # %APPDATA%\\devin\\config.json (docs.devin.ai, checked 2026-11-07)
+        appdata = env.get("APPDATA")
+        return (Path(appdata) if appdata else home / "AppData" / "Roaming") / "devin"
     root = Path(env["XDG_CONFIG_HOME"]) if env.get("XDG_CONFIG_HOME") else home / ".config"
     return root / "devin"
 

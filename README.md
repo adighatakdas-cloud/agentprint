@@ -1,3 +1,4 @@
+<!-- mcp-name: io.github.adighatakdas-cloud/agentprint -->
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/adighatakdas-cloud/agentprint/main/docs/brand/logo-dark.svg">
@@ -79,8 +80,13 @@ including running from a clone of this repo.
 | [AP009](https://adighatakdas-cloud.github.io/agentprint/checks/ap009/) | Source maps, original source or AI instruction files in your package hand an AI your code. | high to low by licence; no licence, UNLICENSED, SEE LICENSE IN, proprietary or only LicenseRef- choices count as closed; low for a private registry |
 <!-- checks:end -->
 
-Keys are found by pattern (Anthropic, OpenAI, GitHub, AWS, Stripe, Slack and Google formats, plus
-a generic "secret-looking name = random-looking value" rule) and are never used or sent anywhere.
+Keys are found by pattern and are never used or sent anywhere: Anthropic, OpenAI, GitHub, AWS,
+Stripe, Slack and Google, then 27 newer rules (and Slack `xapp-` tokens), publishing tokens (npm, PyPI, GitLab, Docker Hub), AI providers (Hugging
+Face, Groq, OpenRouter, xAI, Perplexity, Replicate), developer platforms (Supabase, Cloudflare,
+DigitalOcean, Linear, Notion, Shopify, Atlassian, Postman, SendGrid, Doppler, 1Password), and
+DeepSeek, Twilio, Discord and Telegram only next to the provider's name. A generic "secret-looking
+name = random-looking value" rule catches the rest. Format lengths for Docker Hub, Supabase
+secret keys and Google OAuth secrets are from third-party scanners, not the vendor's docs.
 
 ## Inside your AI agent
 
@@ -89,12 +95,15 @@ a generic "secret-looking name = random-looking value" rule) and are never used 
 - If something would leak, the agent gets a brief: the fix steps, plus what to ask you (rotate a key).
 - It only ever blocks (BLOCK or CLEAR); your agent's own approval rules still apply.
 - `agentprint uninstall` takes out exactly what `install` added.
+- Rather add it as a plugin? Claude Code, Codex, Copilot CLI, Gemini CLI, Cursor, Antigravity
+  and Hermes each have one: see [Plugins](https://adighatakdas-cloud.github.io/agentprint/plugins/).
 
 Details: [Inside your agent](https://adighatakdas-cloud.github.io/agentprint/inside-your-agent/).
 
 ## More
 
 [Agents](https://adighatakdas-cloud.github.io/agentprint/agents/) ·
+[Plugins](https://adighatakdas-cloud.github.io/agentprint/plugins/) ·
 [Use in CI](https://adighatakdas-cloud.github.io/agentprint/ci/) ·
 [Privacy](https://adighatakdas-cloud.github.io/agentprint/privacy/) ·
 [Comparison](https://adighatakdas-cloud.github.io/agentprint/comparison/) ·

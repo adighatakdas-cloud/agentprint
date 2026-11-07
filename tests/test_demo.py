@@ -13,10 +13,12 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from agentprint.cli import app
 from agentprint.ui.detect import AGENT_MARKERS
+from tests.conftest import home_vars, set_home
 
 ROOT = Path(__file__).resolve().parent.parent
 DEMO = ROOT / "demo"
@@ -137,7 +139,7 @@ def world(tmp_path, monkeypatch) -> Path:
         ap008, "_parents", lambda path: [p for p in path.parents if p.is_relative_to(inside)]
     )
     monkeypatch.chdir(root)
-    monkeypatch.setenv("HOME", str(root))  # as the tape does: no real agent folder is read
+    set_home(monkeypatch, str(root))  # as the tape does: no real agent folder is read
     monkeypatch.setenv("COLUMNS", "100")
     for name in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "GEMINI_CLI_HOME"):
         monkeypatch.delenv(name, raising=False)
@@ -187,7 +189,8 @@ def test_tape_command_runs_and_redacts(command, world):
         assert _snapshot(home) == before  # a scan changes nothing
     elif verb == "fix":
         assert result.exit_code == 0, result.output
-        assert "5 fixes ready" in result.output
+        ready = "3" if os.name == "nt" else "5"  # the 2 permission fixes are POSIX-only
+        assert f"{ready} fixes ready" in result.output
         assert "CLEAR" in result.output and "BLOCK" not in result.output
         assert "Rotate the OpenAI API key" in result.output  # what only the human can do
         assert "FAKEFAKE" not in (home / ".claude" / "history.jsonl").read_text()
@@ -259,7 +262,14 @@ def test_loop_script_labels_itself_simulated():
 def test_workflow_takes_a_tape_input_without_expressions_in_run():
     text = (ROOT / ".github" / "workflows" / "demo-gif.yml").read_text(encoding="utf-8")
     assert "demo/agent_loop.tape" in text and "demo/demo.tape" in text
-    for block in re.findall(r"run: \|?\n?((?:\s+.*\n)+?)(?=\s*-|\Z)", text):
+    runs = [
+        step["run"]
+        for job in yaml.safe_load(text)["jobs"].values()
+        for step in job.get("steps", [])
+        if "run" in step
+    ]
+    assert runs
+    for block in runs:
         assert "${{" not in block
 
 
@@ -276,7 +286,7 @@ def test_loop_goes_block_then_fix_then_allowed(tmp_path):
     assert built.returncode == 0, built.stderr
     env = {
         **os.environ,
-        "HOME": str(root),
+        **home_vars(str(root)),
         "AGENT_LOOP_SPEED": "0",
         "AGENTPRINT_CMD": str(Path(sys.executable).parent / "agentprint"),
     }
