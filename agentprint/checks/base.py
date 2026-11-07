@@ -36,7 +36,8 @@ def safe_snippet(text: str, limit: int = 120) -> str:
     hidden one too, with all the text it was hidden in), control and ANSI characters removed,
     whitespace collapsed, length capped."""
     spans: list[SecretMatch] = []
-    found = sorted([*find_secrets(text), *hidden_spans(text)], key=lambda m: m.start)
+    found = [*find_secrets(text, placeholders=True), *hidden_spans(text)]  # placeholders too
+    found.sort(key=lambda m: m.start)
     for match in found:  # in text order; a hidden one may overlap a plain one
         if spans and match.start < spans[-1].end:
             if match.end > spans[-1].end:

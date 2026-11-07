@@ -2,10 +2,14 @@
 Droid, Junie, Augment (mcpServers), Amp (amp.mcpServers), plus the shapes the reader accepts."""
 
 import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
+from agentprint import guard
 from agentprint.agents import ALL_AGENTS, by_name
 from agentprint.agents.amp import Amp
 from agentprint.agents.augment import Augment
@@ -14,9 +18,12 @@ from agentprint.agents.claude_desktop import ClaudeDesktop
 from agentprint.agents.factory_droid import FactoryDroid
 from agentprint.agents.junie import Junie
 from agentprint.agents.kiro import Kiro
-from agentprint.models import AgentConfig, Artifact, HookCommand, Kind
+from agentprint.gitcheck import check_push
+from agentprint.models import AgentConfig, Artifact, HookCommand, Kind, Severity
 from agentprint.scanner import scan
+from agentprint.secrets import find_secrets, redact
 from tests import fakes
+from tests.conftest import set_home
 from tests.fixtures import agent_homes as homes
 
 
@@ -257,3 +264,122 @@ def test_package_look_alikes_are_not_flagged(member):
 def test_every_mcp_agent_has_a_doc_row(name):
     doc = by_name(name).doc
     assert doc.label and doc.reads and doc.fix and doc.checked
+
+
+# --- README placeholders in committed agent configs --------------------------------------------
+# Config snippets copied from READMEs carry key-shaped placeholders. In a committed config they
+# must never print (or block a push); a real-shaped key next to them still does.
+
+SLACK_HEAD = "xo" + "xb-" + "1234567890-"
+PLACEHOLDERS = {
+    "GITHUB_PERSONAL_ACCESS_TOKEN": "gh" + "p_" + "x" * 36,
+    "SLACK_BOT_TOKEN": "xo" + "xb-" + "your-bot-token",
+    "AWS_ACCESS_KEY_ID": "AK" + "IA" + "X" * 16,
+    "AWS_DOCS_KEY_ID": "AK" + "IA" + "IOSFODNN7" + "EXAMPLE",
+    "OPENAI_API_KEY": "sk-" + "proj-" + "x" * 40,
+    "SLACK_ANGLE_TOKEN": SLACK_HEAD + "<your-token>",
+    "SLACK_CURLY_TOKEN": SLACK_HEAD + "{SLACK_TOKEN}",
+    "SLACK_DOLLAR_TOKEN": SLACK_HEAD + "${GITHUB_TOKEN}",
+}
+REAL = {"REAL_TOKEN": fakes.GITHUB}  # tests.fakes: real-shaped, so it must still be reported
+
+
+def _servers(env: dict, key: str = "env") -> dict:
+    return {"example": {"command": "npx", "args": ["-y", "@example/mcp"], key: env}}
+
+
+def _json(data: dict) -> str:
+    return json.dumps(data, indent=2) + "\n"
+
+
+def _yaml(env: dict) -> str:
+    lines = [f"      {k}: {json.dumps(v)}" for k, v in env.items()]
+    return "name: example\nmcpServers:\n  - name: example\n    command: npx\n    env:\n" + (
+        "\n".join(lines) + "\n"
+    )
+
+
+# Each newly read committed config, as a README would have you write it.
+COMMITTED = {
+    ".mcp.json": lambda env: _json({"mcpServers": _servers(env)}),
+    ".vscode/mcp.json": lambda env: _json({"servers": _servers(env), "inputs": []}),
+    ".zed/settings.json": lambda env: "// Zed\n" + _json({"context_servers": _servers(env)}),
+    "kilo.jsonc": lambda env: _json({"mcp": _servers(env, "environment")}),
+    "kilo.json": lambda env: _json({"mcp": _servers(env, "environment")}),
+    ".kilo/kilo.jsonc": lambda env: _json({"mcp": _servers(env, "environment")}),
+    "crush.json": lambda env: _json({"mcp": _servers(env)}),
+    "crushrc": lambda env: "".join(f"mcp add example --env {k}={v}\n" for k, v in env.items()),
+    ".kiro/settings/mcp.json": lambda env: _json({"mcpServers": _servers(env)}),
+    ".factory/mcp.json": lambda env: _json({"mcpServers": _servers(env)}),
+    ".factory/settings.json": lambda env: _json(
+        {"customModels": [{"model": k, "apiKey": v} for k, v in env.items()]}
+    ),
+    ".augment/settings.json": lambda env: _json({"mcpServers": _servers(env)}),
+    ".amp/settings.json": lambda env: _json({"amp.mcpServers": _servers(env)}),
+    ".junie/mcp/mcp.json": lambda env: _json({"mcpServers": _servers(env)}),
+    ".continue/mcpServers/example.yaml": _yaml,
+    ".continue/mcpServers/example.json": lambda env: _json({"mcpServers": _servers(env)}),
+    ".qwen/settings.json": lambda env: _json({"mcpServers": _servers(env), "env": env}),
+}
+KEY_CHECKS = {"AP001", "AP002", "AP005"}
+
+
+def test_every_placeholder_is_key_shaped():
+    """So the negatives below mean something: a rule matches each one, the filter drops it."""
+    for name, value in PLACEHOLDERS.items():
+        assert find_secrets(f"{name}={value}", placeholders=True), name
+        assert find_secrets(f"{name}={value}") == [], name
+
+
+def _key_prints(findings):
+    return [f for f in findings if f.check_id in KEY_CHECKS]
+
+
+@pytest.mark.parametrize("rel", sorted(COMMITTED))
+def test_readme_placeholders_in_a_committed_config_are_not_reported(tmp_path, rel):
+    project = tmp_path / "proj"
+    homes.write(project / rel, COMMITTED[rel](PLACEHOLDERS))
+    assert _key_prints(scan(None, project)) == []
+
+
+@pytest.mark.parametrize("rel", sorted(COMMITTED))
+def test_a_real_shaped_key_next_to_the_placeholders_is_still_reported(tmp_path, rel):
+    project = tmp_path / "proj"
+    path = homes.write(project / rel, COMMITTED[rel]({**PLACEHOLDERS, **REAL}))
+    [finding] = _key_prints(scan(None, project))  # the real one only
+    assert finding.location == str(path) and redact(fakes.GITHUB) in finding.detail
+
+
+def test_readme_placeholders_in_tracked_configs_never_block_a_push(tmp_path, monkeypatch):
+    if shutil.which("git") is None:
+        pytest.skip("git not installed")
+    # Keep the machine's own git config and global ignore file out of the test.
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    set_home(monkeypatch, str(tmp_path / "home"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+    git("init", "-q")
+    for rel, build in COMMITTED.items():
+        homes.write(repo / rel, build(PLACEHOLDERS))
+    git("add", "-A")
+
+    findings = check_push(repo)
+    assert _key_prints(findings) == []
+    assert all(f.severity < Severity.HIGH for f in findings)  # MCP files in a repo: low notes
+    verdict = guard.evaluate("git push", repo)
+    assert verdict is not None and not verdict.block
+
+    zed = repo / ".zed" / "settings.json"
+    homes.write(zed, COMMITTED[".zed/settings.json"]({**PLACEHOLDERS, **REAL}))
+    git("add", "-A")
+    [finding] = _key_prints(check_push(repo))
+    assert finding.location == str(zed) and redact(fakes.GITHUB) in finding.detail
+    blocked = guard.evaluate("git push", repo)
+    assert blocked is not None and blocked.block
+    assert fakes.GITHUB not in blocked.reason

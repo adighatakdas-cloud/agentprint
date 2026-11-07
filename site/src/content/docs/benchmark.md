@@ -7,19 +7,19 @@ description: How many fake keys agentprint, gitleaks and trufflehog find in AI-a
 
 A public, repeatable test of how well agentprint finds keys in the files AI coding agents write, next to two well-known scanners. The corpus is synthetic and the labels are ours, so read it as a regression check you can rerun, not as a ranking.
 
-**Run of 2026-11-07.** Corpus: 174 cases, 111 with one fake key and 63 with look-alikes only. Tools: agentprint 0.1.1, gitleaks 8.30.1, trufflehog 3.99.8. All three tools were included in this run.
+**Run of 2026-11-07.** Corpus: 195 cases, 118 with one fake key and 77 with look-alikes only. Tools: agentprint 0.1.1, gitleaks 8.30.1, trufflehog 3.99.8. All three tools were included in this run.
 
 ## Overall
 
 | Tool | Version | Recall | Recall, plain keys | Recall, hidden keys | Precision | Keys found | False positives | Recall, any hit in file |
 |---|---|---|---|---|---|---|---|---|
-| agentprint | 0.1.1 | 96% | 100% (69 of 69) | 90% (38 of 42) | 94% | 107 of 111 | 7 of 63 | 97% |
-| gitleaks | 8.30.1 | 57% | 78% (54 of 69) | 21% (9 of 42) | 82% | 63 of 111 | 14 of 63 | 57% |
-| trufflehog | 3.99.8 | 57% | 77% (53 of 69) | 24% (10 of 42) | 100% | 63 of 111 | 0 of 63 | 57% |
+| agentprint | 0.1.1 | 100% | 100% (69 of 69) | 100% (49 of 49) | 94% | 118 of 118 | 7 of 77 | 100% |
+| gitleaks | 8.30.1 | 53% | 78% (54 of 69) | 18% (9 of 49) | 82% | 63 of 118 | 14 of 77 | 53% |
+| trufflehog | 3.99.8 | 53% | 77% (53 of 69) | 20% (10 of 49) | 100% | 63 of 118 | 0 of 77 | 53% |
 
-*Plain keys* are the rows where the key is written out as an agent writes it; *hidden keys* are the rows where it is hidden by one trick. 42 of the 111 keys are hidden, so the overall recall leans on them. **The hidden-key rows favour agentprint:** they test the tricks this release (agentprint 0.1.1) added, and were written alongside the new detection. Compare the tools on plain keys first.
+*Plain keys* are the rows where the key is written out as an agent writes it; *hidden keys* are the rows where it is hidden by one trick. 49 of the 118 keys are hidden, so the overall recall leans on them. **The hidden-key rows favour agentprint:** they test the tricks this release (agentprint 0.1.1) added, and were written alongside the new detection. Compare the tools on plain keys first.
 
-**How a case is scored, the same for every tool.** Each fake key sits on known lines of its file (the manifest records the span when the corpus is built). A key counts as *found* only if a finding's reported line falls inside that span. A finding on the key's line counts even when only part of the key matched: agentprint's "hidden: split string" hits, for example, are matches of the key's first part, not the whole joined key. *Recall* is found / (found + missed). A negative case (look-alikes, no key) counts as a *false positive* if the tool reports anything in its file. *Precision* is found / (found + false positives); it is file-level, not per-finding. The last column is the looser reading, any finding anywhere in a key's file, shown so the two can be compared. Each case file holds one key, so the two differ only where a tool reported something else in the file but not on the key; in practice that is the paired AWS secret access key, which agentprint's generic rule flags on its own line.
+**How a case is scored, the same for every tool.** Each fake key sits on known lines of its file (the manifest records the span when the corpus is built). A key counts as *found* only if a finding's reported line falls inside that span. A finding on the key's line counts even when only part of the key matched: some of agentprint's "hidden: split string" hits, for example, are matches of the key's first part, not the whole joined key. *Recall* is found / (found + missed). A negative case (look-alikes, no key) counts as a *false positive* if the tool reports anything in its file. *Precision* is found / (found + false positives); it is file-level, not per-finding. The last column is the looser reading, any finding anywhere in a key's file, shown so the two can be compared. Each case file holds one key, so the two differ only where a tool reported something else in the file but not on the key; in practice that is the paired AWS secret access key, which agentprint's generic rule flags on its own line.
 
 ## Keys the tool should find
 
@@ -37,10 +37,11 @@ Plain rows are keys in the form an agent writes them (a history line, an allowli
 | plain, in dev platforms | 13 | 13 of 13 | 10 of 13 | 7 of 13 |
 | plain, in hermes yaml | 7 | 7 of 7 | 6 of 7 | 6 of 7 |
 | plain, in publishing | 4 | 4 of 4 | 3 of 4 | 3 of 4 |
-| hidden: base64 | 7 | 6 of 7 | 6 of 7 | 6 of 7 |
+| hidden: base64 | 7 | 7 of 7 | 6 of 7 | 6 of 7 |
 | hidden: line continuation | 7 | 7 of 7 | 1 of 7 | 2 of 7 |
+| hidden: quotes side by side | 7 | 7 of 7 | 0 of 7 | 0 of 7 |
 | hidden: split concat | 7 | 7 of 7 | 1 of 7 | 1 of 7 |
-| hidden: split string | 7 | 4 of 7 | 0 of 7 | 0 of 7 |
+| hidden: split string | 7 | 7 of 7 | 0 of 7 | 0 of 7 |
 | hidden: yaml folded | 7 | 7 of 7 | 0 of 7 | 0 of 7 |
 | hidden: zero width | 7 | 7 of 7 | 1 of 7 | 1 of 7 |
 
@@ -51,6 +52,7 @@ Each of these is a file in an agent shape holding text that looks random but is 
 | Look-alike | Cases | agentprint | gitleaks | trufflehog |
 |---|---|---|---|---|
 | base64 image | 7 | 0 flagged | 0 flagged | 0 flagged |
+| empty quotes | 7 | 0 flagged | 0 flagged | 0 flagged |
 | git sha | 7 | 0 flagged | 0 flagged | 0 flagged |
 | jwt in token field | 7 | 7 flagged | 7 flagged | 0 flagged |
 | jwt shaped | 7 | 0 flagged | 7 flagged | 0 flagged |
@@ -58,6 +60,7 @@ Each of these is a file in an agent shape holding text that looks random but is 
 | minified js | 7 | 0 flagged | 0 flagged | 0 flagged |
 | placeholder | 7 | 0 flagged | 0 flagged | 0 flagged |
 | sha256 | 7 | 0 flagged | 0 flagged | 0 flagged |
+| short base64 | 7 | 0 flagged | 0 flagged | 0 flagged |
 | uuid | 7 | 0 flagged | 0 flagged | 0 flagged |
 
 ## Method
