@@ -32,14 +32,164 @@ def _step(step_id: str) -> dict:
 def test_inputs_outputs_and_defaults():
     action = _action()
     inputs = action["inputs"]
-    assert set(inputs) == {"command", "path", "fail-on", "upload-sarif"}
+    assert set(inputs) == {
+        "command",
+        "path",
+        "fail-on",
+        "upload-sarif",
+        "badge-dir",
+        "attest-badge",
+        "publish-badge",
+    }
     assert inputs["command"]["default"] == "pack"
     assert inputs["path"]["default"] == "."
     assert inputs["fail-on"]["default"] == "high"
     assert inputs["upload-sarif"]["default"] == "false"
     assert "security-events: write" in inputs["upload-sarif"]["description"]
-    assert set(action["outputs"]) == {"exit-code", "sarif-file"}
+    assert set(action["outputs"]) == {"exit-code", "sarif-file", "badge-file", "verdict-file"}
     assert action["runs"]["using"] == "composite"
+
+
+PREDICATE = "https://adighatakdas-cloud.github.io/agentprint/badge/v1"
+PUSH_TO_DEFAULT = "github.event_name == 'push'"
+DEFAULT_REF = "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
+PUBLISH_SCRIPT = ROOT / "scripts" / "publish-badge.sh"
+
+
+def _steps_named(prefix: str) -> list[dict]:
+    return [s for s in _action()["runs"]["steps"] if s.get("name", "").startswith(prefix)]
+
+
+def test_badge_inputs_default_off_and_document_permissions():
+    inputs = _action()["inputs"]
+    assert inputs["badge-dir"]["default"] == ""
+    assert inputs["attest-badge"]["default"] == "false"
+    assert inputs["publish-badge"]["default"] == "false"
+    assert "id-token: write" in inputs["attest-badge"]["description"]
+    assert "attestations: write" in inputs["attest-badge"]["description"]
+    assert "contents: write" in inputs["publish-badge"]["description"]
+    assert "dry-run" in inputs["publish-badge"]["description"]
+
+
+def test_badge_dir_is_passed_to_the_run_that_sets_the_exit_code():
+    step = _step("run")
+    assert step["env"]["AP_BADGE_DIR"] == "${{ inputs.badge-dir }}"
+    assert '--badge "$AP_BADGE_DIR"' in step["run"]
+    assert 'mkdir -p "$AP_BADGE_DIR"' in step["run"]
+    assert "badge-file=" in step["run"] and "verdict-file=" in step["run"]
+
+
+def test_attest_step_is_pinned_signs_the_badge_and_skips_private_repos():
+    [attest] = [s for s in _action()["runs"]["steps"] if "actions/attest@" in s.get("uses", "")]
+    assert re.fullmatch(r"actions/attest@[0-9a-f]{40}", attest["uses"])
+    assert attest["with"]["predicate-type"] == PREDICATE
+    assert attest["with"]["subject-path"] == "${{ steps.run.outputs.badge-file }}"
+    assert attest["with"]["predicate-path"] == "${{ steps.run.outputs.verdict-file }}"
+    assert "inputs.attest-badge == 'true'" in attest["if"]
+    assert "!github.event.repository.private" in attest["if"]
+    [notice] = _steps_named("Skip attestation")
+    assert "github.event.repository.private" in notice["if"]
+    assert "inputs.attest-badge == 'true'" in notice["if"]
+    assert "::notice" in notice["run"] and "private" in notice["run"]
+
+
+def test_publish_runs_only_on_a_push_to_the_default_branch():
+    [publish] = _steps_named("Publish badge")
+    cond = publish["if"]
+    assert "inputs.publish-badge == 'true'" in cond
+    assert PUSH_TO_DEFAULT in cond and DEFAULT_REF in cond
+    assert publish["env"]["AP_PUBLISH_MODE"] == "true"
+    assert publish["env"]["AP_TOKEN"] == "${{ github.token }}"
+    [skipped] = _steps_named("Skip publishing")
+    assert "::notice" in skipped["run"]
+    assert "inputs.publish-badge == 'true'" in skipped["if"]
+    assert skipped["if"].count("!(") == 1  # the exact negation of the publish condition
+    [dry] = _steps_named("Dry-run publish")
+    assert "inputs.publish-badge == 'dry-run'" in dry["if"]
+    assert dry["env"]["AP_PUBLISH_MODE"] == "dry-run"
+    assert "AP_TOKEN" not in dry["env"]  # a dry run never sees the token
+
+
+def test_no_token_in_urls_or_logs():
+    text = ACTION_FILE.read_text() + PUBLISH_SCRIPT.read_text()
+    assert not re.search(r"https?://[^\s/]*@", text)
+    assert "x-access-token:@" not in text and "x-access-token:${" not in text.replace(
+        "x-access-token:%s", ""
+    )
+    script = PUBLISH_SCRIPT.read_text()
+    assert "::add-mask::$token" in script
+    assert "http.extraheader" in script
+    assert script.startswith("#!/usr/bin/env bash") and "set -euo pipefail" in script
+
+
+def _publish(tmp_path, badge_dir, mode, remote=None, **extra):
+    env = {
+        **os.environ,
+        "AP_BADGE_DIR": str(badge_dir),
+        "AP_PUBLISH_MODE": mode,
+        "AP_REPOSITORY": "owner/repo",
+        "AP_TOKEN": "FAKETOKEN123",
+        **extra,
+    }
+    if remote:
+        env["AP_REMOTE"] = str(remote)
+    return subprocess.run(
+        ["bash", str(PUBLISH_SCRIPT)], env=env, cwd=tmp_path, capture_output=True, text=True
+    )
+
+
+@pytest.fixture
+def badge_dir(tmp_path):
+    d = tmp_path / "badge"
+    d.mkdir()
+    (d / "badge.json").write_text('{"message": "CLEAR"}\n')
+    (d / "verdict.json").write_text('{"verdict": "CLEAR"}\n')
+    return d
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_publish_dry_run_pushes_nothing(tmp_path, badge_dir):
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+    proc = _publish(tmp_path, badge_dir, "dry-run", remote)
+    assert proc.returncode == 0, proc.stderr
+    assert "dry-run" in proc.stdout and "agentprint-badge" in proc.stdout
+    assert "badge.json" in proc.stdout and "verdict.json" in proc.stdout
+    refs = subprocess.run(["git", "-C", str(remote), "branch"], capture_output=True, text=True)
+    assert refs.stdout.strip() == ""
+    assert "FAKETOKEN123" not in (proc.stdout + proc.stderr).replace("::add-mask::FAKETOKEN123", "")
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+@pytest.mark.parametrize("existing", [False, True])
+def test_publish_keeps_one_commit_whether_or_not_the_branch_exists(tmp_path, badge_dir, existing):
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+    if existing:
+        assert _publish(tmp_path, badge_dir, "true", remote).returncode == 0
+        (badge_dir / "badge.json").write_text('{"message": "BLOCK"}\n')
+    proc = _publish(tmp_path, badge_dir, "true", remote)
+    assert proc.returncode == 0, proc.stderr
+    git = ["git", "-C", str(remote)]
+    count = subprocess.run(
+        [*git, "rev-list", "--count", "agentprint-badge"], capture_output=True, text=True
+    )
+    assert count.stdout.strip() == "1"
+    shown = subprocess.run(
+        [*git, "show", "agentprint-badge:badge.json"], capture_output=True, text=True
+    )
+    assert shown.stdout == (badge_dir / "badge.json").read_text()
+    files = subprocess.run(
+        [*git, "ls-tree", "--name-only", "agentprint-badge"], capture_output=True, text=True
+    )
+    assert files.stdout.split() == ["badge.json", "verdict.json"]
+    assert "::add-mask::FAKETOKEN123" in proc.stdout
+    assert "FAKETOKEN123" not in proc.stdout.replace("::add-mask::FAKETOKEN123", "")
+
+
+def test_publish_without_badge_files_is_an_error(tmp_path):
+    proc = _publish(tmp_path, tmp_path, "dry-run")
+    assert proc.returncode == 2 and "::error" in proc.stdout
 
 
 def test_scripts_never_expand_expressions_inline():
