@@ -3,7 +3,9 @@ name: Demo GIF
 # Renders a demo GIF with VHS and uploads it as a build artifact. Run by hand (Actions ->
 # Demo GIF -> Run workflow) and pick the tape: demo/demo.tape makes docs/demo.gif,
 # demo/agent_loop.tape makes docs/agent-loop.gif. Download the artifact, check it, and
-# commit the GIF yourself. Nothing is committed or pushed by this workflow.
+# commit the GIF yourself; the docs site shows agent-loop.gif too, so copy it to
+# site/public/agent-loop.gif as well (tests check the two are the same file). Nothing is
+# committed or pushed by this workflow.
 # The demo uses only a fake home and fake keys built by demo/build_demo.py.
 
 on:

@@ -191,3 +191,22 @@ def test_no_page_hardcodes_the_check_count():
             continue
         for number, line in enumerate(path.read_text().splitlines(), 1):
             assert not count.search(line), f"{path.name}:{number}: {line.strip()}"
+
+
+PUBLIC = gen_docs.ROOT / "site/public"
+# A root-relative link or image to a file (it has an extension) under the site's base path.
+ASSET = re.compile(r"""(?:\]\(|\b(?:src|href)=["'])/agentprint/([^)"'\s#?]+\.[A-Za-z0-9]+)""")
+
+
+def test_every_asset_a_docs_page_references_is_in_site_public():
+    pages = [*DOCS.rglob("*.md"), *DOCS.rglob("*.mdx")]
+    referenced = {(p.name, a) for p in pages for a in ASSET.findall(p.read_text())}
+    assert ("fix.md", "agent-loop.gif") in referenced  # the pattern sees the GIF
+    missing = sorted((page, asset) for page, asset in referenced if not (PUBLIC / asset).is_file())
+    assert missing == []
+
+
+def test_agent_loop_gif_is_the_same_file_in_docs_and_on_the_site():
+    gif = (gen_docs.ROOT / "docs/agent-loop.gif").read_bytes()
+    assert gif[:6] in (b"GIF87a", b"GIF89a")
+    assert gif == (PUBLIC / "agent-loop.gif").read_bytes()
