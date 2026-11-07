@@ -1,6 +1,6 @@
 ---
 title: Use it in CI
-description: Stop a leaky npm publish with prepublishOnly, run agentprint as a GitHub Action, or add it to pre-commit.
+description: Stop a leaky npm publish with prepublishOnly, run agentprint as a GitHub Action, or add it to pre-commit, lefthook or husky.
 ---
 
 :::note
@@ -56,3 +56,25 @@ repos:
       - id: agentprint-pack   # agent files or keys in your package
       - id: agentprint-scan   # keys in this repo's agent settings
 ```
+
+To run the repository check before each `git push` instead of each commit, use `agentprint-pre-push` in place of `agentprint-scan`, and install the push hook once with `pre-commit install --hook-type pre-push`.
+
+## lefthook
+
+Add to `lefthook.yml`, then run `lefthook install`:
+
+```yaml
+pre-push:
+  jobs:
+    - run: uvx agentprint==0.1.1 scan --no-home
+```
+
+## husky
+
+After `npx husky init`, add the check to `.husky/pre-push`:
+
+```bash
+echo "uvx agentprint==0.1.1 scan --no-home" > .husky/pre-push
+```
+
+Both need [uv](https://docs.astral.sh/uv/). `scan --no-home` checks only this repository, never your home folder, and exits `1` when it finds something at or above `--fail-on`, which stops the push.

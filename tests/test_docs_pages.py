@@ -221,3 +221,24 @@ def test_ci_page_pins_users_copy_name_this_release():
     assert f"uses: adighatakdas-cloud/agentprint@v{__version__}  #" in text
     assert f"rev: v{__version__}\n" in text
     assert re.findall(r"agentprint@v(\d+\.\d+\.\d+)", text) == [__version__]
+
+
+def test_pinned_versions_in_ci_and_plugin_pages_are_this_release():
+    version = r"(\d+\.\d+\.\d+(?:[a-z]+\d+|\.dev\d+)?)"
+    for page in ("ci",):
+        text = (DOCS / f"{page}.md").read_text()
+        pins = re.findall(r"(?:agentprint==|--branch v|--ref v)" + version, text)
+        assert pins and set(pins) == {__version__}, page
+    assert "uvx agentprint==" in (DOCS / "ci.md").read_text()  # lefthook and husky
+
+
+def test_ci_page_has_pre_push_lefthook_and_husky():
+    text = (DOCS / "ci.md").read_text()
+    for needed in (
+        "agentprint-pre-push",
+        "pre-commit install --hook-type pre-push",
+        "lefthook.yml",
+        "lefthook install",
+        ".husky/pre-push",
+    ):
+        assert needed in text, needed
