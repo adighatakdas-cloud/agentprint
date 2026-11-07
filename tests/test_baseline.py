@@ -624,7 +624,53 @@ def test_ignore_still_lets_a_deliberate_non_secret_file_ship(tmp_path):
     rule = '[[ignore]]\ncheck = "AP006"\npath = "**/.claude/settings.local.json"\nreason = "demo"\n'
     _write(tmp_path / ".agentprint.toml", rule)
     verdict = evaluate("npm publish demo-1.0.0.tgz", tmp_path)
-    assert verdict is not None and not verdict.block and verdict.warning is None
+    assert verdict is not None and not verdict.block
+    assert verdict.warning == (
+        'agentprint: allowed by project config: 1 AP006 ignored by config "demo".'
+    )
+
+
+def test_the_guard_says_when_a_config_fail_on_let_a_publish_through(tmp_path):
+    _tgz(tmp_path / "demo-1.0.0.tgz", {"package/.claude/settings.local.json": b'{"x": 1}'})
+    _write(tmp_path / ".agentprint.toml", 'fail_on = "critical"\n')
+    verdict = evaluate("npm publish demo-1.0.0.tgz", tmp_path)
+    assert verdict is not None and not verdict.block
+    assert verdict.warning.startswith("agentprint: allowed by project config: fail_on = critical")
+    _tgz(tmp_path / "ok-1.0.0.tgz", {"package/index.js": b"1"})
+    assert evaluate("npm publish ok-1.0.0.tgz", tmp_path).warning is None  # nothing changed
+
+
+def test_a_bug_applying_the_config_means_everything_counts(tmp_path, monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("bug")
+
+    _tgz(tmp_path / "demo-1.0.0.tgz", {"package/.claude/settings.local.json": b'{"x": 1}'})
+    rule = '[[ignore]]\ncheck = "AP006"\nreason = "demo"\n'
+    _write(tmp_path / ".agentprint.toml", 'fail_on = "none"\n' + rule)
+    monkeypatch.setattr(guard, "settle", boom)
+    verdict = evaluate("npm publish demo-1.0.0.tgz", tmp_path)
+    assert verdict.block  # never allowed because of a bug
+    assert "could not apply the project config (RuntimeError)" in verdict.warning
+
+
+def test_ruling_c1_through_the_mcp_check_push_tool(tmp_path, monkeypatch):
+    from agentprint import mcp_server
+
+    key = Finding(
+        "AP005",
+        Severity.CRITICAL,
+        "Secret inline in MCP server config",
+        "claude-code",
+        str(tmp_path / ".mcp.json"),
+        3,
+        "GitHub token: ghp_…(len 40) in MCP server 'x' (env.K)",
+        "f",
+    )
+    monkeypatch.setattr(mcp_server, "run_check_push", lambda path: [key])
+    _write(tmp_path / ".agentprint.toml", 'fail_on = "none"\n[[ignore]]\ncheck = "AP005"\n')
+    _accept_everything(tmp_path, [key])
+    text = call("check_push", path=str(tmp_path))
+    assert text.startswith("agentprint: BLOCK — 1 problem to fix before pushing")
 
 
 def test_config_strict_makes_the_guard_strict(tmp_path):

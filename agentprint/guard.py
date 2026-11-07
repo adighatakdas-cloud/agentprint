@@ -22,15 +22,15 @@ from pathlib import Path
 import yaml
 
 from .advice import Moment
-from .baseline import Known, Project, defaults, settle
+from .baseline import Known, Project, Settled, defaults, settle
 from .baseline import load as load_project
 from .checks import PACKAGE_WANT, check_package
 from .commands import NODE, ROOT_RELEASERS, WORKSPACE_RELEASERS, Action, Risky, detect
 from .gitcheck import check_push
 from .models import CannotCheck, Finding
 from .pack import PackageListing, PackError, read_archive, read_npm_project
-from .report import FailOn, exit_code, to_agent
-from .sanitize import clean
+from .report import KNOWN_WORD, FailOn, exit_code, known_groups, to_agent
+from .sanitize import clean, quote
 
 ARCHIVES = (".whl", ".tar.gz", ".zip", ".tgz")
 DEFAULT_DIST = ("dist/*",)
@@ -132,11 +132,31 @@ def _settle(
 ) -> tuple[list[Finding], FailOn, list[Known], list[str]]:
     """What counts, the fail_on, what is known, and the config's warnings. Ruling C1: a key on
     its way out always counts, whatever the config or baseline says."""
+    default = fail_on or FailOn.high
     if project is None:
-        return findings, fail_on or FailOn.high, [], []
-    settled = settle(findings, project, fail_on, publishing=True, package=None)
+        return findings, default, [], []
+    try:
+        settled = settle(findings, project, fail_on, publishing=True, package=None)
+    except Exception as exc:  # noqa: BLE001 - never allow because of a bug: everything counts
+        why = f"agentprint could not apply the project config ({type(exc).__name__})"
+        return findings, default, [], [f"{why}; every finding counts."]
     notes = [f"agentprint: {clean(note)}." for note in project.warnings]
+    if exit_code(findings, default) and not exit_code(settled.active, settled.fail_on):
+        notes.append(_allowed_by_config(settled, project, default))  # say why it went through
     return settled.active, settled.fail_on, settled.known, notes
+
+
+def _allowed_by_config(settled: Settled, project: Project, default: FailOn) -> str:
+    """One line for a publish or push the project config let through, that would have been
+    blocked without it."""
+    parts = [
+        f"{n} {check_id} {KNOWN_WORD.get(via, via)} {quote(reason)}"
+        for check_id, via, reason, n in known_groups(settled.known)
+    ]
+    if exit_code(settled.active, default):
+        source = clean(str(project.config.source or "the project config"))
+        parts.append(f"fail_on = {settled.fail_on.value} in {source}")
+    return f"agentprint: allowed by project config: {'; '.join(parts)}."
 
 
 def _failed(exc: Exception, strict: bool) -> Verdict:
