@@ -3,29 +3,29 @@
   "generated": "2026-11-07",
   "seed": 20261107,
   "corpus": {
-    "cases": 147,
-    "positives": 84,
+    "cases": 174,
+    "positives": 111,
     "negatives": 63
   },
   "tools": {
     "agentprint": {
       "version": "0.1.1",
       "overall": {
-        "tp": 80,
+        "tp": 107,
         "fn": 4,
         "fp": 7,
         "tn": 56,
-        "recall": 0.9524,
-        "precision": 0.9195,
+        "recall": 0.964,
+        "precision": 0.9386,
         "false_positive_rate": 0.1111,
         "any_hit": {
-          "tp": 81,
-          "recall": 0.9643,
-          "precision": 0.9205
+          "tp": 108,
+          "recall": 0.973,
+          "precision": 0.9391
         },
         "plain_keys": {
-          "found": 42,
-          "cases": 42,
+          "found": 69,
+          "cases": 69,
           "recall": 1.0
         },
         "hidden_keys": {
@@ -131,6 +131,13 @@
           "recall": 1.0,
           "any_hit": 7
         },
+        "plain-ai-providers": {
+          "kind": "positive",
+          "cases": 6,
+          "found": 6,
+          "recall": 1.0,
+          "any_hit": 6
+        },
         "plain-claude-history": {
           "kind": "positive",
           "cases": 7,
@@ -159,6 +166,13 @@
           "recall": 1.0,
           "any_hit": 7
         },
+        "plain-context-only": {
+          "kind": "positive",
+          "cases": 4,
+          "found": 4,
+          "recall": 1.0,
+          "any_hit": 4
+        },
         "plain-cursor-mcp": {
           "kind": "positive",
           "cases": 7,
@@ -166,34 +180,48 @@
           "recall": 1.0,
           "any_hit": 7
         },
+        "plain-dev-platforms": {
+          "kind": "positive",
+          "cases": 13,
+          "found": 13,
+          "recall": 1.0,
+          "any_hit": 13
+        },
         "plain-hermes-yaml": {
           "kind": "positive",
           "cases": 7,
           "found": 7,
           "recall": 1.0,
           "any_hit": 7
+        },
+        "plain-publishing": {
+          "kind": "positive",
+          "cases": 4,
+          "found": 4,
+          "recall": 1.0,
+          "any_hit": 4
         }
       }
     },
     "gitleaks": {
       "version": "8.30.1",
       "overall": {
-        "tp": 46,
-        "fn": 38,
+        "tp": 63,
+        "fn": 48,
         "fp": 14,
         "tn": 49,
-        "recall": 0.5476,
-        "precision": 0.7667,
+        "recall": 0.5676,
+        "precision": 0.8182,
         "false_positive_rate": 0.2222,
         "any_hit": {
-          "tp": 46,
-          "recall": 0.5476,
-          "precision": 0.7667
+          "tp": 63,
+          "recall": 0.5676,
+          "precision": 0.8182
         },
         "plain_keys": {
-          "found": 37,
-          "cases": 42,
-          "recall": 0.881
+          "found": 54,
+          "cases": 69,
+          "recall": 0.7826
         },
         "hidden_keys": {
           "found": 9,
@@ -298,6 +326,13 @@
           "recall": 0.1429,
           "any_hit": 1
         },
+        "plain-ai-providers": {
+          "kind": "positive",
+          "cases": 6,
+          "found": 2,
+          "recall": 0.3333,
+          "any_hit": 2
+        },
         "plain-claude-history": {
           "kind": "positive",
           "cases": 7,
@@ -326,6 +361,13 @@
           "recall": 0.8571,
           "any_hit": 6
         },
+        "plain-context-only": {
+          "kind": "positive",
+          "cases": 4,
+          "found": 2,
+          "recall": 0.5,
+          "any_hit": 2
+        },
         "plain-cursor-mcp": {
           "kind": "positive",
           "cases": 7,
@@ -333,34 +375,48 @@
           "recall": 1.0,
           "any_hit": 7
         },
+        "plain-dev-platforms": {
+          "kind": "positive",
+          "cases": 13,
+          "found": 10,
+          "recall": 0.7692,
+          "any_hit": 10
+        },
         "plain-hermes-yaml": {
           "kind": "positive",
           "cases": 7,
           "found": 6,
           "recall": 0.8571,
           "any_hit": 6
+        },
+        "plain-publishing": {
+          "kind": "positive",
+          "cases": 4,
+          "found": 3,
+          "recall": 0.75,
+          "any_hit": 3
         }
       }
     },
     "trufflehog": {
       "version": "3.99.8",
       "overall": {
-        "tp": 46,
-        "fn": 38,
+        "tp": 63,
+        "fn": 48,
         "fp": 0,
         "tn": 63,
-        "recall": 0.5476,
+        "recall": 0.5676,
         "precision": 1.0,
         "false_positive_rate": 0.0,
         "any_hit": {
-          "tp": 46,
-          "recall": 0.5476,
+          "tp": 63,
+          "recall": 0.5676,
           "precision": 1.0
         },
         "plain_keys": {
-          "found": 36,
-          "cases": 42,
-          "recall": 0.8571
+          "found": 53,
+          "cases": 69,
+          "recall": 0.7681
         },
         "hidden_keys": {
           "found": 10,
@@ -465,6 +521,13 @@
           "recall": 0.1429,
           "any_hit": 1
         },
+        "plain-ai-providers": {
+          "kind": "positive",
+          "cases": 6,
+          "found": 5,
+          "recall": 0.8333,
+          "any_hit": 5
+        },
         "plain-claude-history": {
           "kind": "positive",
           "cases": 7,
@@ -493,6 +556,13 @@
           "recall": 0.8571,
           "any_hit": 6
         },
+        "plain-context-only": {
+          "kind": "positive",
+          "cases": 4,
+          "found": 2,
+          "recall": 0.5,
+          "any_hit": 2
+        },
         "plain-cursor-mcp": {
           "kind": "positive",
           "cases": 7,
@@ -500,12 +570,26 @@
           "recall": 0.8571,
           "any_hit": 6
         },
+        "plain-dev-platforms": {
+          "kind": "positive",
+          "cases": 13,
+          "found": 7,
+          "recall": 0.5385,
+          "any_hit": 7
+        },
         "plain-hermes-yaml": {
           "kind": "positive",
           "cases": 7,
           "found": 6,
           "recall": 0.8571,
           "any_hit": 6
+        },
+        "plain-publishing": {
+          "kind": "positive",
+          "cases": 4,
+          "found": 3,
+          "recall": 0.75,
+          "any_hit": 3
         }
       }
     }
