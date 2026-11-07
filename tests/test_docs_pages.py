@@ -258,7 +258,7 @@ def test_plugins_page_covers_every_ecosystem_and_says_pick_one():
         for ln in rows
         if "as documented" in ln or "docs-verified only" in ln
     ]
-    assert status.count("as documented") == 2 and len(status) == 8
+    assert status.count("as documented") == 3 and len(status) == 8
     for word in ("code --add-mcp", "vscode:mcp/install?", "macOS and Linux only", "uninstall"):
         assert word in text, word
     for command in REMOVE_PLUGIN.values():  # the same way out status prints

@@ -18,16 +18,15 @@ For each agent, pick one. With both, the same check runs twice and the agent see
 | Codex | yes | yes | as a skill | docs-verified only |
 | GitHub Copilot CLI | yes | yes | as a skill | docs-verified only |
 | Gemini CLI | yes | yes | context file | docs-verified only |
-| Google Antigravity | yes | yes | always-on rule | docs-verified only |
+| Google Antigravity | yes | yes | always-on rule | as documented |
 | Hermes Agent | yes (after you enable it) | no: add it to `config.yaml` yourself | as a skill | docs-verified only |
 | VS Code | no | yes | no | docs-verified only (the link) |
 
-**As documented** means every file uses a shape the agent's official docs show. **Docs-verified only** means the plugin is built from the docs, but a part of its format is not shown there, so agentprint uses the closest documented shape:
+**As documented** means every file uses a shape the agent's official docs show (for Antigravity, its [Build plugins](https://antigravity.google/docs/build-plugins/) page: `plugin.json`, `hooks.json`, `mcp_config.json` and `rules/` at the plugin's root). **Docs-verified only** means the plugin is built from the docs, but a part of its format is not shown there, so agentprint uses the closest documented shape:
 
 - **Codex:** the docs show plugin MCP servers only for remote servers, not local (stdio) ones, and say bundled hooks run in the desktop app; whether the CLI runs them is not stated.
 - **GitHub Copilot CLI:** the docs name the plugin's hooks file but not its contents, so it uses the Copilot CLI hooks format.
 - **Gemini CLI:** the docs imply but don't show the outer `"hooks"` key in the extension's hooks file, and don't say whether the context file may sit in a subfolder.
-- **Google Antigravity:** the docs name only the manifest. The hook, MCP and rule files copy the layout of `~/.gemini/config/`, which `agentprint install` writes.
 - **Hermes Agent:** the docs don't list the terminal tool's arguments or say what path `register_skill` takes.
 - **VS Code:** the docs show `code --add-mcp` with a server name in the JSON; the install link uses the same JSON.
 
@@ -117,6 +116,7 @@ Antigravity can also import an installed Gemini CLI extension with `agy plugin i
 ## How the plugin hook behaves
 
 - It is the same hook `agentprint install` writes for that agent, in the agent's own format. Only package publishes and `git push` are checked; every other command runs untouched.
+- Antigravity runs a plugin's hooks in the plugin's own folder. If its hook message doesn't say which folder the command runs in, a publish or push there is reported as "could not check" (blocked in strict mode), never checked against the plugin's folder.
 - It needs [uv](https://docs.astral.sh/uv/) (`uvx`) on the agent's `PATH`, or in `~/.local/bin` or `~/.cargo/bin`. The first run downloads that exact agentprint version into uv's cache. For hooks that start faster from a permanent install, use `uv tool install agentprint` and `agentprint install` instead.
 - If `uvx` is missing, or agentprint cannot start, the command runs and the agent's hook log gets one line, such as `agentprint: uvx not found, so this command was not checked (install uv to turn it on)`. The hook never blocks because agentprint itself failed.
 - Strict mode (`AGENTPRINT_STRICT=1`, see [strict mode](/agentprint/inside-your-agent/#strict-mode-block-when-it-cannot-check)) reaches agentprint where the agent passes its environment on to hooks. Gemini CLI does not. As with `install`, strict mode cannot block when agentprint never starts.

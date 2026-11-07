@@ -232,8 +232,9 @@ def cursor() -> dict[Path, str]:
 
 
 def antigravity() -> dict[Path, str]:
-    """https://antigravity.google/docs/plugins (manifest). The page names no hook, MCP or rule
-    file, so these mirror the global ~/.gemini/config folder that agentprint install writes."""
+    """https://antigravity.google/docs/build-plugins/ : plugin.json, hooks.json (named hook
+    groups, the shape install writes to ~/.gemini/config/hooks.json), mcp_config.json and
+    rules/<name>.md with `trigger` frontmatter, all at the plugin root."""
     from agentprint.integrations.antigravity import RULE
 
     folder = PLUGIN / "antigravity"
