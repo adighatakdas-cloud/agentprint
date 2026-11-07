@@ -1,5 +1,6 @@
 import re
 
+import agentprint
 from agentprint.integrations import ALL_INTEGRATIONS
 from agentprint.roster import SHORT_NAMES
 from tools.gen_docs import DOCS_URL, ROOT
@@ -54,7 +55,10 @@ def test_quickstart_and_install_lines():
     )
     for text in (*wanted, "npx agentprint-cli"):
         assert text in README
-    assert sum(x.startswith("> **Pre-release:**") for x in README.splitlines()) == 1
+    # The "Pre-release" note stays until the first release (docs/RELEASING.md step 1).
+    pre_release = re.search(r"(dev|a|b|rc)\d*$", agentprint.__version__) is not None
+    notes = sum(x.startswith("> **Pre-release:**") for x in README.splitlines())
+    assert notes == (1 if pre_release else 0)
 
 
 def test_quickstart_fixes_right_after_the_sweep():
