@@ -261,9 +261,9 @@ _RULES: tuple[SecretRule, ...] = (
 _STARTS: dict[str, tuple[str, ...]] = {
     "google-oauth": ("GOCSPX-",),
     "npm": ("npm_",),
-    "pypi": ("pypi-AgEI",),
+    "pypi": ("pypi-AgEIcHlwaS5vcmc",),
     "gitlab": ("glpat-",),
-    "dockerhub": ("dckr_",),
+    "dockerhub": ("dckr_pat_", "dckr_oat_"),
     "huggingface": ("hf_", "api_org_"),
     "groq": ("gsk_",),
     "openrouter": ("sk-or-v1-",),
@@ -309,42 +309,92 @@ def _looks_random(value: str, min_entropy: float) -> bool:
 
 # Key-shaped placeholders from READMEs and config examples (ghp_ then 36 x's, AKIA then 16 X's,
 # a Slack prefix then your-bot-token, the AWS docs' key ID that ends in EXAMPLE) are not keys.
-# A placeholder is a match whose body, the part after its literal prefix, is one character
-# repeated (any case, separators aside), or holds a placeholder word that starts or ends the body
-# or sits next to a separator. Inside a run of random letters and digits a word does not count,
-# so a real key that happens to contain "your" is still reported. FAKE, the marker in
-# agentprint's own test keys, is not a placeholder. Brackets need no check: no rule matches text
-# with `<`, `>`, `{` or `}`, so templates such as ghp_<your-token> or sk-proj-{KEY} never match.
-# Output still redacts placeholders (see _matches).
+# A match is a placeholder when its body, the part after its literal prefix, is:
+#   (a) one character repeated (any case, separators aside), or separators only;
+#   (b) or holds a placeholder word as a whole token, an edge or a separator on both sides;
+#   (c) or holds a word of six letters or more (sample, example, ...) or a run of eight or more
+#       x's that starts or ends the body or touches a separator;
+#   (d) or is a placeholder word followed only by one repeated character (dummy0000...).
+# These are tight on purpose: every drop is a silent miss, so a random key must almost never
+# look like one (a test runs 100,000 random bodies of each rule's shape). "your" or "xxxx" glued
+# to random characters does not count. FAKE, the marker in agentprint's own test keys, is not a
+# placeholder. A key head followed directly by a template is a placeholder too (see
+# _template_after). Output still redacts placeholders (see _matches).
+
+# Where each older rule's key body starts; a newer rule's body starts after its `starts`.
+_OLDER_PREFIXES = {
+    "anthropic": r"sk-ant-(?:api|admin)\d\d-",
+    "openai": r"sk-(?:proj|svcacct|admin)-|sk-",
+    "github": r"github_pat_|gh[pousr]_",
+    "aws": r"AKIA|ASIA",
+    "stripe": r"(?:sk|rk)_live_",
+    "slack": r"xox[baprs]-|xapp-\d-",
+    "google": r"AIza",
+    "deepseek": r"sk-",
+    "twilio": r"SK",
+    "telegram": r"[0-9]+:AA",
+}
+# Literal starts first, longest first, so sk-or-v1- wins over the sk- of the older rules.
 _KEY_PREFIX = re.compile(
-    r"sk-ant-(?:api|admin)\d{2}-|sk-(?:proj|svcacct|admin|or-v1)-|github_pat_|gh[pousr]_"
-    r"|AKIA|ASIA|(?:sk|rk)_live_|xox[baprs]-|xapp-\d-|AIza|GOCSPX-|npm_|pypi-AgEIcHlwaS5vcmc"
-    r"|glpat-|dckr_(?:pat|oat)_|hf_|api_org_|gsk_|xai-|pplx-|r8_|sbp_|sb_secret_|cf[ua]t_"
-    r"|do[por]_v1_|lin_api_|ntn_|shp(?:at|ca|pa|ss)_|ATATT3|PMAK-|SG\.|dp\.[a-z]+\.|ops_eyJ"
-    r"|sk-|SK|[0-9]+:AA"
+    "|".join(
+        [
+            *sorted({re.escape(s) for r in RULES for s in r.starts}, key=lambda s: (-len(s), s)),
+            *_OLDER_PREFIXES.values(),
+        ]
+    )
 )
 _SEPARATORS = "-_./+=:"
-_PLACEHOLDER_WORDS = ("your", "example", "placeholder", "replace", "changeme", "dummy", "sample")
-_PLACEHOLDER_WORDS += ("redacted", "xxxx")
-_PLACEHOLDER_WORD = re.compile("|".join(_PLACEHOLDER_WORDS).replace("xxxx", "x{4,}"))
+_LONG_WORDS = ("sample", "example", "replace", "changeme", "redacted", "placeholder")
+_PLACEHOLDER_WORDS = ("your", "dummy", *_LONG_WORDS, "xxxx")  # each is in a placeholder's body
+_SEP = re.escape(_SEPARATORS)
+_WORD = rf"(?:your|dummy|{'|'.join(_LONG_WORDS)}|x{{4,}})"
+_LONG = rf"(?:{'|'.join(_LONG_WORDS)}|x{{8,}})"
+_EDGE_BEFORE, _EDGE_AFTER = rf"(?:^|(?<=[{_SEP}]))", rf"(?=[{_SEP}]|\Z)"
+_PLACEHOLDER_TOKEN = re.compile(  # (b) and (c), in the lowercased body
+    rf"{_EDGE_BEFORE}{_WORD}{_EDGE_AFTER}|{_EDGE_BEFORE}{_LONG}|{_LONG}{_EDGE_AFTER}"
+)
+_LEADING_WORD = re.compile(_WORD)
+
+
+def _one_character(text: str) -> bool:
+    """Is `text` one character repeated, separators aside (True for separators only, or none)?"""
+    first = text.lstrip(_SEPARATORS)[:1]
+    return not first or not text.replace(first, "").strip(_SEPARATORS)
 
 
 def is_placeholder(value: str) -> bool:
     """Is this matched key an obvious placeholder (see above), not a key?"""
     prefix = _KEY_PREFIX.match(value)
     body = (value[prefix.end() :] if prefix else value).lower()
-    first = body.lstrip(_SEPARATORS)[:1]
-    if not first or not body.replace(first, "").strip(_SEPARATORS):
-        return True  # one character repeated, separators aside (or separators only)
+    if _one_character(body):  # (a)
+        return True
     if not any(map(body.__contains__, _PLACEHOLDER_WORDS)):  # a substring test is the fast no
         return False
-    for word in _PLACEHOLDER_WORD.finditer(body):  # in the lowercased body
-        start, end = word.span()
-        if start == 0 or end == len(body):
-            return True
-        if body[start - 1] in _SEPARATORS or body[end] in _SEPARATORS:
-            return True
-    return False
+    if _PLACEHOLDER_TOKEN.search(body):  # (b), (c)
+        return True
+    bare = body.lstrip(_SEPARATORS)
+    lead = _LEADING_WORD.match(bare)  # (d)
+    return lead is not None and _one_character(bare[lead.end() :])
+
+
+# A key head followed directly by a template, as in docs: xoxb-1234567890-<your-token>,
+# xoxb-1234567890-{SLACK_TOKEN}, xoxp-1234567890-${SLACK_USER_TOKEN}. Only when the bracketed
+# text holds a placeholder word or is an UPPER_SNAKE name (with an underscore inside <...>, so
+# <BR> is not one). A closing tag never counts, so a key inside XML (<token>KEY</token>) is
+# still reported.
+_TEMPLATE = re.compile(r"<(?!/)([^<>{}\s]{1,64})>|\$?\{([^<>{}\s]{1,64})\}")
+_UPPER_SNAKE = re.compile(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*")
+
+
+def _template_after(text: str, end: int) -> bool:
+    template = _TEMPLATE.match(text, end)
+    if template is None:
+        return False
+    angle, curly = template.groups()
+    inner = angle or curly or ""
+    if any(map(inner.lower().__contains__, _PLACEHOLDER_WORDS)):
+        return True
+    return _UPPER_SNAKE.fullmatch(inner) is not None and (curly is not None or "_" in inner)
 
 
 def _matches(
@@ -379,7 +429,7 @@ def _matches(
             value = m.group(rule.group)
             if rule.min_entropy and not _looks_random(value, rule.min_entropy):
                 continue
-            if not placeholders and is_placeholder(value):
+            if not placeholders and (is_placeholder(value) or _template_after(text, end)):
                 continue
             mine.append((SecretMatch(rule.id, rule.name, value, start, end), m.start(), m.end()))
         if mine:  # one rule's matches never overlap each other (finditer)
