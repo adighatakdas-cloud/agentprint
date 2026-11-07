@@ -26,7 +26,7 @@ STUB = re.compile(r"\S{1,4}…\(len \d+\)")
 DETAIL_INDENT = " " * 9  # lines up with the path after "  AP001  "
 
 
-def _where(f: Finding) -> Text:
+def where_line(f: Finding) -> Text:
     line = Text("  ")
     line.append(f.check_id, style="ap.dim")
     line.append("  ")
@@ -49,7 +49,7 @@ def _detail(f: Finding) -> Text:
     return line
 
 
-def _verdict(findings: list[Finding], fail_on: FailOn, width: int | None) -> list[Text]:
+def verdict_lines(findings: list[Finding], fail_on: FailOn, width: int | None) -> list[Text]:
     prints = _plural(len(findings), "print")
     if exit_code(findings, fail_on):
         counts = " · ".join(f"{n} {name}" for name, n in summary(findings).items() if n)
@@ -84,7 +84,7 @@ def render(
         name = f"{severity.name.lower():<10}"
         console.print(Text.assemble((name, SEVERITY_STYLE[severity]), (str(len(group)), "ap.dim")))
         for f in group:
-            console.print(_where(f), soft_wrap=True)  # one line, so the path copies whole
+            console.print(where_line(f), soft_wrap=True)  # one line, so the path copies whole
             for line in hang(DETAIL_INDENT, _detail(f), width):
                 console.print(line)
         console.print()
@@ -98,5 +98,5 @@ def render(
             for line in hang(lead, safe_step(fix), width):
                 console.print(line)
         console.print()
-    for line in _verdict(findings, fail_on, width):
+    for line in verdict_lines(findings, fail_on, width):
         console.print(line)

@@ -163,3 +163,26 @@ def test_last_sweep_frame_renders_like_the_final_lines(fresh_styles):
 
     assert ansi(last) == ansi(*lines)
     assert f"\x1b[1;{AMBER}mprint" in ansi(last)
+
+
+def test_fix_view_styles_resolve():
+    from pathlib import Path
+
+    from agentprint.fix import Change, Manual, Outcome, Plan
+    from agentprint.ui import fixview
+
+    key = redact(fakes.ANTHROPIC)
+    changes = [
+        Change("mask", Path("/p/history.jsonl"), 1, "AP001", key, offsets=((0, 1), (5, 6))),
+        Change("env", Path("/p/.claude.json"), 2, "AP005", "s", json_path='["a","b","env","X"]'),
+        Change("ignore", Path("/p/none/.gitignore"), None, "AP007", "s", line_text="/x"),
+        Change("lock", Path("/p/x"), None, "AP008", "s", old_mode=0o644),
+    ]
+    plan = Plan(changes, [Manual("AP001", f'Rotate "{key}".')], [])
+    after = [Finding("AP002", Severity.CRITICAL, "t", "a", "/p/s.json", 1, f"k {key}", "fix")]
+    for outcome in (None, Outcome(changes[:2], [(changes[3], "why")], None)):
+        out = _Recorder()
+        fixview.render_plan(plan, out, header="agentprint fix  ~ + .")
+        fixview.render_outcome(outcome, after, out, FailOn.high, plan=plan, note="Nothing.")
+        fixview.render_undo(["restored x"], [f'masked "{key}"'], False, out)
+        assert _strict(out.texts) > 0

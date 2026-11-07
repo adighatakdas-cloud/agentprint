@@ -46,6 +46,10 @@ def _line(path: Path, hook: HookCommand) -> int | None:
     return None
 
 
+# How each finding's fix starts asking: an AI agent can't tell who added a hook.
+ASK_FIRST = "Ask the human whether they added this hook; if not, delete it."
+
+
 class NetworkHook:
     id = "AP004"
     severity = Severity.MEDIUM
@@ -76,10 +80,10 @@ class NetworkHook:
                         line=_line(artifact.path, hook),
                         detail=f'{event} hook runs {indicator}: "{command}"',
                         fix=(
-                            f"In this file, find {where}. Ask the human whether they added this "
-                            "hook; if not, delete it. If it is wanted, move the command into a "
-                            "script kept in the repo that calls one pinned URL, never pipes a "
-                            "download into a shell, and reads tokens from environment variables."
+                            f"In this file, find {where}. {ASK_FIRST} If it is wanted, move the "
+                            "command into a script kept in the repo that calls one pinned URL, "
+                            "never pipes a download into a shell, and reads tokens from "
+                            "environment variables."
                         ),
                     )
                 )

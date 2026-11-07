@@ -55,6 +55,7 @@ npx agentprint-cli
 
 ```bash
 uvx agentprint scan      # sweep this machine and folder (keys masked)
+uvx agentprint fix       # make the safe fixes; shows the plan and asks first
 uvx agentprint install   # arm each agent it finds with the tripwire
 uvx agentprint pack      # preflight: what your package would publish
 ```

@@ -20,6 +20,8 @@ from ..structured import find_line
 from .base import agent_configs, safe_snippet
 
 _MARKER = " in MCP server "
+# How each finding's fix starts: rotating is the human's (advice words it for a person).
+ASK_FIRST = "Ask the human to rotate this key at its provider (an AI agent can't). Then "
 
 
 def _variable(field: str, server: McpServer) -> str:
@@ -62,8 +64,7 @@ class McpInlineSecret:
                                 line=find_line(artifact.path, match.value),
                                 detail=f"{match.name}: {redact(match.value)}{_MARKER}"
                                 f"{name!r} ({where})",
-                                fix="Ask the human to rotate this key at its provider (an AI "
-                                "agent can't). Then " + server.secret_fix.replace("<VAR>", var),
+                                fix=ASK_FIRST + server.secret_fix.replace("<VAR>", var),
                             )
                         )
         return findings

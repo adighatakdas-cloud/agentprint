@@ -30,7 +30,12 @@ export default defineConfig({
       sidebar: [
         {
           label: "Start here",
-          items: [{ slug: "get-started" }, { slug: "inside-your-agent" }, { slug: "ci" }],
+          items: [
+            { slug: "get-started" },
+            { slug: "fix" },
+            { slug: "inside-your-agent" },
+            { slug: "ci" },
+          ],
         },
         { label: "Checks", items: [{ autogenerate: { directory: "checks" } }] },
         {

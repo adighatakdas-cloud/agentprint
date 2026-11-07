@@ -12,7 +12,15 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
-from .base import artifacts, dig, from_home, hook_commands, is_blanket_command, mcp_servers
+from .base import (
+    artifacts,
+    dig,
+    from_home,
+    hook_commands,
+    is_blanket_command,
+    matches_any,
+    mcp_servers,
+)
 
 NAME = "claude-code"
 
@@ -50,6 +58,16 @@ def _grants(data: dict[str, Any]) -> tuple[Grant, ...]:
     if data.get("enableAllProjectMcpServers") is True:
         grants.append(Grant("enableAllProjectMcpServers", "true", _MCP_ALL_FIX))
     return tuple(grants)
+
+
+# History that is only a record (fix masks keys there): typed prompts, pasted text, backups of
+# edited files, and the transcripts under projects/. projects/<slug>/memory/ is auto memory,
+# read back into every session, so it is not a record.
+_RECORDS = (
+    re.compile(r"(^|/)\.claude/history\.jsonl$"),
+    re.compile(r"(^|/)\.claude/(paste-cache|file-history)/"),
+    re.compile(r"(^|/)\.claude/projects/[^/]+/(?!memory/)(?:[^/]+/)*[^/]+\.jsonl$"),
+)
 
 
 class ClaudeCode:
@@ -108,6 +126,9 @@ class ClaudeCode:
             NAME, Kind.SETTINGS, root / ".claude" / "settings.local.json", personal=True
         )
         yield from artifacts(NAME, Kind.PERSONAL, root / "CLAUDE.local.md", personal=True)
+
+    def pure_history(self, path: Path) -> bool:
+        return matches_any(path, _RECORDS)
 
     def read_config(self, artifact: Artifact) -> AgentConfig:
         name = artifact.path.name

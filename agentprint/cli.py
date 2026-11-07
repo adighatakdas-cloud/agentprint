@@ -354,6 +354,225 @@ def pack(
     raise typer.Exit(run_pack_command(target, fmt, fail_on, _top_plain(ctx, plain)))
 
 
+class FixFormat(StrEnum):
+    table = "table"
+    json = "json"
+    agent = "agent"
+
+
+def _check_ids(only: str | None) -> set[str] | None:
+    """--only AP001,AP008 as a set of check ids (None: every check). Exits 2 on an unknown id."""
+    if only is None:
+        return None
+    from .checks import SCAN_CHECKS
+    from .checks.ap006_package_leak import ID as AP006
+
+    known = sorted({check.id for check in SCAN_CHECKS} | {AP006})
+    wanted = {part.strip().upper() for part in only.split(",") if part.strip()}
+    unknown = sorted(wanted - set(known))
+    if unknown or not wanted:
+        typer.secho(
+            f"error: unknown check {', '.join(unknown) or repr(only)}. Known: {', '.join(known)}",
+            err=True,
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(2)
+    return wanted
+
+
+def _run_undo(home: Path | None, fmt: FixFormat, plain: bool) -> int:
+    """`agentprint fix --undo`: put back what the newest fix journal can. Always exit 0."""
+    from . import fix as fixer
+    from .fixreport import to_agent_undo, to_json_undo
+    from .ui.fixview import render_undo
+
+    if home is not None and not home.is_dir():
+        typer.secho(f"error: {home} does not exist or is not a directory", err=True, fg="red")
+        return 2
+    restored, cannot = fixer.undo((home or Path.home()).absolute())
+    nothing = not restored and len(cannot) == 1 and cannot[0].startswith(fixer.NOTHING_TO_UNDO)
+    if fmt is FixFormat.json:
+        typer.echo(to_json_undo(restored, cannot, nothing))
+    elif fmt is FixFormat.agent:
+        typer.echo(to_agent_undo(restored, cannot, nothing))
+    else:
+        render_undo(restored, cannot, nothing, themed_console(dict(os.environ), plain=plain))
+    return 0
+
+
+def run_fix_command(
+    path: Path,
+    home: Path | None,
+    no_home: bool,
+    pack: bool,
+    only: str | None,
+    dry_run: bool,
+    yes: bool,
+    fail_on: FailOn,
+    fmt: FixFormat | None,
+    plain: bool,
+) -> int:
+    """`agentprint fix`: sweep (or preflight), plan, ask or take --yes, apply, check again.
+
+    It asks only a person at a real terminal (never an AI agent, a pipe or CI), default No.
+    Without that answer or --yes, it prints the plan and changes nothing."""
+    from . import fix as fixer
+    from .fixreport import RERUN, fixes, rows, to_agent_fix, to_json_fix
+    from .ui import fixview
+
+    fmt = _auto_format(fmt, FixFormat.agent, FixFormat.table)
+    wanted = _check_ids(only)
+    if home is not None and not home.is_dir():  # the journal goes there: never create it
+        typer.secho(f"error: {home} does not exist or is not a directory", err=True, fg="red")
+        return 2
+    out = themed_console(dict(os.environ), plain=plain) if fmt is FixFormat.table else None
+    root: Path | None = None
+    if pack:
+
+        def check() -> list[Finding]:
+            listings = collect(path, is_agent_file)
+            return [finding for listing in listings for finding in check_listing(listing)]
+
+        root = path.absolute() if path.is_dir() else None
+        header = f"agentprint fix --pack  {path}"
+        working = "preflighting…"
+    else:
+        home_dir = None if no_home else (home or Path.home())
+        if not path.is_dir():
+            typer.secho(f"error: {path} does not exist or is not a directory", err=True, fg="red")
+            return 2
+        sweep_home = home_dir.absolute() if home_dir is not None else None
+
+        def check() -> list[Finding]:
+            # Absolute paths, so the journal names files that --undo can find from any folder.
+            return run_scan(sweep_home, path.absolute())
+
+        where = (
+            str(path)
+            if home_dir is None
+            else f"{'~' if home is None else _short(str(home))} + {path}"
+        )
+        header = f"agentprint fix  {where}"
+        working = "sweeping…"
+    try:
+        with _working(out, plain, working):
+            before = check()
+    except PackError as exc:
+        typer.secho(f"error: {exc}", err=True, fg=typer.colors.RED)
+        return 2
+    scope = [f for f in before if wanted is None or f.check_id in wanted]
+    # The scan's own Finding objects: AP008 hands its file list over on them (Finding.paths).
+    the_plan = fixer.plan(scope, pack=pack, root=root)
+    if out is not None:
+        fixview.render_plan(the_plan, out, header=header)
+
+    count = len(rows(the_plan.changes, the_plan.findings))
+    ask = (
+        bool(count)
+        and fmt is FixFormat.table
+        and not (yes or dry_run)
+        and is_interactive(os.environ, sys.stdin, sys.stdout)
+        and not is_agent(os.environ)
+    )
+    go = bool(count) and not dry_run and yes
+    if ask:
+        try:
+            go = typer.confirm(f"Apply {fixes(count)}?", default=False, prompt_suffix=" ")
+        except typer.Abort:  # Ctrl-C or Ctrl-D at the question: nothing changed
+            typer.echo("")
+            return 130
+    note = None
+    if count and not go:
+        note = "Dry run: nothing changed." if dry_run else "Nothing changed."
+        if not (dry_run or ask):
+            note = f"Nothing changed: {RERUN}."
+
+    outcome, after, status = None, before, 0
+    if go:
+        with _working(out, plain, "fixing…"):
+            outcome = fixer.apply(the_plan, (home or Path.home()).absolute())
+            try:
+                after = check()
+            except PackError as exc:  # changes made, but the preflight can't run again
+                typer.secho(f"error: could not check again: {exc}", err=True, fg="red")
+                status = 2
+    if fmt is FixFormat.json:
+        typer.echo(to_json_fix(the_plan, outcome, after, fail_on, pack=pack))
+    elif fmt is FixFormat.agent:
+        typer.echo(to_agent_fix(the_plan, outcome, after, fail_on, dry_run=dry_run))
+    else:
+        assert out is not None
+        fixview.render_outcome(outcome, after, out, fail_on, plan=the_plan, note=note)
+    return status or exit_code(after, fail_on)
+
+
+@app.command()
+def fix(
+    ctx: typer.Context,
+    path: Annotated[
+        Path,
+        typer.Argument(help="Project directory; with --pack, a project or a built package."),
+    ] = Path("."),
+    home: Annotated[
+        Path | None,
+        typer.Option(
+            help="Home directory to sweep and fix (its journal goes there). Default: yours."
+        ),
+    ] = None,
+    no_home: Annotated[
+        bool, typer.Option("--no-home", help="Only fix PATH, not your home directory.")
+    ] = False,
+    pack: Annotated[
+        bool,
+        typer.Option(
+            "--pack",
+            help="Fix what `agentprint pack` finds in PATH instead (a Python project is built "
+            "first, as pack does: only for projects you trust).",
+        ),
+    ] = False,
+    only: Annotated[
+        str | None, typer.Option(help="Only these checks, comma-separated, e.g. AP001,AP008.")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Show the plan, change nothing.")
+    ] = False,
+    yes: Annotated[bool, typer.Option("--yes", help="Apply without asking.")] = False,
+    fail_on: FailOnOpt = FailOn.high,
+    fmt: Annotated[
+        FixFormat | None,
+        typer.Option("--format", "-f", help="Output format. Default: agent inside an AI agent."),
+    ] = None,
+    undo: Annotated[
+        bool, typer.Option("--undo", help="Put back the ignore and lock changes of the last fix.")
+    ] = False,
+    plain: PlainOpt = False,
+) -> None:
+    """Fix the prints a sweep finds, then check again: BLOCK to CLEAR in one command.
+
+    Masks keys in place in history files and permission lists (no copy is kept), points Claude
+    Code MCP entries at an environment variable instead of an inline key, adds ignore lines and
+    makes agent files private to you. It shows the plan first and changes nothing until you
+    answer y, or pass --yes; an AI agent is never asked. What only you can do, like rotating a
+    key, is listed under "Needs you". Exit 1 if anything at or above --fail-on remains.
+    """
+    plain = _top_plain(ctx, plain)
+    if undo:
+        if dry_run or pack or only:
+            typer.secho(
+                "error: --undo puts back the whole last fix run; it takes no --dry-run, --pack "
+                "or --only",
+                err=True,
+                fg=typer.colors.RED,
+            )
+            raise typer.Exit(2)
+        raise typer.Exit(
+            _run_undo(home, _auto_format(fmt, FixFormat.agent, FixFormat.table), plain)
+        )
+    raise typer.Exit(
+        run_fix_command(path, home, no_home, pack, only, dry_run, yes, fail_on, fmt, plain)
+    )
+
+
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def guard(
     agent: Annotated[

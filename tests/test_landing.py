@@ -10,6 +10,7 @@ TERMINAL = SITE / "src" / "components" / "Terminal.astro"
 HERO = SITE / "src" / "components" / "Hero.astro"
 LANDING_CSS = SITE / "src" / "styles" / "landing.css"
 INDEX = SITE / "src" / "content" / "docs" / "index.mdx"
+AUDIT = SITE / "scripts" / "audit-dist.mjs"
 
 HEX_RE = re.compile(r"#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})(?![0-9a-zA-Z])")
 # Starlight's --sl-content-pad-x at 50rem and wider (@astrojs/starlight style/props.css).
@@ -64,9 +65,41 @@ def test_terminal_cannot_widen_the_page():
 
 def test_terminal_uses_the_generated_fragments():
     src = _read(TERMINAL)
-    for name in ("welcome", "scan", "agent"):
+    for name in ("welcome", "scan", "fix", "agent"):
         assert re.search(rf'from "\.\./data/terminal/{name}\.html\?raw"', src), name
     assert "set:html" in src
+
+
+def test_the_story_goes_block_fix_clear_then_the_agent():
+    """welcome -> $ agentprint scan -> BLOCK -> $ agentprint fix -> CLEAR -> the agent's view."""
+    src = _read(TERMINAL)
+    frontmatter = src.split("---")[1]
+    assert re.search(r'const FIX = "agentprint fix";', frontmatter)
+    screen = frontmatter[frontmatter.index("const screen = [") :]
+    order = [screen.index(f'block("{name}"') for name in ("welcome", "scan", "fix", "agent")]
+    assert order == sorted(order)
+    assert re.search(r'block\("fix", \[command\(FIX\)', screen)
+    caption = r'row\("what your AI agent reads", " ap-caption"\)'
+    assert re.search(r'block\("agent", \[\s*command\(PACK\),\s*' + caption, screen)
+    assert "CLEAR" in _read(TERMINAL.parent.parent / "data" / "terminal" / "fix.html")
+
+
+def test_the_answer_is_typed_like_a_command():
+    """The y/N question stays real text; only its answer is uncovered by typing, and each
+    command's output is the lines up to the next command."""
+    src = _read(TERMINAL)
+    frontmatter, script = src.split("---")[1], src[src.index("<script is:inline>") :]
+    assert r"const ASK = /^(Apply \d+ fix(?:es)?\? \[y\/N\] )(y)$/;" in frontmatter
+    assert 'class="ap-typed">${' in frontmatter and '" ap-cmd ap-answer"' in frontmatter
+    assert "ap-cmd" in script and "ap-answer" in script
+
+
+def test_the_built_page_must_carry_the_whole_story():
+    # audit-dist fails a build whose static landing lost a step of the story.
+    audit = _read(AUDIT)
+    texts = re.search(r"const LANDING_TEXT = \[(.*?)\];", audit, re.DOTALL).group(1)
+    for needed in ("BLOCK", "agentprint fix", "Apply 3 fixes? [y/N]", "CLEAR", "agentprint: BLOCK"):
+        assert f'"{needed}"' in texts, needed
 
 
 def test_landing_uses_tokens_not_raw_hex():

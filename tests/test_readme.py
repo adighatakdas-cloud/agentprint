@@ -46,7 +46,21 @@ def test_works_inside_lists_every_integration():
 
 
 def test_quickstart_and_install_lines():
-    wanted = ("uvx agentprint scan", "uvx agentprint install", "uvx agentprint pack")
+    wanted = (
+        "uvx agentprint scan",
+        "uvx agentprint fix",
+        "uvx agentprint install",
+        "uvx agentprint pack",
+    )
     for text in (*wanted, "npx agentprint-cli"):
         assert text in README
     assert sum(x.startswith("> **Pre-release:**") for x in README.splitlines()) == 1
+
+
+def test_quickstart_fixes_right_after_the_sweep():
+    block = README.split("## Quickstart")[1].split("```bash\n")[1].split("```")[0]
+    lines = block.splitlines()
+    assert [x.split("#")[0].split()[2] for x in lines] == ["scan", "fix", "install", "pack"]
+    fix = lines[1]
+    assert "#" in fix and len(fix) <= 80, fix
+    assert len({x.index("#") for x in lines}) == 1  # the comments line up

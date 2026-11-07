@@ -1,0 +1,36 @@
+<span style="color: #6f8397; text-decoration-color: #6f8397">agentprint fix  ~ + . · 3 fixes ready</span>
+
+<span style="color: #6f8397; text-decoration-color: #6f8397">Fixing</span>
+  mask    <span style="font-weight: bold">~/code/my-app/.claude/settings.local.json:4</span>
+          <span style="color: #ffb020; text-decoration-color: #ffb020">sk-p…(len 56)</span>
+  env     <span style="font-weight: bold">~/.claude.json:10</span>
+          github.env.GITHUB_TOKEN → ${GITHUB_TOKEN}
+  mask    <span style="font-weight: bold">~/.claude/history.jsonl:1</span>
+          <span style="color: #ffb020; text-decoration-color: #ffb020">sk-a…(len 105)</span>
+
+<span style="color: #6f8397; text-decoration-color: #6f8397">Needs you</span>
+<span style="color: #6f8397; text-decoration-color: #6f8397">  1  AP002</span>  Rotate the OpenAI API key that starts &quot;<span style="color: #ffb020; text-decoration-color: #ffb020">sk-p…(len 56)</span>&quot;: revoke it and
+            create a new one at https://platform.openai.com/api-keys. Treat the
+            old key as public.
+<span style="color: #6f8397; text-decoration-color: #6f8397">  2  AP005</span>  Rotate the GitHub token that starts &quot;<span style="color: #ffb020; text-decoration-color: #ffb020">ghp_…(len 40)</span>&quot;: revoke it and
+            create a new one at https://github.com/settings/tokens. Treat the
+            old key as public.
+<span style="color: #6f8397; text-decoration-color: #6f8397">  3  AP005</span>  After rotating, set GITHUB_TOKEN in the shell that starts Claude
+            Code to the new key: the MCP config now reads it from there
+            (&quot;~/.claude.json&quot;).
+<span style="color: #6f8397; text-decoration-color: #6f8397">  4  AP001</span>  Rotate the Anthropic API key that starts &quot;<span style="color: #ffb020; text-decoration-color: #ffb020">sk-a…(len 105)</span>&quot;: revoke it
+            and create a new one at https://platform.claude.com/settings/keys.
+            Treat the old key as public.
+<span style="color: #6f8397; text-decoration-color: #6f8397">  5  AP003</span>  Over-broad agent permission in &quot;~/.claude/settings.json&quot; line 4:
+            permissions.allow grants &quot;Bash(*)&quot;: the agent acts without asking.
+            Delete this entry from permissions.allow and allow only the commands
+            you need, e.g. &quot;Bash(npm run test *)&quot;. (A bare &quot;*&quot; allow rule is
+            ignored by Claude Code and is not flagged.)
+
+<span style="color: #6f8397; text-decoration-color: #6f8397">A key is gone for good once masked or replaced: agentprint keeps no copy, so</span>
+<span style="color: #6f8397; text-decoration-color: #6f8397">mask and env can&#x27;t be undone.</span>
+Apply 3 fixes? [y/N] y
+
+<span style="color: #6f8397; text-decoration-color: #6f8397">3 fixed</span>
+
+<span style="color: #050b14; text-decoration-color: #050b14; background-color: #5cc8ff; font-weight: bold"> CLEAR </span>  1 print · none at or above --fail-on high · keys masked

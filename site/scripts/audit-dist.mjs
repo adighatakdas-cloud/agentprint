@@ -1,6 +1,7 @@
 // Fails when a built page loads anything from outside /agentprint/, links inside the site
 // without the /agentprint/ base, has no <title>, or when the landing page lost its static
-// terminal (a reader without JavaScript must still see the whole run, ending on BLOCK).
+// terminal (a reader without JavaScript must still see the whole run: the sweep's BLOCK,
+// agentprint fix turning it CLEAR, and the agent's BLOCK for a package).
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +12,9 @@ const ORIGIN = "https://adighatakdas-cloud.github.io";
 const LANDING_TEXT = [
   "The security check your AI coding agent runs for you.",
   "BLOCK",
+  "agentprint fix",
+  "Apply 3 fixes? [y/N]",
+  "CLEAR",
   "agentprint: BLOCK",
 ];
 

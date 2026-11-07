@@ -58,7 +58,11 @@ synthetic. Note in the agent module where and when you checked the layout (for e
      read them;
    - `read_config(artifact)`: the grants, hooks and MCP servers in a settings file. It must
      never raise; return an empty `AgentConfig()` for anything it doesn't understand.
-     `agents/base.py` has shared helpers (`hook_commands`, `mcp_servers`, `is_blanket_command`).
+     `agents/base.py` has shared helpers (`hook_commands`, `mcp_servers`, `is_blanket_command`);
+   - `pure_history(path)`: True for a history file that is only a record (a transcript, chat
+     log, paste cache or prompt history). `agentprint fix` masks keys only in these; a skill,
+     rule, memory or scheduled job the agent reads back must return False. `matches_any` in
+     `agents/base.py` checks a path against a list of patterns.
    Start the module with a docstring linking the docs you followed. `agents/gemini.py` is a
    good short example.
 2. Add one line to `ALL_AGENTS` in `agentprint/agents/__init__.py`. Every check picks it up.
@@ -112,7 +116,8 @@ The README is short; the user docs live on the docs site.
 - Generated, never edit by hand: `site/src/content/docs/checks/`, the checks table between the
   `<!-- checks:start -->` markers in `README.md`, `site/src/data/`, and `docs/brand/` plus
   `site/src/assets/` logos.
-- After changing a check, a check note, an agent or `__version__`, run
+- After changing a check, a check note, an agent, the scan or fix views, the demo world
+  (`demo/build_demo.py`, which the landing terminal is drawn from) or `__version__`, run
   `uv run python -m tools.gen_docs`. After changing the mascot, run
   `uv run python -m tools.gen_brand`. Add `--check` to either to see whether files are current;
   CI fails on drift.

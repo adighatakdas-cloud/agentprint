@@ -7,6 +7,7 @@ from tools import gen_docs
 DOCS = gen_docs.ROOT / "site/src/content/docs"
 PAGES = [
     "get-started",
+    "fix",
     "inside-your-agent",
     "ci",
     "agents",
@@ -83,3 +84,40 @@ def test_no_full_keys_in_pages():
     files = list(DOCS.rglob("*.md*")) + list((gen_docs.ROOT / "site/check-notes").glob("*.md"))
     for path in files:
         assert find_secrets(path.read_text()) == [], path.name
+
+
+def test_start_here_is_get_started_fix_inside_your_agent_ci():
+    config = (gen_docs.ROOT / "site/astro.config.mjs").read_text()
+    start = re.search(r'label: "Start here",\s*items: \[(.*?)\]', config, re.S).group(1)
+    slugs = re.findall(r'slug: "([^"]+)"', start)
+    assert slugs == ["get-started", "fix", "inside-your-agent", "ci"]
+
+
+def test_fix_page_covers_what_a_reader_needs():
+    page = (DOCS / "fix.md").read_text()
+    for needed in (
+        "agentprint fix --yes --format agent",
+        "agentprint fix --undo",
+        "--dry-run",
+        "--only",
+        "--pack",
+        "--fail-on",
+        "Needs you",
+        "${NAME}",
+        "~/.agentprint/fix/",
+        "sk-a…(len 105)",
+        "## Exit codes",
+    ):
+        assert needed in page, needed
+    for verb in ("mask", "env", "ignore", "lock"):
+        assert f"`{verb}`" in page, verb
+    for word in ("print", "sweep", "preflight", "masked", "BLOCK", "CLEAR"):
+        assert re.search(rf"\b{word}\b", page), word
+    assert "/agentprint/glossary/" in page
+
+
+def test_get_started_points_at_fix():
+    page = (DOCS / "get-started.md").read_text()
+    assert "## Fix what it finds" in page
+    assert "uvx agentprint fix" in page and "(/agentprint/fix/)" in page
+    assert "| `agentprint fix` |" in page

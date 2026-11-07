@@ -18,6 +18,14 @@ uvx agentprint install    # 2. put agentprint inside every AI coding agent it fi
 
 The first command is a sweep (`agentprint scan`): it reads the files your agents keep and reports what it finds. The second arms your agents (`agentprint install`): it adds a tripwire, a check that runs inside each agent. Before an armed agent runs `npm publish`, `uv publish`, `git push` and similar commands, agentprint looks at what would be uploaded. If something would leak, the agent is stopped and told how to fix it. See [Inside your AI agent](/agentprint/inside-your-agent/).
 
+## Fix what it finds
+
+```bash
+uvx agentprint fix
+```
+
+`agentprint fix` shows you a plan and asks before it changes anything. Then it makes the fixes that are safe to automate: it masks keys in history files, points Claude Code MCP servers at environment variables, adds ignore lines and makes readable agent files private. It sweeps again and ends on BLOCK or CLEAR. What only you can do, such as rotating a key, it lists under **Needs you**. See [Fix what it finds](/agentprint/fix/).
+
 ## From source
 
 ```bash
@@ -33,6 +41,7 @@ Prefix the commands below with `uv run` when you run from source.
 | Command | What it does |
 |---|---|
 | `agentprint scan` | A sweep: checks your home folder and the current folder for keys, risky settings and readable agent files. |
+| `agentprint fix` | Makes the safe fixes for what `scan` finds, after showing you the plan. `--undo` puts back what it can. |
 | `agentprint pack` | A preflight: checks what your npm or PyPI package would publish. |
 | `agentprint install` | Arms every AI coding agent it finds: a hook, an MCP server and a short note in each agent's global instructions. |
 | `agentprint uninstall` | Disarms your agents: takes out only what `install` added. |
@@ -48,6 +57,7 @@ agentprint scan --no-home .            # only this project, not your home folder
 agentprint pack .                      # what your npm/PyPI package would publish
 agentprint pack dist/my-pkg-1.0.tgz    # an already-built package (.tgz, .tar.gz, .whl, .zip)
 agentprint scan --format json          # also: table, sarif, agent
+agentprint fix --dry-run               # show what fix would change, change nothing
 agentprint install --dry-run           # show what install would change, write nothing
 agentprint uninstall                   # take agentprint back out of every agent
 ```
@@ -65,7 +75,7 @@ agentprint uninstall                   # take agentprint back out of every agent
 | `sarif` | GitHub code scanning. |
 | `agent` | An AI coding agent: the verdict first, then fix steps and what to ask the human. |
 
-You do not have to pick. Inside an AI coding agent, `scan` and `pack` choose `--format agent` for you. In a terminal they choose `table`.
+You do not have to pick. Inside an AI coding agent, `scan`, `pack` and `fix` choose `--format agent` for you. In a terminal they choose `table`.
 
 `--plain` turns off color and animation. It works before or after the command: `agentprint --plain scan` and `agentprint scan --plain` are the same.
 

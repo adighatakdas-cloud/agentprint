@@ -28,6 +28,7 @@ from .base import (
     gemini_folder,
     hook_commands,
     is_blanket_command,
+    matches_any,
     mcp_servers,
 )
 
@@ -65,6 +66,11 @@ def _grants(data: dict[str, Any]) -> tuple[Grant, ...]:
         if dig(server, "trust") is True:
             grants.append(Grant(f"mcpServers.{name}.trust", "true", _TRUST_FIX))
     return tuple(grants)
+
+
+# History that is only a record (fix masks keys there): tmp/<project_hash>/ holds chats, logs,
+# shell history and checkpoints. Memory (GEMINI.md) lives elsewhere and is not scanned.
+_RECORDS = (re.compile(r"(^|/)\.gemini/tmp/"),)
 
 
 class Gemini:
@@ -108,6 +114,9 @@ class Gemini:
         base = root / ".gemini"
         yield from artifacts(NAME, Kind.SETTINGS, base / "settings.json")
         yield from artifacts(NAME, Kind.CREDENTIALS, base / ".env", personal=True)
+
+    def pure_history(self, path: Path) -> bool:
+        return matches_any(path, _RECORDS)
 
     def read_config(self, artifact: Artifact) -> AgentConfig:
         if artifact.path.name != "settings.json":
