@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import os
 import sys
+from collections.abc import Iterable
 from pathlib import Path, PurePath
 from typing import Any
 
@@ -40,22 +41,23 @@ def use_utf8_streams() -> None:
 
 
 # What the latest sweep's checks could not look at, by check id (AP008 on Windows: files whose
-# access list could not be read). Each check sets or clears its own note on every run.
-_RUN_NOTES: dict[str, str] = {}
+# access list could not be read). Each check sets or clears its own notes on every run.
+_RUN_NOTES: dict[str, tuple[str, ...]] = {}
 
 
-def set_run_note(check_id: str, note: str | None) -> None:
-    """A check says what it could not check in this sweep (None: it checked everything)."""
-    if note is None:
-        _RUN_NOTES.pop(check_id, None)
+def set_run_notes(check_id: str, notes: Iterable[str]) -> None:
+    """A check says what it could not check in this sweep (nothing: it checked everything)."""
+    notes = tuple(notes)
+    if notes:
+        _RUN_NOTES[check_id] = notes
     else:
-        _RUN_NOTES[check_id] = note
+        _RUN_NOTES.pop(check_id, None)
 
 
 def scan_notes() -> tuple[str, ...]:
-    """What the latest sweep could not check on this machine; empty when it checked everything
-    (always so on POSIX). Shown in every output format."""
-    return tuple(_RUN_NOTES[check_id] for check_id in sorted(_RUN_NOTES))
+    """What the latest sweep could not check on this machine, one line each; empty when it
+    checked everything (always so on POSIX). Shown in every output format."""
+    return tuple(note for check_id in sorted(_RUN_NOTES) for note in _RUN_NOTES[check_id])
 
 
 def drive_safe_parts(path: PurePath) -> tuple[str, ...]:

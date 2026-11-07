@@ -245,8 +245,9 @@ def test_windows_judges_the_access_list_not_the_mode(box, monkeypatch):
     monkeypatch.setattr(ap008, "_is_windows", lambda: True)
     monkeypatch.setattr(platform, "_RUN_NOTES", {})
     assert AP008.run([_home("codex", Kind.CREDENTIALS, f, box)]) == []
-    [note] = platform.scan_notes()
-    assert note.startswith("AP008 could not check who can read 1 agent file on Windows")
+    note, todo = platform.scan_notes()
+    assert note.startswith("AP008 could not check who can read") and note.endswith(".")
+    assert todo.startswith("AP008: check it with icacls")
 
 
 def test_hermes_home_with_default_modes_end_to_end(box):

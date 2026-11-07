@@ -102,10 +102,14 @@ def test_the_only_file_of_an_agent_folder_gets_its_own_recipe(win, tmp_path):
     [finding] = AP008.run([_home("claude-code", Kind.HISTORY, history, home)])
     assert finding.location == str(home / ".claude")
     assert finding.fix == winacl.recipe(str(history.absolute()), ME, (EVERYONE,))
-    odd = _file(home / ".agent" / "h$x.jsonl")  # a hostile name: no path in the command
+    odd = _file(home / ".agent" / "h;x.jsonl")  # a name no quoting covers: no path in the fix
     win.set(odd, EXPOSED)
     [finding] = AP008.run([_home("x", Kind.HISTORY, odd, home)])
-    assert "$" not in finding.fix and finding.fix.startswith("Make the files here private")
+    assert ";" not in finding.fix and finding.fix.startswith("Make the files here private")
+    dollar = _file(home / ".other" / "h$x.jsonl")  # PowerShell's single quotes keep it literal
+    win.set(dollar, EXPOSED)
+    [finding] = AP008.run([_home("x", Kind.HISTORY, dollar, home)])
+    assert finding.fix == winacl.recipe(str(dollar.absolute()), ME, (EVERYONE,), powershell=True)
 
 
 def test_private_files_and_other_users_files_are_not_reported(win, tmp_path):
@@ -137,6 +141,9 @@ def test_files_an_elevated_run_made_count_as_mine_only_when_elevated(
     f = _file(home / ".a" / "history.jsonl")
     win.set(f, EXPOSED, owner=winacl.ADMINISTRATORS)
     assert len(AP008.run([_home("x", Kind.HISTORY, f, home)])) == int(elevated)
+    # Not elevated: never silently skipped, it is named as not checked.
+    notes = platform.scan_notes()
+    assert (winacl.ADMIN_OWNED in notes[0]) if not elevated else notes == ()
 
 
 _NTFS_ILLEGAL = pytest.mark.skipif(
@@ -144,14 +151,33 @@ _NTFS_ILLEGAL = pytest.mark.skipif(
 )
 WINDOWS_HOSTILE = [
     pytest.param('d"q', marks=_NTFS_ILLEGAL),
-    "a$b",
-    "tick`id`",
-    "pc%PATH%t",
-    "bang!x",
     "semi;x",
     "amp&x",
+    "caret^x",
+    pytest.param("lt<x", marks=_NTFS_ILLEGAL),
+    "‘smart’",  # PowerShell reads these as single quotes too
+    "nb\u00a0sp",  # a no-break space
     pytest.param("nl\nx", marks=_NTFS_ILLEGAL),
 ]
+POWERSHELL_ONLY = ["a$b", "tick`id`", "pc%PATH%t", "bang!x", "it's $x"]
+
+
+@pytest.mark.parametrize("name", POWERSHELL_ONLY)
+def test_names_with_dollar_backtick_percent_or_bang_get_powershell_quotes(win, tmp_path, name):
+    personal = _file(tmp_path / f"proj {name}" / ".claude" / "settings.local.json")
+    win.set(personal, EXPOSED)
+    [finding] = AP008.run([Artifact("claude-code", Kind.SETTINGS, personal, personal=True)])
+    path = str(personal.absolute())
+    assert finding.fix == winacl.recipe(path, ME, (EVERYONE,), powershell=True)
+    assert finding.fix.startswith("In PowerShell: icacls '") and f'"{path}"' not in finding.fix
+
+
+@pytest.mark.parametrize("name", ["José", "日本語", "Ана", "it's"])
+def test_names_in_any_script_go_in_double_quotes(win, tmp_path, name):
+    personal = _file(tmp_path / f"proj {name}" / ".claude" / "settings.local.json")
+    win.set(personal, SHARED)
+    [finding] = AP008.run([Artifact("claude-code", Kind.SETTINGS, personal, personal=True)])
+    assert finding.fix == winacl.recipe(str(personal.absolute()), ME)
 
 
 @pytest.mark.parametrize("name", WINDOWS_HOSTILE)
@@ -163,6 +189,7 @@ def test_hostile_names_never_reach_the_icacls_command(win, tmp_path, name):
     assert finding.fix == ap008._WIN_PLAIN_FILE.format(
         args=f"/inheritance:r /grant:r *{ME}:F *S-1-5-18:F *S-1-5-32-544:F /remove:g *S-1-1-0"
     )
+    assert "single quotes" in finding.fix and "PowerShell" in finding.fix
 
 
 def test_files_that_cannot_be_checked_are_named_in_the_sweep_note(win, tmp_path):
@@ -170,9 +197,10 @@ def test_files_that_cannot_be_checked_are_named_in_the_sweep_note(win, tmp_path)
     odd = _file(home / ".a" / "history.jsonl")
     win.set(odd, ((0x9, 0, 0x1, ""), *PRIVATE))  # a conditional entry
     assert AP008.run([_home("x", Kind.HISTORY, odd, home)]) == []
-    [note] = platform.scan_notes()
-    assert note.startswith("AP008 could not check who can read 1 agent file on Windows")
-    assert quote(str(odd)) in note and winacl.UNUSUAL in note and "icacls" in note
+    assert platform.scan_notes() == (
+        f"AP008 could not check who can read {quote(str(odd))} on Windows: {winacl.UNUSUAL}.",
+        'AP008: check it with icacls "<file>" and tell the human if anyone else can read it.',
+    )
 
     win.set(odd, PRIVATE)
     AP008.run([_home("x", Kind.HISTORY, odd, home)])
@@ -183,11 +211,15 @@ def test_a_drive_without_permissions_and_an_unknown_user_are_not_checked(
     win, monkeypatch, tmp_path
 ):
     home = tmp_path / "home"
-    files = [_file(home / ".a" / f"h{i}.jsonl") for i in range(2)]
+    files = [_file(home / ".a" / f"h{i:02}.jsonl") for i in range(13)]
     win.no_acls = True
     AP008.run([_home("x", Kind.HISTORY, f, home) for f in files])
-    [note] = platform.scan_notes()
-    assert "2 agent files" in note and ", the first" in note and winacl.NO_ACLS in note
+    notes = platform.scan_notes()
+    assert len(notes) == 12  # ten files by name, how many more, what to do
+    for f, note in zip(files, notes[:10], strict=False):
+        assert quote(str(f)) in note and winacl.NO_ACLS in note
+    assert notes[10] == "AP008 could not check 3 more agent files on Windows."
+    assert notes[11].startswith("AP008: check them with icacls")
 
     def nobody():
         raise OSError("no token")
@@ -195,7 +227,7 @@ def test_a_drive_without_permissions_and_an_unknown_user_are_not_checked(
     monkeypatch.setattr(winacl, "current_user", nobody)
     assert ap008.exposed_paths(_home("x", Kind.HISTORY, files[0], home)) == []
     AP008.run([_home("x", Kind.HISTORY, files[0], home)])
-    assert winacl.NO_USER in platform.scan_notes()[0]
+    assert winacl.NO_USER in platform.scan_notes()[0] and len(platform.scan_notes()) == 2
 
 
 def test_exposed_paths_on_windows_is_what_the_check_reports(win, tmp_path):
@@ -232,12 +264,15 @@ def odd_project(win, tmp_path) -> Path:
 @pytest.mark.parametrize("fmt", ["agent", "json", "table"])
 def test_scan_says_which_files_could_not_be_checked(odd_project, fmt):
     out = CliRunner().invoke(app, ["scan", str(odd_project), "--no-home", "--format", fmt]).output
+    personal = odd_project / ".claude" / "settings.local.json"
     if fmt == "json":
-        [note] = json.loads(out)["not_checked"]
-        assert note.startswith("AP008 could not check")
+        note, todo = json.loads(out)["not_checked"]
+        assert note.startswith("AP008 could not check who can read") and str(personal) in note
+        assert todo.startswith("AP008: check it with icacls")
     elif fmt == "agent":
         assert out.splitlines()[0] == "agentprint: OK"  # line 1 stays the verdict
-        assert "not_checked: AP008 could not check who can read 1 agent file on Windows" in out
+        assert f"not_checked: AP008 could not check who can read {quote(str(personal))}" in out
+        assert "not_checked: AP008: check it with icacls" in out
     else:
         assert "not checked" in out and "AP008" in out
 

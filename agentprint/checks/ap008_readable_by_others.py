@@ -24,7 +24,8 @@ look for keys: AP001/AP002/AP005 already report any key in them.
 
 On Windows there are no mode bits: the file's access list (ACL) decides, read by winacl (which
 says exactly when it counts). The owner is the file's owner SID against this process's user
-(an elevated process's files are owned by Administrators, which counts as this user). The fix
+(an elevated process's files are owned by Administrators: that counts as this user when
+agentprint is elevated too, and is named as not checked otherwise). The fix
 is the icacls recipe for one file, or `agentprint fix` for an agent folder with several (it runs
 icacls on each file), never chmod. A file whose list can't be read or holds entries winacl does
 not read is not reported: the sweep says it could not check it (platform.scan_notes()).
@@ -65,13 +66,16 @@ _PLAIN_FILE = (
     "Make the file named in the location of this finding private to you: run chmod go-rwx on "
     "it, passing the path in single quotes."
 )
-# Windows: a path goes into the icacls command only when every character is safe inside double
-# quotes for both PowerShell and cmd (no quote, $, backtick, % or !).
-_WIN_SAFE_PATH = re.compile(r"[A-Za-z0-9 ._@+=:,\\/~()-]+")
+# Windows: a path goes into the icacls command in double quotes (PowerShell and cmd alike) when
+# every character is a letter or digit of any script or one of these; with $ ` % or ! as well,
+# in PowerShell's single quotes (which keep them literal); otherwise not at all.
+_WIN_PATH_CHARS = frozenset(" ._@+=:,\\/~()'-")
+_PS_ONLY_CHARS = frozenset("$`%!")
 _WIN_PLAIN_FILE = (
-    "Make the file named in the location of this finding private to you: run icacls on it, "
-    "passing the path in double quotes, with {args}."
+    "Make the file named in the location of this finding private to you: run icacls on it in "
+    "PowerShell, passing the path in single quotes (a ' inside written twice), with {args}."
 )
+_NOTE_FILES = 10  # files named one by one in the "not checked" lines
 _WIN_FOLDER = (
     "Make the files here private to you: run agentprint fix --only AP008. It runs {recipe} on "
     "each one, and agentprint fix --undo puts them back."
@@ -207,21 +211,38 @@ def _windows_exposure(
     return ("others",), how, access.explicit
 
 
-def _unchecked_note(unchecked: list[tuple[Path, str]]) -> str | None:
-    """The sweep's "not checked" line for files whose access list could not be judged."""
-    if not unchecked:
-        return None
-    paths = list(dict.fromkeys(path for path, _ in unchecked))
-    path, why = unchecked[0]
-    one = len(paths) == 1
-    files, first, them = (
-        ("1 agent file", "", "it") if one else (f"{len(paths)} agent files", ", the first", "them")
-    )
-    return (
-        f"AP008 could not check who can read {files} on Windows ({quote(str(path))}{first}: "
-        f'{why}). Check {them} with icacls "<file>" and tell the human if anyone else can read '
+def _unchecked_notes(unchecked: list[tuple[Path, str]]) -> list[str]:
+    """The sweep's "not checked" lines: one per file whose access list could not be judged (the
+    first _NOTE_FILES of them), then how many more, then what to do."""
+    first: dict[Path, str] = {}  # each file once, with its first reason, in sweep order
+    for path, why in unchecked:
+        first.setdefault(path, why)
+    if not first:
+        return []
+    notes = [
+        f"AP008 could not check who can read {quote(str(path))} on Windows: {why}."
+        for path, why in list(first.items())[:_NOTE_FILES]
+    ]
+    if len(first) > _NOTE_FILES:
+        notes.append(
+            f"AP008 could not check {len(first) - _NOTE_FILES} more agent files on Windows."
+        )
+    them = "it" if len(first) == 1 else "them"
+    notes.append(
+        f'AP008: check {them} with icacls "<file>" and tell the human if anyone else can read '
         f"{them}."
     )
+    return notes
+
+
+def _windows_quoting(path: str) -> str | None:
+    """ "double" when the path can go into the icacls command in double quotes, "powershell"
+    when only PowerShell's single quotes keep it literal ($ ` % !), None when it can't go in."""
+    if all(ch.isalnum() or ch in _WIN_PATH_CHARS for ch in path):
+        return "double"
+    if all(ch.isalnum() or ch in _WIN_PATH_CHARS or ch in _PS_ONLY_CHARS for ch in path):
+        return "powershell"
+    return None
 
 
 def _windows_fix(target: Path, is_folder: bool, items: list[_Exposed], me: str) -> str:
@@ -229,14 +250,34 @@ def _windows_fix(target: Path, is_folder: bool, items: list[_Exposed], me: str) 
     for several: there is no folder-wide icacls equivalent of chmod -R go-rwx that also drops
     what each file grants on its own."""
     first = items[0]
+    path = str(first.path.absolute() if is_folder else target)
+    quoting = _windows_quoting(path) if not is_folder or len(items) == 1 else None
+    if quoting is not None:
+        return winacl.recipe(path, me, first.remove, powershell=quoting == "powershell")
     if is_folder:
-        path = first.path.absolute()
-        if len(items) == 1 and _WIN_SAFE_PATH.fullmatch(str(path)):
-            return winacl.recipe(str(path), me, first.remove)
         return _WIN_FOLDER.format(recipe=winacl.recipe("<file>", me))
-    if _WIN_SAFE_PATH.fullmatch(str(target)):
-        return winacl.recipe(str(target), me, first.remove)
     return _WIN_PLAIN_FILE.format(args=" ".join(winacl.lock_args("", me, first.remove)[1:]))
+
+
+def _exposures(
+    artifact: Artifact,
+    user: _User,
+    cache: dict[Path, os.stat_result | None],
+    unchecked: list[tuple[Path, str]] | None,
+) -> Iterable[tuple[Path, tuple[str, ...], str, tuple[str, ...]]]:
+    """(path, who can read it, how, SIDs to remove) for each exposed file of the artifact. On
+    POSIX `unchecked` is None and modes decide; on Windows the access list does."""
+    if unchecked is None:
+        for path in exposed_paths(artifact, cache):
+            exposure = _exposure(path, cache)
+            if exposure is not None:  # (else it changed since the line above)
+                classes, mode = exposure
+                yield path, classes, f"mode {mode:04o}", ()
+        return
+    for path in _paths(artifact):
+        windows = _windows_exposure(path, user, unchecked)
+        if windows is not None:
+            yield path, *windows
 
 
 def _who(items: list[_Exposed]) -> str:
@@ -260,44 +301,20 @@ class ReadableByOthers:
     )
 
     def run(self, artifacts: Iterable[Artifact]) -> list[Finding]:
-        if _is_windows():
-            return self._run_windows(artifacts)
-        platform.set_run_note(self.id, None)
+        windows = _is_windows()
+        user = _windows_user() if windows else None
+        unchecked: list[tuple[Path, str]] | None = [] if windows else None
         cache: dict[Path, os.stat_result | None] = {}
         groups: dict[tuple[Path, bool], list[_Exposed]] = {}
         for artifact in artifacts:
             if not _in_scope(artifact):
                 continue
             folder = _data_folder(artifact)
-            for path in exposed_paths(artifact, cache):
-                exposure = _exposure(path, cache)
-                if exposure is None:  # changed since the line above
-                    continue
+            for path, classes, how, remove in _exposures(artifact, user, cache, unchecked):
                 key = (folder.absolute(), True) if folder else (path.absolute(), False)
-                classes, mode = exposure
-                groups.setdefault(key, []).append(
-                    _Exposed(path, artifact, classes, f"mode {mode:04o}")
-                )
-        return [
-            self._finding(target, is_folder, items) for (target, is_folder), items in groups.items()
-        ]
-
-    def _run_windows(self, artifacts: Iterable[Artifact]) -> list[Finding]:
-        user = _windows_user()
-        unchecked: list[tuple[Path, str]] = []
-        groups: dict[tuple[Path, bool], list[_Exposed]] = {}
-        for artifact in artifacts:
-            if not _in_scope(artifact):
-                continue
-            folder = _data_folder(artifact)
-            for path in _paths(artifact):
-                exposure = _windows_exposure(path, user, unchecked)
-                if exposure is None:
-                    continue
-                key = (folder.absolute(), True) if folder else (path.absolute(), False)
-                groups.setdefault(key, []).append(_Exposed(path, artifact, *exposure))
-        platform.set_run_note(self.id, _unchecked_note(unchecked))
-        me = user[0] if user else ""
+                groups.setdefault(key, []).append(_Exposed(path, artifact, classes, how, remove))
+        platform.set_run_notes(self.id, _unchecked_notes(unchecked or []))
+        me = (user[0] if user else "") if windows else None
         return [
             self._finding(target, is_folder, items, me)
             for (target, is_folder), items in groups.items()
