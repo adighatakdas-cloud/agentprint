@@ -9,7 +9,7 @@ All of it produces one thing, a list of findings. They are already masked. A per
 
 ## The parts
 
-- **Agents** (`agentprint/agents/`): one module per agent. It says where the agent keeps files in your home folder and in a project, how to read its config (permissions, hooks, MCP servers), and which of its files must never ship in a package. Fifteen lighter agents live in `scan_only.py`. Adding an agent never touches a check.
+- **Agents** (`agentprint/agents/`): one module per agent. It says where the agent keeps files in your home folder and in a project, how to read its config (permissions, hooks, MCP servers), and which of its files must never ship in a package. Four lighter agents live in `scan_only.py`. Adding an agent never touches a check.
 - **Checks** (`agentprint/checks/`): one module per [check](/agentprint/checks/). A check gets the found files and returns findings. Checks never parse an agent's file format. When several checks see the same key, the most precise one claims it, so you get one finding.
 - **Secrets** (`secrets.py`): key patterns and the masking function.
 - **Pack** (`pack.py`): asks the package manager what a package would ship (`npm pack --dry-run --ignore-scripts`, or `uv build`), or reads a built archive in memory. AP006 then matches every file name against all agents' package rules.

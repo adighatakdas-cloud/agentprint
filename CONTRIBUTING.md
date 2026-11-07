@@ -71,6 +71,11 @@ synthetic. Note in the agent module where and when you checked the layout (for e
 4. Add the agent to `site/src/content/docs/agents.md` and `site/check-notes/ap003.md`, then run
    `uv run python -m tools.gen_docs` (it rewrites the site's agent data and landing text).
 
+**No install yet?** Give the module a `doc = AgentDoc(...)` (`agents/base.py`): its row on the
+agents page and its `agentprint status` line come from it, with any path its docs don't confirm
+under `unverified`. Read MCP files with `read_mcp_file` from `agents/base.py`, and add
+`env_reference` only if the agent's docs name a way to refer to an environment variable there.
+
 **Only package rules?** If agentprint doesn't read the agent's home folder yet, add one
 `_agent(...)` entry to `agentprint/agents/scan_only.py` instead.
 
