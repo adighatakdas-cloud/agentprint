@@ -1,0 +1,171 @@
+# Windows publish and push command lines, as agents on Windows send them (PowerShell, cmd).
+# Read by tests/test_commands_windows.py: each one goes through commands.detect as the guard
+# runs it on Windows, and must give exactly what is written after "=>".
+#
+#   <command line>  =>  <what>[ ; <what> ...]
+#   <what> = <action> <tool> <folder> [<target> ...] [unsure]   or   nothing
+#
+# <folder> is where the command runs, relative to the agent's folder, with forward slashes
+# (`.` is the agent's own); quote it when it has a space. "unsure" means agentprint says "could
+# not check", never OK.
+
+# npm and the other Node publishers, as Windows names them
+npm publish  =>  publish npm .
+npm.cmd publish  =>  publish npm .
+NPM.CMD publish --access public  =>  publish npm .
+npm.ps1 publish  =>  publish npm .
+& "C:\Program Files\nodejs\npm.cmd" publish  =>  publish npm .
+& 'C:\Program Files\nodejs\npm.cmd' publish --tag next  =>  publish npm .
+& npm publish  =>  publish npm .
+C:\PROGRA~1\nodejs\npm.cmd publish  =>  publish npm .
+npm.cmd publish .\dist  =>  publish npm . ./dist
+npm.cmd publish --workspace packages\web  =>  publish npm .
+npm.cmd --prefix packages\web publish  =>  publish npm packages/web
+pnpm.cmd -C packages\a publish  =>  publish pnpm packages/a
+yarn.cmd npm publish  =>  publish yarn .
+bun.exe publish  =>  publish bun .
+npx.cmd changeset publish  =>  publish changeset .
+.\node_modules\.bin\changeset.cmd publish  =>  publish changeset .
+npx.cmd np  =>  publish np .
+
+# Python publishers
+uv publish  =>  publish uv .
+uv.exe publish  =>  publish uv .
+uv publish dist\*  =>  publish uv . dist/*
+twine upload dist\*  =>  publish twine . dist/*
+twine.exe upload dist\demo-1.0-py3-none-any.whl  =>  publish twine . dist/demo-1.0-py3-none-any.whl
+python -m twine upload dist\*  =>  publish twine . dist/*
+python.exe -m twine upload dist\*  =>  publish twine . dist/*
+py -m twine upload dist\*  =>  publish twine . dist/*
+py -3 -m twine upload dist\*  =>  publish twine . dist/*
+uvx twine upload dist\*  =>  publish twine . dist/*
+poetry.exe publish --build  =>  publish poetry .
+hatch publish  =>  publish hatch .
+
+# git push
+git push  =>  push git .
+git.exe push origin main  =>  push git .
+& "C:\Program Files\Git\cmd\git.exe" push  =>  push git .
+git -C ..\other push  =>  push git ../other
+git add -A; git commit -m "release"; git push --follow-tags  =>  push git .
+git commit -m 'it''s done'; git push  =>  push git .
+git commit -m "say ""hi"""; git push  =>  push git .
+
+# cd, Set-Location, pushd: the folder the publish runs in
+cd C:\pkg; npm publish  =>  publish npm C:/pkg
+cd C:\Users\me\pkg && npm.cmd publish  =>  publish npm C:/Users/me/pkg
+cd /d D:\pkg && npm publish  =>  publish npm D:/pkg
+cd /d D:\pkg; npm publish  =>  publish npm . unsure
+cd "C:\Program Files\pkg"; npm publish  =>  publish npm 'C:/Program Files/pkg'
+cd .\packages\web; npm publish  =>  publish npm packages/web
+cd ..\sibling; git push  =>  push git ../sibling
+chdir pkg; npm publish  =>  publish npm pkg
+Set-Location C:\pkg; git push  =>  push git C:/pkg
+Set-Location -Path C:\pkg; git push  =>  push git C:/pkg
+Set-Location -LiteralPath 'C:\my pkg'; npm publish  =>  publish npm 'C:/my pkg'
+sl pkg; npm publish  =>  publish npm pkg
+pushd pkg; npm publish; popd; git push  =>  publish npm pkg ; push git .
+Push-Location pkg; npm publish; Pop-Location; git push  =>  publish npm pkg ; push git .
+cd $env:USERPROFILE\pkg; npm publish  =>  publish npm . unsure
+Set-Location $PSScriptRoot; npm publish  =>  publish npm . unsure
+cd D:; npm publish  =>  publish npm . unsure
+cd -; git push  =>  push git . unsure
+Set-Location (Join-Path $root pkg); npm publish  =>  publish npm . unsure
+
+# cmd /c, as PowerShell or an agent hands it on
+cmd /c "npm publish"  =>  publish npm .
+cmd /c npm publish  =>  publish npm .
+cmd.exe /d /s /c "npm publish"  =>  publish npm .
+cmd /c "cd /d D:\pkg && npm publish"  =>  publish npm D:/pkg
+cmd /c "cd pkg & npm publish"  =>  publish npm pkg
+cmd /c "cd /d %USERPROFILE%\pkg && npm publish"  =>  publish npm . unsure
+cmd /c "cd Z:\pkg && npm publish"  =>  publish npm . unsure
+cmd /c "call npm publish"  =>  publish npm .
+cmd /c "@npm publish"  =>  publish npm .
+cmd /c "git push 2>&1"  =>  push git .
+cmd /c "%NPM% publish"  =>  publish %NPM% . unsure
+cmd /c start "" npm publish  =>  publish npm .
+cmd /c start /wait /d pkg npm publish  =>  publish npm pkg
+cmd /c start "release run" npm publish  =>  publish npm .
+cmd /c "C:\Program Files\nodejs\npm.cmd" publish  =>  publish npm .
+cmd /s /c '"C:\Program Files\nodejs\npm.cmd" publish'  =>  publish npm .
+
+# powershell / pwsh, unwrapped like bash -c
+powershell -Command "npm publish"  =>  publish npm .
+powershell -c "npm publish"  =>  publish npm .
+powershell "npm publish"  =>  publish npm .
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "cd pkg; npm publish"  =>  publish npm pkg
+pwsh -c 'git push origin main'  =>  push git .
+pwsh -NoLogo -NonInteractive -Command "Set-Location C:\pkg; git push"  =>  push git C:/pkg
+pwsh -WorkingDirectory pkg -Command "npm publish"  =>  publish npm pkg
+powershell -EncodedCommand bgBwAG0AIABwAHUAYgBsAGkAcwBoAA==  =>  publish npm .
+pwsh -cwa 'npm $args[0]' publish  =>  publish npm . unsure
+
+# Start-Process, Invoke-Expression, wsl
+Start-Process npm -ArgumentList 'publish'  =>  publish npm .
+Start-Process -FilePath npm.cmd -ArgumentList 'publish','--access','public' -Wait -NoNewWindow  =>  publish npm .
+Start-Process git -ArgumentList push -WorkingDirectory C:\repo  =>  push git C:/repo
+start npm publish  =>  publish npm .
+saps npm.cmd 'publish', '--tag', 'next'  =>  publish npm .
+Invoke-Expression "npm publish"  =>  publish npm .
+iex 'git push'  =>  push git .
+wsl npm publish  =>  publish npm .
+wsl -e git push  =>  push git .
+
+# PowerShell around the publish: assignments, redirections, blocks, subexpressions
+$env:NPM_CONFIG_PROVENANCE = 'true'; npm publish  =>  publish npm .
+$out = npm publish 2>&1  =>  publish npm .
+$out=npm.cmd publish  =>  publish npm .
+[void](npm publish)  =>  publish npm .
+npm publish *> $null  =>  publish npm .
+npm publish 2>$null | Out-Null  =>  publish npm .
+npm publish > publish.log  =>  publish npm .
+if ($?) { npm publish }  =>  publish npm .
+if (Test-Path dist) { twine upload dist\* }  =>  publish twine . dist/*
+try { npm publish } catch { Write-Host failed }  =>  publish npm .
+Write-Host "published: $(npm publish)"  =>  publish npm .
+npm test && npm publish  =>  publish npm .
+npm test || exit 1; npm publish  =>  publish npm .
+npm publish; git push --follow-tags  =>  publish npm . ; push git .
+npm publish (Get-Item .\pkg)  =>  publish npm . $(...) unsure
+twine upload (Get-ChildItem dist\*.whl)  =>  publish twine . $(...) unsure
+& $npm publish  =>  publish $npm . unsure
+foreach ($p in 'a','b') { Push-Location $p; npm publish; Pop-Location }  =>  publish npm . unsure
+Get-ChildItem packages | ForEach-Object { Push-Location $_.FullName; npm publish; Pop-Location }  =>  publish npm . unsure
+foreach ($p in 'a','b') { cd $p }; npm publish  =>  publish npm . unsure
+npm publish "unclosed  =>  publish npm . unclosed unsure
+
+# Ordinary Windows commands: nothing to check
+dir  =>  nothing
+Get-ChildItem -Recurse  =>  nothing
+npm test  =>  nothing
+npm.cmd run build  =>  nothing
+npm.cmd install  =>  nothing
+npm pack  =>  nothing
+cargo build  =>  nothing
+uv.exe build  =>  nothing
+twine.exe check dist\*  =>  nothing
+python -m build  =>  nothing
+cd /d D:\pkg && npm test  =>  nothing
+Set-Location C:\pkg  =>  nothing
+git status  =>  nothing
+git.exe stash push  =>  nothing
+git log --grep=push  =>  nothing
+npm publish --dry-run  =>  nothing
+npm.cmd publish --dry-run  =>  nothing
+Start-Process notepad  =>  nothing
+Write-Host "npm publish"  =>  nothing
+Write-Output 'git push'  =>  nothing
+echo "Run npm publish later"  =>  nothing
+Write-Output 'Run `npm publish` later'  =>  nothing
+Write-Host "Run `npm publish` later"  =>  nothing
+git commit -m "npm publish fix"  =>  nothing
+git commit -m 'twine upload step'  =>  nothing
+cmd /c "echo npm publish"  =>  nothing
+powershell -Command "Write-Host 'git push'"  =>  nothing
+Get-Content release.txt | Select-String publish  =>  nothing
+npm view demo | findstr publish  =>  nothing
+<# npm publish #> npm test  =>  nothing
+npm test # then npm publish  =>  nothing
+$msg = 'npm publish'; Write-Host $msg  =>  nothing
+& $tool --version  =>  nothing
