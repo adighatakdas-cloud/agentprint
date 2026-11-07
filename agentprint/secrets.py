@@ -15,7 +15,7 @@ import re
 from bisect import bisect_right
 from collections import Counter
 from collections.abc import Collection, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from itertools import islice
 
@@ -27,6 +27,11 @@ class SecretRule:
     pattern: re.Pattern[str]
     group: int = 0
     min_entropy: float = 0.0
+    # Lowercase words, at least one of which must be in the text for the rule to be tried at all.
+    # For rules that start with a case-insensitive name, which the regex engine cannot skip to.
+    needs: tuple[str, ...] = ()
+    # Exact text, at least one of which must be in the text (the rule's own literal start).
+    starts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -41,8 +46,25 @@ class SecretMatch:
     obfuscation: str | None = None
 
 
+# A key ends where its characters stop: the next character may not continue it. A lookahead, not
+# `\\b`, because `_` and `-` are key characters here and a JSON-escaped `\\n` after a key must
+# still end it. Short prefixes (`hf_`, `r8_`) are checked for a word before them after the prefix,
+# so the pattern still starts with a fixed text and the engine can skip ahead to it.
+_END = r"(?![A-Za-z0-9_\-])"
+
+
+def _before(prefix: str) -> str:
+    """`prefix`, not glued to a word before it (a lookbehind placed after it)."""
+    return rf"{prefix}(?<![A-Za-z0-9_\-]{prefix})"
+
+
+# Named context for the formats too common to match bare: the word, then a value within 80
+# characters on the same line.
+_NEAR = r"[^\n]{0,80}?"
+
 # Specific rules come first; the generic rule only reports text no specific rule claimed.
-RULES: tuple[SecretRule, ...] = (
+# Publishing tokens (npm, PyPI) lead the newer formats: a leak there is a supply-chain event.
+_RULES: tuple[SecretRule, ...] = (
     SecretRule(
         "anthropic",
         "Anthropic API key",
@@ -63,8 +85,144 @@ RULES: tuple[SecretRule, ...] = (
     ),
     SecretRule("aws", "AWS access key ID", re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}")),
     SecretRule("stripe", "Stripe live key", re.compile(r"(?:sk|rk)_live_[A-Za-z0-9]{24,99}")),
-    SecretRule("slack", "Slack token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,72}")),
+    SecretRule(
+        "slack",
+        "Slack token",
+        re.compile(r"x(?:ox[baprs]-[A-Za-z0-9-]{10,72}|app-\d-[A-Z0-9]+-\d+-[a-z0-9]+)"),
+    ),
     SecretRule("google", "Google API key", re.compile(r"AIza[0-9A-Za-z_\-]{35}")),
+    SecretRule(
+        "google-oauth",
+        "Google OAuth client secret",
+        re.compile(rf"GOCSPX-[A-Za-z0-9_\-]{{28}}{_END}"),
+    ),
+    SecretRule("npm", "npm access token", re.compile(rf"{_before('npm_')}[A-Za-z0-9]{{36}}{_END}")),
+    SecretRule(
+        "pypi",
+        "PyPI upload token",
+        re.compile(r"pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_\-]{50,1000}"),
+    ),
+    SecretRule(
+        "gitlab",
+        "GitLab token",
+        re.compile(
+            rf"glpat-(?:[A-Za-z0-9_\-]{{27,300}}\.[0-9a-z]{{9}}|[A-Za-z0-9_\-]{{20}}){_END}"
+        ),
+    ),
+    # Docker's token lengths are not documented by Docker: the looser shape, then a look-alike test.
+    SecretRule(
+        "dockerhub",
+        "Docker Hub access token",
+        re.compile(rf"dckr_(?:pat|oat)_[A-Za-z0-9_\-]{{27,48}}{_END}"),
+    ),
+    SecretRule(
+        "huggingface",
+        "Hugging Face token",
+        re.compile(rf"{_before('hf_')}(?=[0-9]*[A-Za-z])[A-Za-z0-9]{{34}}{_END}"),
+    ),
+    SecretRule(
+        "huggingface",
+        "Hugging Face token",
+        re.compile(rf"api_org_[A-Za-z]{{34}}{_END}"),
+    ),
+    SecretRule("groq", "Groq API key", re.compile(rf"{_before('gsk_')}[A-Za-z0-9]{{40,64}}{_END}")),
+    SecretRule("openrouter", "OpenRouter API key", re.compile(rf"sk-or-v1-[0-9a-f]{{64}}{_END}")),
+    SecretRule("xai", "xAI API key", re.compile(rf"xai-[A-Za-z0-9_]{{80}}{_END}")),
+    SecretRule("perplexity", "Perplexity API key", re.compile(rf"pplx-[A-Za-z0-9]{{48}}{_END}")),
+    SecretRule(
+        "replicate",
+        "Replicate API token",
+        re.compile(rf"{_before('r8_')}[A-Za-z0-9_\-]{{37}}{_END}"),
+    ),
+    SecretRule(
+        "supabase-pat",
+        "Supabase access token",
+        re.compile(rf"{_before('sbp_')}[a-f0-9]{{40}}{_END}"),
+    ),
+    # sb_publishable_ keys are meant to be public and are not matched.
+    SecretRule(
+        "supabase-secret",
+        "Supabase secret key",
+        re.compile(r"sb_secret_[A-Za-z0-9_\-]{20,}"),
+    ),
+    SecretRule(
+        "cloudflare",
+        "Cloudflare API token",
+        re.compile(rf"cf[ua]t_[A-Za-z0-9]{{40}}[a-f0-9]{{8}}{_END}"),
+    ),
+    SecretRule(
+        "digitalocean",
+        "DigitalOcean token",
+        re.compile(rf"do[por]_v1_[a-f0-9]{{64}}{_END}"),
+    ),
+    SecretRule("linear", "Linear API key", re.compile(rf"lin_api_[A-Za-z0-9]{{40}}{_END}")),
+    SecretRule(
+        "notion", "Notion API token", re.compile(rf"ntn_[0-9]{{11}}[A-Za-z0-9]{{35}}{_END}")
+    ),
+    SecretRule(
+        "shopify",
+        "Shopify access token",
+        re.compile(rf"shp(?:at|ca|pa|ss)_[a-fA-F0-9]{{32}}{_END}"),
+    ),
+    SecretRule(
+        "atlassian",
+        "Atlassian API token",
+        re.compile(r"ATATT3[A-Za-z0-9_\-=]{186}(?![A-Za-z0-9_\-=])"),
+    ),
+    SecretRule(
+        "postman", "Postman API key", re.compile(rf"PMAK-[a-f0-9]{{24}}-[a-f0-9]{{34}}{_END}")
+    ),
+    SecretRule(
+        "sendgrid",
+        "SendGrid API key",
+        re.compile(rf"SG\.[A-Za-z0-9_\-]{{22}}\.[A-Za-z0-9_\-]{{43}}{_END}"),
+    ),
+    SecretRule(
+        "doppler",
+        "Doppler token",
+        re.compile(
+            r"dp\.(?:pt|ct|sa|scim|audit|st(?:\.[a-z0-9_\-]{2,35})?)\.[A-Za-z0-9]{40,44}" + _END
+        ),
+    ),
+    SecretRule(
+        "onepassword",
+        "1Password service account token",
+        re.compile(r"ops_eyJ[A-Za-z0-9+/]{250,}+={0,3}"),
+    ),
+    # Context-only formats: too common as plain text, so a match needs the provider's name
+    # on the same line, before the value.
+    SecretRule(
+        "deepseek",
+        "DeepSeek API key",
+        re.compile(rf"(?i:deepseek)[\w .\-]{{0,30}}[:=\"'\\ ]{{1,6}}(sk-[a-f0-9]{{32}}){_END}"),
+        group=1,
+        needs=("deepseek",),
+    ),
+    SecretRule(
+        "twilio",
+        "Twilio API key SID",
+        re.compile(rf"(?i:twilio){_NEAR}(?<![A-Za-z0-9])(SK[0-9a-f]{{32}})(?![A-Za-z0-9])"),
+        group=1,
+        needs=("twilio",),
+    ),
+    SecretRule(
+        "discord",
+        "Discord bot token",
+        re.compile(
+            rf"(?i:discord){_NEAR}(?<![A-Za-z0-9_.\-])"
+            rf"([MNO][A-Za-z0-9_\-]{{23,25}}\.[A-Za-z0-9_\-]{{6}}\.[A-Za-z0-9_\-]{{27,38}})"
+            r"(?![A-Za-z0-9_.\-])"
+        ),
+        group=1,
+        needs=("discord",),
+    ),
+    SecretRule(
+        "telegram",
+        "Telegram bot token",
+        re.compile(rf"(?i:telegr){_NEAR}(?<![0-9])([0-9]{{8,10}}:AA[A-Za-z0-9_\-]{{33}}){_END}"),
+        group=1,
+        needs=("telegr",),
+    ),
     # Generic rules: a secret-ish name, a real separator, then a random-looking value.
     # Possessive quantifiers (*+) and bounded spacing keep matching linear on hostile input.
     SecretRule(
@@ -76,6 +234,7 @@ RULES: tuple[SecretRule, ...] = (
         ),
         group=1,
         min_entropy=3.5,
+        needs=("key", "secret", "token", "passw"),
     ),
     SecretRule(
         "generic",
@@ -83,7 +242,39 @@ RULES: tuple[SecretRule, ...] = (
         re.compile(r"(?i)(?<![a-z0-9])bearer[ \t]{1,4}([A-Za-z0-9_\-.+]{20,200})"),
         group=1,
         min_entropy=3.5,
+        needs=("bearer",),
     ),
+)
+
+# The text each newer rule starts with. A plain substring test over the text costs a fraction
+# of one more regex pass, and most files hold none of them.
+_STARTS: dict[str, tuple[str, ...]] = {
+    "google-oauth": ("GOCSPX-",),
+    "npm": ("npm_",),
+    "pypi": ("pypi-AgEI",),
+    "gitlab": ("glpat-",),
+    "dockerhub": ("dckr_",),
+    "huggingface": ("hf_", "api_org_"),
+    "groq": ("gsk_",),
+    "openrouter": ("sk-or-v1-",),
+    "xai": ("xai-",),
+    "perplexity": ("pplx-",),
+    "replicate": ("r8_",),
+    "supabase-pat": ("sbp_",),
+    "supabase-secret": ("sb_secret_",),
+    "cloudflare": ("cfut_", "cfat_"),
+    "digitalocean": ("dop_v1_", "doo_v1_", "dor_v1_"),
+    "linear": ("lin_api_",),
+    "notion": ("ntn_",),
+    "shopify": ("shpat_", "shpca_", "shppa_", "shpss_"),
+    "atlassian": ("ATATT3",),
+    "postman": ("PMAK-",),
+    "sendgrid": ("SG.",),
+    "doppler": ("dp.pt.", "dp.ct.", "dp.sa.", "dp.st.", "dp.scim.", "dp.audit."),
+    "onepassword": ("ops_eyJ",),
+}
+RULES: tuple[SecretRule, ...] = tuple(
+    replace(rule, starts=_STARTS[rule.id]) if rule.id in _STARTS else rule for rule in _RULES
 )
 
 
@@ -110,9 +301,15 @@ def _matches(
     so each check is a binary search, not a scan of every match so far."""
     end_at = len(text) if endpos is None else endpos
     found: list[tuple[SecretMatch, int, int]] = []
+    window = text[pos:end_at] if pos or end_at != len(text) else text
+    lower = window.lower() if any(r.needs for r in rules) else ""
     starts: list[int] = []  # value spans claimed by earlier rules, in text order (never overlap)
     ends: list[int] = []
     for rule in rules:
+        if rule.needs and not any(word in lower for word in rule.needs):
+            continue
+        if rule.starts and not any(word in window for word in rule.starts):
+            continue
         mine: list[tuple[SecretMatch, int, int]] = []
         for m in rule.pattern.finditer(text, pos, end_at):
             start, end = m.span(rule.group)
@@ -166,7 +363,10 @@ HIDDEN_MARKER = " (hidden: "
 MAX_JOINS = 10_000  # joins collected per trick per text
 MAX_BLOCKS = 10_000  # YAML block scalars read per text
 MAX_INDENT = 256  # YAML blocks indented deeper are not read
-CONTEXT = 320  # text kept on each side of a join; the longest rule match is about 260
+# Text kept on each side of a join. Most rule matches are under 260 characters; a PyPI token
+# (up to 1000+) or a 1Password token (no upper bound) hidden by a join is read only if it fits in
+# about 2 * CONTEXT. Longer ones are listed under "Still missed" in the AP001/AP002 notes.
+CONTEXT = 320
 MAX_WINDOW = 64 * 1024  # text one view covers at most (views overlap at their edges)
 MAX_VIEW_CHARS = 1024 * 1024  # view text searched per text
 MAX_BLOBS = 256  # base64 blobs decoded per file

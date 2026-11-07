@@ -244,7 +244,8 @@ def test_spans_cover_the_key_and_the_aws_pair(tmp_path):
         if c.category.startswith("plain-"):
             assert find_secrets(span), c.id  # the span holds the key
         text = "\n".join(lines)
-        if c.id.endswith("-3"):  # AWS is key kind index 3, in every category
+        if c.id.endswith("-3") and c.category not in build_corpus.NEW_FAMILIES:
+            # AWS is key kind index 3, in every category but the newer key families
             assert "AWS_SECRET_ACCESS_KEY" in text  # the pair is in the file ...
             assert "AWS_SECRET_ACCESS_KEY" not in span  # ... but never inside the scored span
         if c.category == "obf-yaml-folded":

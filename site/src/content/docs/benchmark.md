@@ -7,17 +7,17 @@ description: How many fake keys agentprint, gitleaks and trufflehog find in AI-a
 
 A public, repeatable test of how well agentprint finds keys in the files AI coding agents write, next to two well-known scanners. The corpus is synthetic and the labels are ours, so read it as a regression check you can rerun, not as a ranking.
 
-**Run of 2026-11-07.** Corpus: 147 cases, 84 with one fake key and 63 with look-alikes only. Tools: agentprint 0.1.1, gitleaks 8.30.1, trufflehog 3.99.8. All three tools were included in this run.
+**Run of 2026-11-07.** Corpus: 174 cases, 111 with one fake key and 63 with look-alikes only. Tools: agentprint 0.1.1, gitleaks 8.30.1, trufflehog 3.99.8. All three tools were included in this run.
 
 ## Overall
 
 | Tool | Version | Recall | Recall, plain keys | Recall, hidden keys | Precision | Keys found | False positives | Recall, any hit in file |
 |---|---|---|---|---|---|---|---|---|
-| agentprint | 0.1.1 | 95% | 100% (42 of 42) | 90% (38 of 42) | 92% | 80 of 84 | 7 of 63 | 96% |
-| gitleaks | 8.30.1 | 55% | 88% (37 of 42) | 21% (9 of 42) | 77% | 46 of 84 | 14 of 63 | 55% |
-| trufflehog | 3.99.8 | 55% | 86% (36 of 42) | 24% (10 of 42) | 100% | 46 of 84 | 0 of 63 | 55% |
+| agentprint | 0.1.1 | 96% | 100% (69 of 69) | 90% (38 of 42) | 94% | 107 of 111 | 7 of 63 | 97% |
+| gitleaks | 8.30.1 | 57% | 78% (54 of 69) | 21% (9 of 42) | 82% | 63 of 111 | 14 of 63 | 57% |
+| trufflehog | 3.99.8 | 57% | 77% (53 of 69) | 24% (10 of 42) | 100% | 63 of 111 | 0 of 63 | 57% |
 
-*Plain keys* are the rows where the key is written out as an agent writes it; *hidden keys* are the rows where it is hidden by one trick. 42 of the 84 keys are hidden, so the overall recall leans on them. **The hidden-key rows favour agentprint:** they test the tricks this release (agentprint 0.1.1) added, and were written alongside the new detection. Compare the tools on plain keys first.
+*Plain keys* are the rows where the key is written out as an agent writes it; *hidden keys* are the rows where it is hidden by one trick. 42 of the 111 keys are hidden, so the overall recall leans on them. **The hidden-key rows favour agentprint:** they test the tricks this release (agentprint 0.1.1) added, and were written alongside the new detection. Compare the tools on plain keys first.
 
 **How a case is scored, the same for every tool.** Each fake key sits on known lines of its file (the manifest records the span when the corpus is built). A key counts as *found* only if a finding's reported line falls inside that span. A finding on the key's line counts even when only part of the key matched: agentprint's "hidden: split string" hits, for example, are matches of the key's first part, not the whole joined key. *Recall* is found / (found + missed). A negative case (look-alikes, no key) counts as a *false positive* if the tool reports anything in its file. *Precision* is found / (found + false positives); it is file-level, not per-finding. The last column is the looser reading, any finding anywhere in a key's file, shown so the two can be compared. Each case file holds one key, so the two differ only where a tool reported something else in the file but not on the key; in practice that is the paired AWS secret access key, which agentprint's generic rule flags on its own line.
 
@@ -27,12 +27,16 @@ Plain rows are keys in the form an agent writes them (a history line, an allowli
 
 | Key written as | Cases | agentprint | gitleaks | trufflehog |
 |---|---|---|---|---|
+| plain, in ai providers | 6 | 6 of 6 | 2 of 6 | 5 of 6 |
 | plain, in claude history | 7 | 7 of 7 | 6 of 7 | 6 of 7 |
 | plain, in claude mcp | 7 | 7 of 7 | 6 of 7 | 6 of 7 |
 | plain, in claude settings | 7 | 7 of 7 | 6 of 7 | 6 of 7 |
 | plain, in codex toml | 7 | 7 of 7 | 6 of 7 | 6 of 7 |
+| plain, in context only | 4 | 4 of 4 | 2 of 4 | 2 of 4 |
 | plain, in cursor mcp | 7 | 7 of 7 | 7 of 7 | 6 of 7 |
+| plain, in dev platforms | 13 | 13 of 13 | 10 of 13 | 7 of 13 |
 | plain, in hermes yaml | 7 | 7 of 7 | 6 of 7 | 6 of 7 |
+| plain, in publishing | 4 | 4 of 4 | 3 of 4 | 3 of 4 |
 | hidden: base64 | 7 | 6 of 7 | 6 of 7 | 6 of 7 |
 | hidden: line continuation | 7 | 7 of 7 | 1 of 7 | 2 of 7 |
 | hidden: split concat | 7 | 7 of 7 | 1 of 7 | 1 of 7 |
