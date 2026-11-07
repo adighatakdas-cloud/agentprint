@@ -40,7 +40,7 @@ jobs:
 | `fail-on` | Lowest severity that fails the job. `none` only reports. | `high` |
 | `upload-sarif` | Send the [SARIF](/agentprint/glossary/#sarif) file to GitHub code scanning | `false` |
 
-Outputs: `exit-code` and `sarif-file`.
+Outputs: `exit-code` and `sarif-file`. To also show a signed CLEAR or BLOCK badge in your README, see [the verifiable badge](/agentprint/badge/).
 
 ## pre-commit
 

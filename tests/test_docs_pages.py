@@ -10,6 +10,7 @@ PAGES = [
     "fix",
     "inside-your-agent",
     "ci",
+    "badge",
     "agents",
     "how-it-works",
     "privacy",
@@ -86,11 +87,11 @@ def test_no_full_keys_in_pages():
         assert find_secrets(path.read_text()) == [], path.name
 
 
-def test_start_here_is_get_started_fix_inside_your_agent_ci():
+def test_start_here_is_get_started_fix_inside_your_agent_ci_badge():
     config = (gen_docs.ROOT / "site/astro.config.mjs").read_text()
     start = re.search(r'label: "Start here",\s*items: \[(.*?)\]', config, re.S).group(1)
     slugs = re.findall(r'slug: "([^"]+)"', start)
-    assert slugs == ["get-started", "fix", "inside-your-agent", "ci"]
+    assert slugs == ["get-started", "fix", "inside-your-agent", "ci", "badge"]
 
 
 def test_fix_page_covers_what_a_reader_needs():
@@ -121,3 +122,31 @@ def test_get_started_points_at_fix():
     assert "## Fix what it finds" in page
     assert "uvx agentprint fix" in page and "(/agentprint/fix/)" in page
     assert "| `agentprint fix` |" in page
+
+
+def test_badge_page_covers_the_verifiable_badge():
+    text = (DOCS / "badge.md").read_text()
+    assert "verifiable" in text
+    for banned in ("unfakeable", "encrypted"):
+        assert banned not in text.lower()
+    assert "https://img.shields.io/endpoint?url=" in text
+    assert "agentprint-badge/badge.json" in text
+    assert "/attestations" in text
+    assert (
+        "gh attestation verify badge.json -R OWNER/REPO "
+        "--predicate-type https://adighatakdas-cloud.github.io/agentprint/badge/v1"
+    ) in text
+    for needle in (
+        "badge-dir",
+        "attest-badge: true",
+        "publish-badge: true",
+        "id-token: write",
+        "attestations: write",
+        "contents: write",
+        "private",
+        "default branch",
+    ):
+        assert needle in text, needle
+    assert "adighatakdas-cloud/agentprint@v0.1.0  # better: pin the release's commit SHA" in text
+    assert "![" not in text.split("```")[0] and "<img" not in text
+    assert "/agentprint/badge/" in (DOCS / "ci.md").read_text()

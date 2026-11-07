@@ -35,6 +35,7 @@ export default defineConfig({
             { slug: "fix" },
             { slug: "inside-your-agent" },
             { slug: "ci" },
+            { slug: "badge" },
           ],
         },
         { label: "Checks", items: [{ autogenerate: { directory: "checks" } }] },
