@@ -152,6 +152,85 @@ def _fed_to(line: str) -> str:
     return "data"
 
 
+_FUNCTION = re.compile(
+    r"(?m)^[ \t]*(?:function[ \t]+([A-Za-z_][\w.:-]*)(?:[ \t]*\(\s*\))?"
+    r"|([A-Za-z_][\w.:-]*)[ \t]*\(\s*\))\s*\{"
+)
+MAX_FUNCTIONS = 200
+
+
+def called_only(text: str) -> str:
+    """Shell text without the functions it defines but never calls: a function's body runs only
+    when it is called, so `source lib.sh` reads only the lib's top-level lines. A function
+    called anywhere outside its own body is kept where it is, and so are the ones it calls."""
+    spans: dict[str, tuple[int, int]] = {}
+    end = 0
+    for match in _FUNCTION.finditer(text):
+        if match.start() < end or len(spans) >= MAX_FUNCTIONS:
+            continue  # nested in the one before
+        close = _matching_brace(text, match.end() - 1)
+        if close < 0:
+            break  # not a function body agentprint can read: leave the rest alone
+        spans[match.group(1) or match.group(2)] = (match.start(), close + 1)
+        end = close + 1
+    if not spans:
+        return text
+    outside = "\n".join(text[a:b] for a, b in _gaps(sorted(spans.values()), len(text)))
+    called: set[str] = set()
+    todo = [name for name in spans if _calls(outside, name)]
+    while todo:
+        name = todo.pop()
+        if name in called:
+            continue
+        called.add(name)
+        start, stop = spans[name]
+        body = text[start:stop]
+        todo += [other for other in spans if other not in called and _calls(body, other)]
+    out, at = [], 0
+    for name, (start, stop) in sorted(spans.items(), key=lambda item: item[1]):
+        if name not in called:
+            out += [text[at:start], "\n" * text.count("\n", start, stop)]
+            at = stop
+    return "".join([*out, text[at:]])
+
+
+def _calls(text: str, name: str) -> bool:
+    return re.search(rf"(?<![\w.:$/-]){re.escape(name)}(?![\w.:/=(-])", text) is not None
+
+
+def _gaps(spans: list[tuple[int, int]], size: int) -> list[tuple[int, int]]:
+    gaps, at = [], 0
+    for start, stop in spans:
+        gaps.append((at, start))
+        at = stop
+    return [*gaps, (at, size)]
+
+
+def _matching_brace(text: str, start: int) -> int:
+    """The `}` that closes the `{` at `start`, outside quotes; -1 when there is none."""
+    level, quote, i = 0, "", start
+    while i < len(text):
+        char = text[i]
+        if quote:
+            if char == "\\" and quote == '"':
+                i += 2
+                continue
+            quote = "" if char == quote else quote
+        elif char == "\\":
+            i += 2
+            continue
+        elif char in "'\"":
+            quote = char
+        elif char == "{":
+            level += 1
+        elif char == "}":
+            level -= 1
+            if level == 0:
+                return i
+        i += 1
+    return -1
+
+
 # ---- Makefiles ------------------------------------------------------------------------------
 
 _MAKE_ASSIGN = re.compile(

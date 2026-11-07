@@ -489,3 +489,20 @@ def test_a_wrapper_given_nothing_to_publish_stays_quiet(tmp_path):
     _repo(tmp_path, {"with-env.sh": '#!/bin/sh\nexec "$@"\n'})
     assert evaluate("./with-env.sh npm test", tmp_path) is None
     assert evaluate("./with-env.sh", tmp_path) is None
+
+
+# ---- a function runs only when it is called -------------------------------------------------
+
+
+def test_sourcing_a_library_does_not_run_its_functions(tmp_path):
+    lib = 'build() { make; }\nrelease() { cd "$PKG"; npm publish; }\n'
+    _repo(tmp_path, {"scripts/lib.sh": lib})
+    assert evaluate("source scripts/lib.sh && build", tmp_path) is None
+    assert evaluate("source scripts/lib.sh && build", tmp_path, strict=True) is None
+
+
+def test_a_function_the_script_calls_is_read(leaky):
+    script = f"#!/bin/sh\nship() {{\n  {PUBLISH}}}\nlint() {{ git push; }}\nship\n"
+    _repo(leaky, {"release.sh": script})
+    verdict = evaluate("./release.sh", leaky)
+    assert verdict.block and "git push" not in verdict.reason

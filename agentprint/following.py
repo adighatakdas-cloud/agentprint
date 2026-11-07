@@ -339,6 +339,7 @@ def _step(step: recipes.Step, name: str, cwd: Path, depth: int) -> list[c.Risky]
     if not _is_shell(step.program):
         return _flag(_named(step.text), name, cwd, _CODE)
     text, other = recipes.shell_text(step.text)
+    text = recipes.called_only(text)  # a function's body runs only when it is called
     found = [risky for body in other for risky in _flag(_named(body), name, cwd, _CODE)]
     reading = _reading(cwd)
     if reading.peeking or reading.bytes + len(text) > MAX_BYTES:  # charged before it is read
