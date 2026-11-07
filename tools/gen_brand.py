@@ -259,14 +259,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     stale = 0
     for path, text in outputs().items():
-        if path.exists() and path.read_text() == text:
+        if path.exists() and path.read_text(encoding="utf-8") == text:
             continue
         if args.check:
             print(path)
             stale += 1
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text)
+            path.write_text(text, encoding="utf-8", newline="\n")
     return 1 if stale else 0
 
 

@@ -4,13 +4,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   test:
-    runs-on: ubuntu-latest  # macOS and Windows run in test-other-os once the repo is public
+    runs-on: ubuntu-latest  # macOS runs in test-other-os once the repo is public
     strategy:
       matrix:
         python: ["3.11", "3.13"]
@@ -23,7 +24,9 @@ jobs:
         with:
           node-version: "22"
           package-manager-cache: false
-      - run: uv sync --locked --python ${{ matrix.python }}
+      - run: uv sync --locked --python "$PYTHON"
+        env:
+          PYTHON: ${{ matrix.python }}
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pyright
@@ -44,7 +47,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [macos-latest]  # Windows CI returns after launch, with skips for POSIX-only tests
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

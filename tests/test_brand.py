@@ -29,7 +29,7 @@ def _rect_cells(svg: str, fill: str) -> int:
 
 
 def test_generated_files_are_current():
-    stale = [p for p, text in gen_brand.outputs().items() if p.read_text() != text]
+    stale = [p for p, text in gen_brand.outputs().items() if p.read_text(encoding="utf-8") != text]
     assert stale == []  # run: uv run python -m tools.gen_brand
 
 

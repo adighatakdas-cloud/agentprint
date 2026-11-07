@@ -94,7 +94,7 @@ def test_codeql_scans_python_and_actions_on_push_pr_and_weekly():
 def test_other_os_tests_wait_for_a_public_repo():
     job = _load("ci.yml")["jobs"]["test-other-os"]
     assert PRIVATE_SKIP in job["if"]
-    assert job["strategy"]["matrix"]["os"] == ["macos-latest", "windows-latest"]
+    assert job["strategy"]["matrix"]["os"] == ["macos-latest"]  # Windows CI returns after launch
     assert "permissions" not in job  # inherits the top-level contents: read
 
 
@@ -118,6 +118,33 @@ def test_docs_workflow_writes_the_coverage_badge_without_any_secret():
     badge = next(i for i, r in enumerate(names) if "tools.coverage_badge" in r)
     build = next(i for i, r in enumerate(names) if r == "pnpm build")
     assert badge < build
+    [tests] = [s for s in steps if s.get("name") == "Run the tests with coverage"]
+    assert tests["continue-on-error"] is True  # a flaky test must not block the site
+    [write] = [s for s in steps if "tools.coverage_badge" in s.get("run", "")]
+    assert "[ -f coverage.json ]" in write["run"]  # a missing report skips the badge
+
+
+@pytest.mark.parametrize("name", ["ci.yml", "codeql.yml", "scorecard.yml"])
+def test_public_only_workflows_can_be_started_by_hand_after_the_flip(name):
+    workflow = _load(name)
+    assert "workflow_dispatch" in workflow["on"]
+    if name != "ci.yml":
+        for job in workflow["jobs"].values():
+            assert PRIVATE_SKIP in job["if"]
+
+
+def test_ci_has_no_expression_inside_run():
+    for job in _load("ci.yml")["jobs"].values():
+        for step in job["steps"]:
+            assert "${{" not in step.get("run", "")
+
+
+def test_tools_read_and_write_text_as_utf8():
+    for name in ("gen_brand.py", "gen_docs.py", "coverage_badge.py"):
+        text = (ROOT / "tools" / name).read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if re.search(r"\.(?:read_text|write_text)\(", line):
+                assert 'encoding="utf-8"' in line, (name, line)
 
 
 def test_coverage_badge_writes_the_shields_endpoint_json(tmp_path):
@@ -150,15 +177,12 @@ def test_pyproject_pins_dev_tools_and_configures_pyright_and_coverage():
     assert config["tool"]["coverage"]["run"]["source"] == ["agentprint"]
 
 
-def test_readme_has_the_coverage_scorecard_and_types_badges():
+def test_readme_has_the_coverage_and_types_badges_but_no_scorecard_yet():
     readme = (ROOT / "README.md").read_text()
     assert (
         "https://img.shields.io/endpoint?url=https://adighatakdas-cloud.github.io/agentprint/coverage.json"
         in readme
     )
-    assert (
-        "https://api.scorecard.dev/projects/github.com/adighatakdas-cloud/agentprint/badge"
-        in readme
-    )
+    assert "scorecard" not in readme.lower()  # added on launch day, after the first score
     assert "label=types" in readme or "types-pyright" in readme
     assert len(readme.splitlines()) <= 140

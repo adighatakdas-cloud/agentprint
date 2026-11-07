@@ -24,7 +24,7 @@ def badge(percent: float) -> dict[str, object]:
 def write_badge(report: Path, out: Path) -> None:
     percent = json.loads(report.read_text(encoding="utf-8"))["totals"]["percent_covered"]
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(badge(percent)) + "\n", encoding="utf-8")
+    out.write_text(json.dumps(badge(percent)) + "\n", encoding="utf-8", newline="\n")
 
 
 def main(argv: list[str]) -> int:
