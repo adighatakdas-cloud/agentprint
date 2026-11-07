@@ -46,6 +46,7 @@ export default defineConfig({
             { slug: "how-it-works" },
             { slug: "privacy" },
             { slug: "comparison" },
+            { slug: "benchmark" },
             { slug: "glossary" },
           ],
         },

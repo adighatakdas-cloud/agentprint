@@ -1,0 +1,59 @@
+name: Benchmark
+
+# Scores agentprint, gitleaks and trufflehog on the labelled fake-key corpus (bench/) and uploads
+# bench/results.json as an artifact. Run by hand (Actions -> Benchmark -> Run workflow), download
+# the artifact, check it, and commit bench/results.json yourself, then rerun
+# `uv run python -m tools.gen_docs`. Nothing is committed or pushed by this workflow.
+# The corpus is built at run time from a seeded generator; every key in it is fake.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+  TRUFFLEHOG_VERSION: "3.99.8"
+  TRUFFLEHOG_SHA256: 7c3b02f160f28929a467e29e20fba98746e0729f6e37c3c25761e4f8789abe08
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: Install gitleaks (pinned release, checksum verified)
+        run: |
+          curl -fsSL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/bin" "$RUNNER_TEMP/gitleaks"
+          tar -xzf gitleaks.tar.gz -C "$RUNNER_TEMP/gitleaks" gitleaks
+          mv "$RUNNER_TEMP/gitleaks/gitleaks" "$RUNNER_TEMP/bin/gitleaks"
+          rm gitleaks.tar.gz
+      - name: Install trufflehog (pinned release, checksum verified)
+        run: |
+          curl -fsSL -o trufflehog.tar.gz \
+            "https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG_VERSION}/trufflehog_${TRUFFLEHOG_VERSION}_linux_amd64.tar.gz"
+          echo "${TRUFFLEHOG_SHA256}  trufflehog.tar.gz" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/trufflehog"
+          tar -xzf trufflehog.tar.gz -C "$RUNNER_TEMP/trufflehog" trufflehog
+          mv "$RUNNER_TEMP/trufflehog/trufflehog" "$RUNNER_TEMP/bin/trufflehog"
+          rm trufflehog.tar.gz
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Run the benchmark
+        run: |
+          uv sync --frozen
+          gitleaks version
+          trufflehog --version
+          uv run python -m tools.benchmark
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: benchmark-results
+          path: bench/results.json
+          if-no-files-found: error

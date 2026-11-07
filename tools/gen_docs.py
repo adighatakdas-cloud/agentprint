@@ -137,6 +137,83 @@ def check_page(doc: CheckDoc) -> str:
     return f"{front}{GENERATED}\n\n{glance}\n{doc.body}"
 
 
+BENCH_RESULTS = ROOT / "bench" / "results.json"
+BENCH_TEMPLATE = ROOT / "bench" / "page.md"
+BENCH_TOOLS = ("agentprint", "gitleaks", "trufflehog")
+
+
+def _pct(value: float | None) -> str:
+    return "n/a" if value is None else f"{value * 100:.0f}%"
+
+
+def _bench_name(category: str) -> str:
+    kind, _, rest = category.partition("-")
+    rest = rest.replace("-", " ")
+    return {"plain": f"plain, in {rest}", "obf": f"hidden: {rest}"}.get(kind, rest)
+
+
+def benchmark_page(results: dict) -> str:
+    """The benchmark page: numbers come from bench/results.json, prose is fixed here."""
+    tools = [t for t in BENCH_TOOLS if t in results["tools"]]
+    corpus = results["corpus"]
+    ran = ", ".join(f"{t} {results['tools'][t]['version']}" for t in tools)
+    absent = results.get("not_run", [])
+    note = (
+        f"Not included in this run: {', '.join(absent)} (not installed where it ran). "
+        "Their columns are left out rather than guessed."
+        if absent
+        else "All three tools were included in this run."
+    )
+    rows = [
+        "| Tool | Version | Recall | Precision | Keys found | False positives |",
+        "|---|---|---|---|---|---|",
+    ]
+    for t in tools:
+        r = results["tools"][t]
+        o = r["overall"]
+        rows.append(
+            f"| {t} | {r['version']} | {_pct(o['recall'])} | {_pct(o['precision'])} "
+            f"| {o['tp']} of {o['tp'] + o['fn']} | {o['fp']} of {o['fp'] + o['tn']} |"
+        )
+    overall = "\n".join(rows)
+    cats = {}
+    for t in tools:
+        for name, c in results["tools"][t]["categories"].items():
+            cats.setdefault(name, c["kind"])
+
+    def table(kind: str, label: str, key: str, fmt) -> str:
+        lines = [
+            f"| {label} | Cases | " + " | ".join(tools) + " |",
+            "|---|---|" + "---|" * len(tools),
+        ]
+        for name in sorted(
+            (n for n, k in cats.items() if k == kind), key=lambda n: (n.startswith("obf"), n)
+        ):
+            n = results["tools"][tools[0]]["categories"][name]["cases"]
+            cells = [fmt(results["tools"][t]["categories"][name]) for t in tools]
+            lines.append(f"| {_bench_name(name)} | {n} | " + " | ".join(cells) + " |")
+        return "\n".join(lines)
+
+    found = table("positive", "Key written as", "recall", lambda c: f"{c['found']} of {c['cases']}")
+    clean = table("negative", "Look-alike", "fp", lambda c: f"{c['false_positives']} flagged")
+    values = {
+        "generated": results["generated"],
+        "cases": str(corpus["cases"]),
+        "positives": str(corpus["positives"]),
+        "negatives": str(corpus["negatives"]),
+        "seed": str(results["seed"]),
+        "ran": ran,
+        "note": note,
+        "overall": overall,
+        "found": found,
+        "clean": clean,
+    }
+    text = BENCH_TEMPLATE.read_text(encoding="utf-8")
+    for key, value in values.items():
+        text = text.replace("{{" + key + "}}", value)
+    return text
+
+
 def _table(docs: list[CheckDoc], link: str, summary_header: str) -> str:
     rows = [f"| ID | {summary_header} | Severity |", "|---|---|---|"]
     for d in docs:
@@ -304,6 +381,9 @@ def outputs() -> dict[Path, str]:
     )
     for name, fragment in terminal_fragments().items():
         files[SITE / "src" / "data" / "terminal" / f"{name}.html"] = fragment
+    files[pages.parent / "benchmark.md"] = benchmark_page(
+        json.loads(BENCH_RESULTS.read_text(encoding="utf-8"))
+    )
     readme = ROOT / "README.md"
     files[readme] = replace_block(readme.read_text(encoding="utf-8"), readme_checks_block(docs))
     return files
