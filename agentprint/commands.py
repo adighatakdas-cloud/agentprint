@@ -209,10 +209,12 @@ _PROGRAM_POSITION = (  # where a program name starts, after any VAR=value prefix
     rf"(?:[A-Za-z_][A-Za-z0-9_]*={_VALUE_CHAR}*+(?:{_SUBSTITUTION}{_VALUE_CHAR}*+){{0,4}}+\s++)*+"
 )
 _COMMAND_POSITION = _PROGRAM_POSITION + rf"(?:{_WORD}*/)?"
+_OPTION = rf"\s+-{_WORD}+"  # an option; like every word, it stops at a separator
+_OPTION_VALUE = rf"\s+[^-\s;&|(){{}}!]{_WORD}*"
 _BACKSTOP = re.compile(
     _COMMAND_POSITION + r"(?:(npm|pnpm|yarn|bun|uv|poetry|hatch|flit|changeset|lerna)"
-    r"(?:\s+-\S+)*\s+publish\b|(twine)(?:\s+-\S+)*\s+upload\b|(git)(?:\s+-\S+(?:\s+[^-\s]\S*)?)*"
-    r"\s+push\b)"
+    rf"(?:{_OPTION})*\s+publish\b|(twine)(?:{_OPTION})*\s+upload\b"
+    rf"|(git)(?:{_OPTION}(?:{_OPTION_VALUE})?)*\s+push\b)"
 )
 # A file that runs another file: a path, make/just/task, `source`, or a script handed to an
 # interpreter. Used only where agentprint stops following (too deep, or too many commands).

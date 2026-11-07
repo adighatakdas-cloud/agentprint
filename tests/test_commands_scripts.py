@@ -57,6 +57,9 @@ def _backstop(text):
         ("do  twine upload dist/*", [(Action.publish, "twine")]),
         ("a=b;c npm publish", []),  # `c` is the program here, not npm
         ("D=./bin/twine upload", []),  # an assignment, then a program called `upload`
+        ("git -c a=b -C sub push origin", [(Action.push, "git")]),
+        ("npm --access=public --provenance publish", [(Action.publish, "npm")]),
+        ("git -v; push", []),  # the `;` ends the git command
     ],
 )
 def test_backstop_reads_command_positions(text, want):
@@ -76,9 +79,14 @@ def test_backstop_reads_command_positions(text, want):
         "git" + " -a b" * (N // 5),
         "npm" + " -a" * (N // 3),
         "{x}/" * (N // 4),
+        "git -a;" * (N // 7),  # was quadratic: an option ran on across the `;`
+        "npm -a;" * (N // 7),
+        "git -a b;" * (N // 9),
+        "twine -a;" * (N // 9),
     ],
     ids=["semicolon-assign", "newlines", "newline-space", "subst", "semicolon-subst",
-         "subst-word", "keywords", "git-options", "npm-options", "braces"],
+         "subst-word", "keywords", "git-options", "npm-options", "braces", "git-option-semi",
+         "npm-option-semi", "git-value-semi", "twine-option-semi"],
 )  # fmt: skip
 def test_backstop_is_linear_on_a_64kb_script(text):
     assert timing.best_of(lambda: commands._backstop(text, CWD)) < timing.bound(0.5)
