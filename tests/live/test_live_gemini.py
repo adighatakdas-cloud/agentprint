@@ -3,15 +3,22 @@
 Custom endpoint: GOOGLE_GEMINI_BASE_URL (the mock speaks the Gemini API) with a dummy
 GEMINI_API_KEY; no Google login. Headless runs refuse untrusted folders unless `--skip-trust`.
 https://geminicli.com/docs/reference/configuration , https://geminicli.com/docs/cli/trusted-folders
+The plugin variant installs the extension (gemini-extension.json, hooks/hooks.json and its
+context file, laid out as at the repository root) with `gemini extensions install <path>
+--consent`, and no `agentprint install`. https://geminicli.com/docs/extensions/reference/
 """
 
 import json
+import shutil
 
 import pytest
 
 from tests.live import harness
 from tests.live.runner import (
+    REPO,
     AgentCLI,
+    Plugin,
+    agent_command,
     assert_blocked,
     assert_help_not_menu,
     assert_ran,
@@ -91,3 +98,30 @@ def test_scan_output_is_plain_text_for_the_model(tmp_path):
 def test_bare_agentprint_does_not_hang(tmp_path):
     outcome = run(GEMINI, tmp_path, "bare", leaky=False)
     assert_help_not_menu(outcome)
+
+
+# What a Gemini CLI extension install of this repository uses, at the same paths.
+EXTENSION_FILES = (
+    "gemini-extension.json",
+    "hooks/hooks.json",
+    "plugins/agentprint/gemini/GEMINI.md",
+)
+
+
+def _install_extension(home, env, exe, tmp):
+    folder = tmp / "agentprint-extension"
+    for rel in EXTENSION_FILES:
+        (folder / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(REPO / rel, folder / rel)
+    agent_command([str(exe), "extensions", "install", str(folder), "--consent"], env, tmp)
+
+
+PLUGIN = Plugin(install=_install_extension)
+
+
+def test_extension_blocks_a_leaky_publish(tmp_path):
+    assert_blocked(run(GEMINI, tmp_path, "publish", leaky=True, plugin=PLUGIN), "publish")
+
+
+def test_extension_lets_a_clean_publish_run(tmp_path):
+    assert_ran(run(GEMINI, tmp_path, "publish", leaky=False, plugin=PLUGIN), "publish")

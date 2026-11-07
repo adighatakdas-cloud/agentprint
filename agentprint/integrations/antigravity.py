@@ -113,7 +113,11 @@ def parse_hook(payload: dict, env: Env) -> HookCall | None:
     if not isinstance(command, str):
         return None
     roots = payload.get("workspacePaths") or [None]
-    return HookCall(command, cwd_from(args.get("Cwd"), roots[0]))
+    # A plugin's hooks run with the plugin's own folder as their working folder
+    # (https://antigravity.google/docs/build-plugins/), so without Cwd or workspacePaths the
+    # folder the command runs in is unknown, and a publish or push there is "could not check".
+    known = any(isinstance(where, str) and where for where in (args.get("Cwd"), roots[0]))
+    return HookCall(command, cwd_from(args.get("Cwd"), roots[0]), cwd_known=known)
 
 
 def reply(verdict: Verdict | None) -> HookReply:

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from agentprint import cli
+from agentprint import __version__, cli
 from agentprint import fix as fixer
 from agentprint.checks import SCAN_CHECKS
 from agentprint.checks import ap006_package_leak as ap006
@@ -82,6 +82,27 @@ def test_readme_outside_the_markers_is_untouched():
 def test_missing_readme_marker_fails_loudly():
     with pytest.raises(ValueError, match="checks:start"):
         gen_docs.replace_block("no markers here", "x")
+
+
+def test_ci_page_pins_come_from_templates():
+    for name, template in gen_docs.CI_BLOCKS.items():
+        text = (gen_docs.ROOT / "tools" / "templates" / template).read_text()
+        assert "{{version}}" in text and not re.search(r"\d+\.\d+\.\d+", text), template
+        page = gen_docs.outputs()[SITE / "src/content/docs/ci.md"]
+        assert page.count(f"<!-- {name}:start -->") == 1
+
+
+def test_plugins_page_block_and_plugin_files_are_generated():
+    files = gen_docs.outputs()
+    page = files[SITE / "src/content/docs/plugins.md"]
+    block = page.split(gen_docs.PLUGINS_START)[1].split(gen_docs.PLUGINS_END)[0]
+    assert f"agentprint=={__version__}" in block
+    assert gen_docs.ROOT / "server.json" in files
+    assert gen_docs.ROOT / "plugins/agentprint/.claude-plugin/plugin.json" in files
+    with pytest.raises(ValueError, match="plugins.md needs exactly one <!-- plugins:start -->"):
+        gen_docs.replace_block(
+            "none", "x", gen_docs.PLUGINS_START, gen_docs.PLUGINS_END, "plugins.md"
+        )
 
 
 def test_fragments_show_real_renderer_output():
