@@ -79,6 +79,17 @@ def test_badge_dir_is_passed_to_the_run_that_sets_the_exit_code():
     assert "badge-file=" in step["run"] and "verdict-file=" in step["run"]
 
 
+def test_a_signed_or_published_badge_ignores_the_repositorys_config():
+    step = _step("run")
+    assert step["env"]["AP_ATTEST"] == "${{ inputs.attest-badge }}"
+    assert step["env"]["AP_PUBLISH"] == "${{ inputs.publish-badge }}"
+    gate = step["run"][step["run"].index('if [ "$AP_ATTEST"') :].split("\nfi\n", 1)[0]
+    for mode in ('"$AP_ATTEST" = "true"', '"$AP_PUBLISH" = "true"', '"$AP_PUBLISH" = "dry-run"'):
+        assert mode in gate
+    assert "cmd+=(--no-config)" in gate
+    assert step["run"].index("cmd+=(--no-config)") < step["run"].index('ap "${cmd[@]}"')
+
+
 def test_attest_step_is_pinned_signs_the_badge_and_skips_private_repos():
     [attest] = [s for s in _action()["runs"]["steps"] if "actions/attest@" in s.get("uses", "")]
     assert re.fullmatch(r"actions/attest@[0-9a-f]{40}", attest["uses"])
@@ -343,6 +354,29 @@ def test_action_fail_on_and_errors(action_env, inputs, expected):
     assert outputs["exit-code"] == expected, proc.stdout + proc.stderr
     if expected == "2":
         assert "sarif-file" not in outputs
+
+
+@pytest.mark.posix_only  # runs the action steps with bash
+@pytest.mark.integration
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv not installed")
+def test_action_badges_count_every_print_whatever_the_repository_accepts(action_env, tmp_path):
+    env, fixtures = action_env
+    repo = tmp_path / "repo"
+    shutil.copytree(fixtures / "leaky-repo", repo)
+    accepted = subprocess.run(
+        ["uv", "run", "--quiet", "--no-sync", "--project", str(ROOT), "agentprint", "baseline",
+         "--format", "json", str(repo)],
+        env=env, capture_output=True, text=True, check=True,
+    )  # fmt: skip
+    assert json.loads(accepted.stdout)["entries"] >= 1
+    plain, proc = _run_action(env, command="scan", path=str(repo), **DEFAULTS)
+    assert plain["exit-code"] == "0", proc.stdout + proc.stderr  # the baseline accepts the key
+    badge = {"badge-dir": str(tmp_path / "badge")}
+    for flag in ({"attest-badge": "true"}, {"publish-badge": "dry-run"}):
+        signed, proc = _run_action(env, command="scan", path=str(repo), **DEFAULTS, **badge, **flag)
+        assert signed["exit-code"] == "1", (flag, proc.stdout + proc.stderr)
+        verdict = json.loads(Path(signed["verdict-file"]).read_text())
+        assert verdict["verdict"] == "BLOCK" and "known" not in verdict["summary"]
 
 
 @pytest.mark.posix_only  # runs the action steps with bash

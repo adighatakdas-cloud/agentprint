@@ -111,7 +111,7 @@ A finding that the baseline or an ignore rule covers is known. Known findings:
 - still come with "rotate this key" when they are keys, for the AI agent to tell you (in JSON, as `ask_human`): accepting a key quiets the scan, but the key is still live until you rotate it,
 - are left out of SARIF, so code scanning shows only what counts,
 - are left alone by `agentprint fix`,
-- are counted in `verdict.json` when you write a [badge](/agentprint/badge/), so a reader can see that some findings were accepted.
+- are counted in `verdict.json` when you write a [badge](/agentprint/badge/), so a reader can see that some findings were accepted. A badge that is signed or published (the Action's `attest-badge` or `publish-badge`, and the signed-by-agentprint workflow) ignores the repository's config and baseline: every print counts there, so a committed baseline can't turn a signed badge CLEAR.
 
 A config and a baseline are part of the repository, written by whoever wrote the repository. In one you cloned from someone else, a CLEAR means "clear, except what this repository accepted": read the `known` lines and their reasons, or run with `--no-config` to see everything.
 
