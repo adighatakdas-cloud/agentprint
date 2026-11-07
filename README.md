@@ -27,7 +27,8 @@ npx agentprint-cli
 </p>
 
 <p align="center">
-  <sub>Works inside: Claude Code · Codex · Cursor · Gemini CLI · Windsurf · Devin · OpenCode · Copilot · Hermes · Antigravity</sub>
+  <sub>Works inside: Claude Code · Codex · Cursor · Gemini CLI · Windsurf · Devin · OpenCode · Copilot · Hermes · Antigravity</sub><br>
+  <sub>Also scans: Cline · Claude Desktop · Kilo Code · Zed · Goose · Aider · Continue · Qwen Code · Crush · Kiro · Factory Droid · Augment · Amp · Junie</sub>
 </p>
 
 <p align="center">
@@ -88,12 +89,19 @@ DeepSeek, Twilio, Discord and Telegram only next to the provider's name. A gener
 name = random-looking value" rule catches the rest. Format lengths for Docker Hub, Supabase
 secret keys and Google OAuth secrets are from third-party scanners, not the vendor's docs.
 
+It also finds keys hidden from ordinary secret scanners: split across strings, behind invisible
+characters, continued across lines, inside YAML blocks or base64. The
+[benchmark](https://adighatakdas-cloud.github.io/agentprint/benchmark/) scores agentprint,
+gitleaks and trufflehog the same way on a labelled corpus, with its method and limits stated.
+
 ## Inside your AI agent
 
 - A hook runs before the agent publishes a package or runs `git push`, and checks what would go out.
+  It follows what the command runs, too: shell scripts, make and just recipes, `npm version` hooks.
 - An MCP server gives the agent tools to check on its own.
 - If something would leak, the agent gets a brief: the fix steps, plus what to ask you (rotate a key).
 - It only ever blocks (BLOCK or CLEAR); your agent's own approval rules still apply.
+- Strict mode (`agentprint install --strict`) also blocks a publish or push agentprint can't check.
 - `agentprint uninstall` takes out exactly what `install` added.
 - Rather add it as a plugin? Claude Code, Codex, Copilot CLI, Gemini CLI, Cursor, Antigravity
   and Hermes each have one: see [Plugins](https://adighatakdas-cloud.github.io/agentprint/plugins/).
