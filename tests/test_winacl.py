@@ -11,6 +11,7 @@ import ctypes
 import os
 import struct
 import subprocess
+import sys
 
 import pytest
 
@@ -110,6 +111,21 @@ MINE = {ME}
         SOMEONE,  # another local account
         "S-1-5-21-1-2-3-513",  # Domain Users
         "S-1-12-1-111-222-333-444",  # a Microsoft Entra account
+        # Not on any list: every SID outside the trusted few counts (fails closed).
+        "S-1-2-0",  # LOCAL
+        "S-1-2-1",  # CONSOLE LOGON
+        "S-1-5-14",  # REMOTE INTERACTIVE LOGON
+        "S-1-5-113",  # Local account
+        "S-1-5-15",  # This Organization
+        "S-1-5-1000",  # Other Organization
+        "S-1-5-3",  # BATCH
+        "S-1-5-6",  # SERVICE
+        "S-1-5-32-547",  # Power Users
+        "S-1-5-32-558",  # Performance Monitor Users
+        "S-1-5-32-568",  # IIS_IUSRS
+        "S-1-5-83-0",  # NT VIRTUAL MACHINE\Virtual Machines
+        "S-1-9-1",  # a resource-manager authority nobody listed
+        "",  # an entry whose SID could not be named
     ],
 )
 def test_a_read_grant_to_someone_else_is_an_exposure(sid):
@@ -124,10 +140,13 @@ def test_a_read_grant_to_someone_else_is_an_exposure(sid):
         winacl.SYSTEM,
         winacl.ADMINISTRATORS,
         "S-1-3-0",  # CREATOR OWNER
+        "S-1-3-1",  # CREATOR GROUP
         "S-1-3-4",  # OWNER RIGHTS
         "S-1-15-2-1",  # ALL APPLICATION PACKAGES
         "S-1-15-3-1024-1-2-3",  # an app capability
         TRUSTED_INSTALLER,
+        "S-1-5-80-0",  # NT SERVICE\ALL SERVICES
+        "S-1-5-114",  # Local account and member of Administrators
         "S-1-5-19",  # LOCAL SERVICE
         "S-1-5-20",  # NETWORK SERVICE
         "S-1-5-32-551",  # Backup Operators
@@ -216,7 +235,8 @@ def test_names_are_plain_words():
     assert winacl.name(winacl.EVERYONE) == "Everyone"
     assert winacl.name(winacl.USERS) == "Users"
     assert winacl.name("S-1-5-21-1-2-3-513") == "Domain Users"
-    assert winacl.name(SOMEONE) == f"another account ({SOMEONE})"
+    assert winacl.name(SOMEONE) == f"another account or group ({SOMEONE})"
+    assert winacl.name("S-1-2-0") == "LOCAL"
 
 
 def test_the_recipe_is_the_brief_s_icacls_call_with_sid_literals():
@@ -242,6 +262,8 @@ def test_the_recipe_is_the_brief_s_icacls_call_with_sid_literals():
 
 
 def test_lock_runs_icacls_in_list_form_without_a_shell_or_a_window(monkeypatch):
+    exe = r"C:\Windows\System32\icacls.exe"
+    monkeypatch.setattr(winacl, "icacls", lambda: exe)
     seen = []
 
     class Done:
@@ -255,7 +277,7 @@ def test_lock_runs_icacls_in_list_form_without_a_shell_or_a_window(monkeypatch):
     monkeypatch.setattr(winacl.subprocess, "run", run)
     assert winacl.lock(r"C:\x\f.json", ME, (winacl.EVERYONE,)) == 0
     [(args, kwargs)] = seen
-    assert args == [winacl.icacls(), *winacl.lock_args(r"C:\x\f.json", ME, (winacl.EVERYONE,))]
+    assert args == [exe, *winacl.lock_args(r"C:\x\f.json", ME, (winacl.EVERYONE,))]
     assert kwargs["creationflags"] == 0x08000000 and kwargs["stdin"] is subprocess.DEVNULL
     assert "shell" not in kwargs and kwargs["timeout"] > 0
 
@@ -267,19 +289,43 @@ def test_lock_says_minus_one_when_icacls_cannot_run(monkeypatch, error):
     def run(*args, **kwargs):
         raise error
 
+    monkeypatch.setattr(winacl, "icacls", lambda: r"C:\Windows\System32\icacls.exe")
     monkeypatch.setattr(winacl.subprocess, "run", run)
     assert winacl.lock("f", ME) == -1
 
 
-def test_icacls_is_the_system_one_by_full_path(monkeypatch, tmp_path):
+def test_icacls_is_only_ever_the_one_in_system32(monkeypatch, tmp_path):
     exe = tmp_path / "System32" / "icacls.exe"
     exe.parent.mkdir()
     exe.write_bytes(b"")
     monkeypatch.setenv("SYSTEMROOT", str(tmp_path))
     assert winacl.icacls() == str(exe)
+    # A planted icacls in the current folder or on PATH is never used: missing means no lock.
+    planted = tmp_path / "project"
+    planted.mkdir()
+    (planted / "icacls.exe").write_bytes(b"")
+    (planted / "icacls.bat").write_text("echo pwned\n")
+    monkeypatch.chdir(planted)
+    monkeypatch.setenv("PATH", str(planted))
     monkeypatch.setenv("SYSTEMROOT", str(tmp_path / "nowhere"))
-    monkeypatch.setattr(winacl.shutil, "which", lambda name: None)
-    assert winacl.icacls() == "icacls"
+    assert winacl.icacls() is None
+    monkeypatch.setenv("SYSTEMROOT", "relative")
+    assert winacl.icacls() is None
+
+    def run(*args, **kwargs):
+        raise AssertionError("icacls must not run")
+
+    monkeypatch.setattr(winacl.subprocess, "run", run)
+    assert winacl.lock(str(planted / "f"), ME) == -1
+
+
+def test_a_powershell_recipe_keeps_dollar_backtick_percent_and_bang_literal():
+    path = "C:\\Users\\ana\\it's $HOME `x` %P% !\\f.json"
+    text = winacl.recipe(path, ME, powershell=True)
+    assert text == (
+        "In PowerShell: icacls 'C:\\Users\\ana\\it''s $HOME `x` %P% !\\f.json' /inheritance:r "
+        f"/grant:r *{ME}:F *S-1-5-18:F *S-1-5-32-544:F"
+    )
 
 
 # ---- the ctypes layer against a fake advapi32/kernel32 that returns real memory ---------------
@@ -487,6 +533,33 @@ def test_exposure_puts_it_together(api):
     assert winacl.exposure("f", ME, False) == winacl.Access(unknown=winacl.UNREADABLE)
 
 
+def test_a_file_owned_by_administrators_is_not_checked_unless_elevated(api):
+    api(aces=[ace_bytes(winacl.ALLOW, 0, READ, winacl.EVERYONE)], owner=winacl.ADMINISTRATORS)
+    assert winacl.exposure("f", ME, False) == winacl.Access(unknown=winacl.ADMIN_OWNED)
+    assert winacl.exposure("f", ME, True).readers == (winacl.EVERYONE,)
+
+
+def test_agentprint_imports_on_a_python_without_ctypes():
+    code = (
+        "import sys\n"
+        "sys.modules['ctypes'] = None\n"
+        "sys.modules['_ctypes'] = None\n"
+        "import agentprint.checks.ap008_readable_by_others, agentprint.fix\n"
+        "from agentprint import winacl\n"
+        "assert 'ctypes' not in sys.modules or sys.modules['ctypes'] is None\n"
+        "try:\n"
+        "    winacl.current_user()\n"
+        "except OSError:\n"
+        "    pass\n"
+        "else:\n"
+        "    raise SystemExit('no OSError')\n"
+        "print(winacl.exposure('f', 'S-1-5-21-1-2-3-1001', False).unknown)\n"
+    )
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == winacl.UNREADABLE
+
+
 def test_errors_are_oserrors_on_any_os():
     error = winacl._error(5)
     assert isinstance(error, OSError)
@@ -496,7 +569,7 @@ def test_errors_are_oserrors_on_any_os():
 def test_every_declared_function_has_known_argument_types():
     for dll, symbol, spec in winacl._CALLS.values():
         assert dll in ("advapi32", "kernel32") and symbol
-        assert set(spec.split()) <= set(winacl._TYPES), symbol
+        assert set(spec.split()) <= winacl._LETTERS, symbol
 
 
 @pytest.mark.posix_only
@@ -529,7 +602,9 @@ def test_real_icacls_lock_removes_everyone_keeps_the_owner_and_restores(tmp_path
     target = tmp_path / "history.jsonl"
     target.write_text("x\n")
     where = str(target)
-    grant = [winacl.icacls(), where, "/grant", "*S-1-1-0:R"]
+    exe = winacl.icacls()
+    assert exe, "icacls.exe is not in %SYSTEMROOT%\\System32"
+    grant = [exe, where, "/grant", "*S-1-1-0:R"]
     subprocess.run(grant, check=True, capture_output=True, **platform.subprocess_kwargs())
     me, elevated = winacl.current_user()
     before = winacl.read(where)
