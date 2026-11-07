@@ -317,11 +317,12 @@ def _given(ctx: typer.Context, value: FailOn, name: str = "fail_on") -> FailOn |
     return value if getattr(source, "name", None) == "COMMANDLINE" else None
 
 
-def _project(root: Path, sources: Sources | None) -> Project:
-    """The project's config and baseline, each warning about them on stderr."""
+def _project(root: Path, sources: Sources | None, home: Path | None = None) -> Project:
+    """The project's config and baseline (and with `home`, the personal baseline in it), each
+    warning about them on stderr."""
     from .baseline import load
 
-    project = load(root, sources)
+    project = load(root, sources, home)
     for warning in project.warnings:
         typer.secho(f"warning: {warning}", err=True, fg=typer.colors.YELLOW)
     return project
@@ -347,7 +348,7 @@ def run_scan_command(
         if target is not None and not target.is_dir():
             typer.secho(f"error: {target} does not exist or is not a directory", err=True, fg="red")
             return 2
-    project = _project(path, sources)
+    project = _project(path, sources, home_dir)
     out = themed_console(dict(os.environ), plain=plain) if fmt is Format.table else None
     started = time.perf_counter()
     with _working(out, plain, "sweeping…"):
@@ -581,8 +582,8 @@ def run_fix_command(
         )
         header = f"agentprint fix  {where}"
         working = "sweeping…"
-    project = _project(path if path.is_dir() else Path("."), sources)
     swept_home = None if pack or no_home else (home or Path.home()).absolute()
+    project = _project(path if path.is_dir() else Path("."), sources, swept_home)
 
     def counted(found: list[Finding], given: FailOn | None = fail_on) -> Settled:
         return settle(found, project, given, publishing=pack, package=pack, home=swept_home)
@@ -742,9 +743,9 @@ def run_baseline_command(
     fmt: BaselineFormat | None,
     plain: bool,
 ) -> int:
-    """`agentprint baseline`: write (or --update, --prune, --check) the project's baseline."""
+    """`agentprint baseline`: write (or --update, --prune, --check) the project's baseline, and
+    with a home folder your personal one (<home>/.agentprint/baseline.json) for its findings."""
     from . import baseline as bl
-    from .safewrite import atomic_write
 
     fmt = _auto_format(fmt, BaselineFormat.agent, BaselineFormat.table)
     for target in (path, home):
@@ -756,56 +757,80 @@ def run_baseline_command(
             "error: --no-config leaves no baseline file: pass --baseline", err=True, fg="red"
         )
         return 2
-    project = _project(path, sources)
+    project = _project(path, sources, home)
     file = project.config.baseline
     assert file is not None
     # Findings an ignore rule covers are known already; the baseline takes the rest.
     findings = run_scan(home, path)
     counted = bl.settle(findings, bl.Project(project.config, {}), None, publishing=False, home=home)
-    now = bl.tally(counted.active, path, home)
-    shown = _short(str(file))
+    # Each file: where it is, its entries, today's findings for it, whether it is personal, and
+    # the folder it must stay in (unless --baseline named it).
+    targets = [(file, project.entries, bl.tally(counted.active, path, home), False, path)]
+    if home is not None:
+        now = bl.tally(counted.active, path, home, personal=True)
+        targets.append((home / bl.PERSONAL, project.personal, now, True, home))
     if mode == "check":
-        result = bl.check(project.entries, now)
+        checked = [
+            bl.Checked(_short(str(f)), bl.check(old, now), personal)
+            for f, old, now, personal, _ in targets
+        ]
         if fmt is BaselineFormat.json:
-            typer.echo(bl.to_json_check(result, shown))
+            typer.echo(bl.to_json_check(checked))
         elif fmt is BaselineFormat.agent:
-            typer.echo(bl.to_agent_check(result, shown))
+            typer.echo(bl.to_agent_check(checked))
         else:
-            _print_baseline_check(result, shown, plain)
+            _print_baseline_check(checked, plain)
         return 0
-    if not _baseline_writable(file, path, chosen=sources.baseline is not None):
-        return 2
-    change = bl.rewrite(project.entries, now, mode, f"accepted {bl.today()}")
-    try:
-        atomic_write(file, bl.dumps(change.entries), mode=0o644)  # shared with the team: 0644
-    except OSError as exc:
-        why = exc.strerror or type(exc).__name__
-        typer.secho(f"error: cannot write the baseline to {file}: {why}", err=True, fg="red")
-        return 2
+    written = []
+    for target, old, now, personal, folder in targets:
+        named = sources.baseline is not None and not personal
+        if not _baseline_writable(target, folder, named, personal):
+            return 2
+        change = bl.rewrite(old, now, mode, f"accepted {bl.today()}")
+        if not _write_baseline(target, bl.dumps(change.entries), personal=personal):
+            return 2
+        written.append(bl.Written(_short(str(target)), change, personal))
     if fmt is BaselineFormat.json:
-        typer.echo(bl.to_json_write(change, shown, mode))
+        typer.echo(bl.to_json_write(written, mode))
     elif fmt is BaselineFormat.agent:
-        typer.echo(bl.to_agent_write(change, shown, mode))
+        typer.echo(bl.to_agent_write(written, mode))
     else:
-        _print_baseline_write(change, shown, plain)
+        _print_baseline_write(written, plain)
     return 0
 
 
-def _baseline_writable(file: Path, root: Path, chosen: bool) -> bool:
-    """Never write through a link, and never outside the project unless --baseline said so: a
-    cloned repository could commit the file as a link to ~/.bashrc."""
+def _write_baseline(file: Path, text: str, personal: bool) -> bool:
+    """The project's baseline is shared with the team (0644); a personal one is yours (0600, in
+    a 0700 folder)."""
+    from .safewrite import atomic_write
+
+    try:
+        if personal and not file.parent.is_dir():
+            file.parent.mkdir(mode=0o700)
+        atomic_write(file, text, mode=0o600 if personal else 0o644)
+    except OSError as exc:
+        why = exc.strerror or type(exc).__name__
+        typer.secho(f"error: cannot write the baseline to {file}: {why}", err=True, fg="red")
+        return False
+    return True
+
+
+def _baseline_writable(file: Path, root: Path, chosen: bool, personal: bool = False) -> bool:
+    """Never write through a link, and never outside the project (or, for the personal one,
+    the home folder) unless --baseline said so: a cloned repository could commit the file as a
+    link to ~/.bashrc."""
     folder, project = Path(os.path.realpath(file.parent)), Path(os.path.realpath(root))
     if file.is_symlink():
         why = "is a symbolic link"
     elif not chosen and not folder.is_relative_to(project):
-        why = "is outside the project"
+        why = f"is outside the {'home folder' if personal else 'project'}"
     else:
         return True
     typer.secho(f"error: {file} {why}; agentprint does not write it", err=True, fg="red")
     return False
 
 
-def _print_baseline_write(change: Any, file: str, plain: bool) -> None:
+def _print_baseline_write(written: list[Any], plain: bool) -> None:
     from rich.text import Text
 
     from .baseline import to_human_write
@@ -813,31 +838,39 @@ def _print_baseline_write(change: Any, file: str, plain: bool) -> None:
     from .ui.layout import hang
 
     out = themed_console(dict(os.environ), plain=plain)
-    out.print(Text(f"agentprint baseline  {clean(file)}", style="ap.dim"), soft_wrap=True)
+    out.print(
+        Text(f"agentprint baseline  {clean(written[0].file)}", style="ap.dim"), soft_wrap=True
+    )
     out.print()
-    counts, *asks = to_human_write(change)
-    out.print(Text(counts))
+    lines = to_human_write(written)
+    for counts in lines[: len(written)]:
+        out.print(Text(clean(counts)), soft_wrap=True)
     out.print(Text("Fingerprints only: no key is stored.", style="ap.dim"))
-    for step in asks:
+    for step in lines[len(written) :]:
         for line in hang("  - ", step, out.width):
             out.print(line)
 
 
-def _print_baseline_check(result: Any, file: str, plain: bool) -> None:
+def _print_baseline_check(checked: list[Any], plain: bool) -> None:
     from rich.text import Text
 
     from .sanitize import clean
 
     out = themed_console(dict(os.environ), plain=plain)
-    out.print(Text(f"agentprint baseline --check  {clean(file)}", style="ap.dim"), soft_wrap=True)
+    head = f"agentprint baseline --check  {clean(checked[0].file)}"
+    out.print(Text(head, style="ap.dim"), soft_wrap=True)
     out.print()
-    entries = f"{result.entries} entr{'y' if result.entries == 1 else 'ies'}"
-    stale = len(result.stale)
-    out.print(Text(f"{entries} · {result.matched} still found · {stale} stale · {result.new} new"))
-    if result.stale:
+    for c in checked:
+        r = c.result
+        entries = f"{r.entries} entr{'y' if r.entries == 1 else 'ies'}"
+        where = f"personal {clean(c.file)}: " if c.personal else ""
+        text = f"{where}{entries} · {r.matched} still found · {len(r.stale)} stale · {r.new} new"
+        out.print(Text(text), soft_wrap=True)
+    stale = [e for c in checked for e in c.result.stale]
+    if stale:
         out.print()
         out.print(Text("stale", style="ap.dim"))
-        for e in result.stale:
+        for e in stale:
             line = Text("  ")
             line.append(e.check, style="ap.dim")
             line.append("  ")
@@ -846,9 +879,9 @@ def _print_baseline_check(result: Any, file: str, plain: bool) -> None:
             out.print(line, soft_wrap=True)
     out.print()
     tips = ["Nothing changed."]
-    if result.stale:
+    if stale:
         tips.append("agentprint baseline --prune drops the stale entries.")
-    if result.new:
+    if any(c.result.new for c in checked):
         tips.append("agentprint scan shows the new ones.")
     out.print(Text(" ".join(tips), style="ap.dim"))
 

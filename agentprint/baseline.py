@@ -2,15 +2,21 @@
 
 A fingerprint is the sha256 of "check id|path|rule|stub": the file's path from the project root
 with forward slashes (`~/...` for a home-folder file, the name inside the package for a package
-file), the key rule's name (the check's title for a finding that is not a key) and the redact()
-stub, the key's first 4 characters and its length. Never the key, a hash of the key or a hash of
-the file's text, and no line number (lines move). A baseline file therefore holds nothing a key
-can be read back from: check ids, paths, reasons, counts and these hashes.
+file), the key rule's name (for a finding that is not a key, what it is about, else the check's
+title) and the redact() stub, the key's first 4 characters and its length. Never the key, a hash
+of the key or a hash of the file's text, and no line number (lines move). A baseline file
+therefore holds nothing a key can be read back from: check ids, paths, reasons, counts and these
+hashes.
 
 Findings an ignore rule or the baseline covers are "known": shown apart, counted, and they never
-fail a run. Ruling C1: a key that would ship in a package being published, or in a push, always
-counts. Neither an ignore rule nor the baseline makes it known, and a fail_on set in the config
-cannot let it through. Both still apply to the other findings of a publish or push.
+fail a run. A project's ignore rules and its baseline (files in the repository, written by
+whoever wrote it) only ever cover the project's own files. A finding in your home folder can
+only be accepted by your personal baseline, `<home>/.agentprint/baseline.json` (`agentprint
+baseline --include-home` writes it), or by a --baseline file you name outside the project.
+
+Ruling C1: a key that would ship in a package being published, or in a push, always counts.
+Neither an ignore rule nor the baseline makes it known, and a fail_on set in the config cannot
+let it through. Both still apply to the other findings of a publish or push.
 """
 
 from __future__ import annotations
@@ -21,7 +27,7 @@ import json
 import os
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import __version__
@@ -36,6 +42,7 @@ MAX_BASELINE_BYTES = 8 * 1024 * 1024
 KEY_CHECKS = frozenset({"AP001", "AP002", "AP005"})  # findings whose detail is a redacted key
 STUB = re.compile(r"\S{1,4}…\(len \d+\)")  # what secrets.redact() prints
 FINGERPRINT = re.compile(r"[0-9a-f]{64}")
+PERSONAL = Path(".agentprint") / "baseline.json"  # under the home folder: yours alone
 NOTE = (
     "Findings this project accepted: agentprint counts them as known, not as problems. "
     "Fingerprints only: no key is stored here, nor anything a key can be read back from. "
@@ -62,7 +69,7 @@ class Known:
     """A finding that does not count: the baseline or an ignore rule covers it."""
 
     finding: Finding
-    via: str  # "baseline" or "ignore"
+    via: str  # "baseline", "personal" (your own baseline) or "ignore"
     reason: str
     path: str  # as matched: from the project root, ~/..., or the name inside the package
 
@@ -70,8 +77,10 @@ class Known:
 @dataclass(frozen=True)
 class Project:
     config: Config
-    entries: Mapping[str, Entry]
+    entries: Mapping[str, Entry]  # the baseline file: covers the project's own files only...
     warnings: tuple[str, ...] = ()
+    personal: Mapping[str, Entry] = field(default_factory=dict)  # yours: home-folder files
+    trusted: bool = False  # ...unless --baseline named a file outside the project: then any
 
 
 @dataclass(frozen=True)
@@ -81,13 +90,31 @@ class Settled:
     fail_on: FailOn
 
 
-def load(root: Path, sources: Sources | None = None) -> Project:
-    """The project's config and baseline. Never raises: problems become warnings."""
+def load(root: Path, sources: Sources | None = None, home: Path | None = None) -> Project:
+    """The project's config and baseline, and with `home` (a sweep of that home folder) your
+    personal baseline in it. Never raises: problems become warnings. --no-config reads none of
+    them unless --baseline names a file."""
+    sources = sources or Sources()
     config = load_config(root, sources)
-    if config.baseline is None:
-        return Project(config, {}, config.warnings)
-    entries, warnings = read(config.baseline)
-    return Project(config, entries, config.warnings + tuple(warnings))
+    warnings = list(config.warnings)
+    entries: dict[str, Entry] = {}
+    if config.baseline is not None:
+        entries, more = read(config.baseline)
+        warnings += more
+    named = sources.baseline
+    trusted = named is not None and not _within(named, root)
+    personal: dict[str, Entry] = {}
+    if home is not None and not sources.off:
+        personal, more = read(home / PERSONAL)
+        warnings += more
+    return Project(config, entries, tuple(warnings), personal, trusted)
+
+
+def _within(path: Path, folder: Path) -> bool:
+    try:
+        return Path(os.path.realpath(path)).is_relative_to(os.path.realpath(folder))
+    except (OSError, ValueError):
+        return False
 
 
 def defaults(root: Path) -> Project:
@@ -221,24 +248,35 @@ def settle(
     `publishing`: a package publish or a push, where Ruling C1 holds."""
     config = project.config
     left = {fp: entry.count for fp, entry in project.entries.items()}
+    mine = {fp: entry.count for fp, entry in project.personal.items()}
     active: list[Finding] = []
     known: list[Known] = []
     for f in findings:
-        if publishing and is_key(f):  # Ruling C1: a key on its way out always counts
+        if publishing and is_key(f):  # Ruling C1, decided before any config rule
             active.append(f)
             continue
         path, own = where(f, config.root, home, package)
-        rule = next((r for r in config.ignore if r.matches(f.check_id, path)), None)
-        if own and rule is not None:
-            known.append(Known(f, "ignore", rule.reason, path))
-            continue
+        if own:  # the project's own file: its ignore rules, then its baseline
+            rule = next((r for r in config.ignore if r.matches(f.check_id, path)), None)
+            if rule is not None:
+                known.append(Known(f, "ignore", rule.reason, path))
+                continue
         fp = fingerprint(f, path)
-        if left.get(fp, 0) > 0:
-            left[fp] -= 1
+        if (own or project.trusted) and _take(left, fp):
             known.append(Known(f, "baseline", project.entries[fp].reason, path))
-            continue
-        active.append(f)
+        elif path.startswith("~") and _take(mine, fp):  # never a repository's say-so
+            known.append(Known(f, "personal", project.personal[fp].reason, path))
+        else:
+            active.append(f)
     return Settled(active, known, resolve_fail_on(fail_on, config, active, publishing))
+
+
+def _take(left: dict[str, int], fp: str) -> bool:
+    """Use up one acceptance of `fp`, if any is left."""
+    if left.get(fp, 0) <= 0:
+        return False
+    left[fp] -= 1
+    return True
 
 
 def resolve_fail_on(
@@ -258,11 +296,17 @@ def resolve_fail_on(
 # ---- `agentprint baseline` ---------------------------------------------------------------------
 
 
-def tally(findings: Iterable[Finding], root: Path, home: Path | None) -> dict[str, Entry]:
-    """The findings as baseline entries (reason still empty), one per fingerprint."""
+def tally(
+    findings: Iterable[Finding], root: Path, home: Path | None, *, personal: bool = False
+) -> dict[str, Entry]:
+    """The project's own findings (`personal`: the home folder's instead) as baseline entries,
+    reason still empty, one per fingerprint."""
     out: dict[str, Entry] = {}
     for f in findings:
-        path, _ = where(f, root, home)
+        path, own = where(f, root, home)
+        wanted = (not own and path.startswith("~")) if personal else own
+        if not wanted:
+            continue
         fp = fingerprint(f, path)
         seen = out.get(fp)
         out[fp] = Entry(fp, f.check_id, clean(path), "", seen.count + 1 if seen else 1)
@@ -322,6 +366,20 @@ def check(old: Mapping[str, Entry], now: Mapping[str, Entry]) -> Check:
 # ---- what `agentprint baseline` says -----------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class Written:
+    file: str  # as shown
+    change: Rewrite
+    personal: bool = False  # your personal baseline (home-folder findings), not the project's
+
+
+@dataclass(frozen=True)
+class Checked:
+    file: str
+    result: Check
+    personal: bool = False
+
+
 def _n(count: int, word: str, plural: str | None = None) -> str:
     return f"{count} {word if count == 1 else plural or word + 's'}"
 
@@ -330,29 +388,21 @@ def _keys(entries: Iterable[Entry]) -> int:
     return sum(e.count for e in entries if e.check in KEY_CHECKS)
 
 
-def _home(entries: Iterable[Entry]) -> int:
-    return sum(1 for e in entries if e.path.startswith("~"))
-
-
-def asks(change: Rewrite, file: str, person: bool = False) -> list[str]:
+def asks(written: list[Written], person: bool = False) -> list[str]:
     """What only the human can decide about a written baseline: for an AI agent to ask, or
-    (`person`) said to the person who ran it."""
+    (`person`) said to the person who ran it. The project's file comes first."""
+    file = quote(written[0].file)
     review = "review it before you commit it" if person else f"ask the human to review {file}"
     out = [
         f"{review[0].upper()}{review[1:]}: it accepts these findings for everyone who works on "
         "this project."
     ]
-    if keys := _keys(change.entries):
+    if keys := sum(_keys(w.change.entries) for w in written):
         rotate = "Rotate each one" if person else "Ask the human to rotate each one"
         out.append(
             f"{_n(keys, 'accepted finding is a key', 'accepted findings are keys')}. The "
             "baseline only keeps a key from failing a scan: it does not make it safe, and a key "
             f"in a publish or push still blocks. {rotate} at its provider."
-        )
-    if home := _home(change.entries):
-        out.append(
-            f"{_n(home, 'entry is', 'entries are')} from the home folder, which is personal: keep "
-            f"{'this file' if person else file} out of git, or write it without --include-home."
         )
     return out
 
@@ -361,72 +411,95 @@ def _counts(change: Rewrite, sep: str) -> str:
     return sep.join((f"{change.added} added", f"{change.kept} kept", f"{change.dropped} dropped"))
 
 
-def to_agent_write(change: Rewrite, file: str, mode: str) -> str:
+PERSONAL_NOTE = "your home folder's findings, for you alone: no repository can add to it"
+
+
+def to_agent_write(written: list[Written], mode: str) -> str:
     verb = {"update": "updated", "prune": "pruned"}.get(mode, "wrote")
-    entries = _n(len(change.entries), "entry", "entries")
+    lines = []
+    for w in written:
+        entries = _n(len(w.change.entries), "entry", "entries")
+        line = f"{verb} {quote(w.file)} — {entries} ({_counts(w.change, ', ')})"
+        lines.append(f"personal: {line}; {PERSONAL_NOTE}" if w.personal else line)
     out = [
-        f"agentprint baseline: {verb} {quote(file)} — {entries} ({_counts(change, ', ')})",
+        f"agentprint baseline: {lines[0]}",
+        *lines[1:],
         "These findings now count as known: agentprint scan and fix list them apart and do not "
         "fail on them. The file holds fingerprints only, never a key.",
         "ask_human:",
-        *(f"  - {step}" for step in asks(change, quote(file))),
+        *(f"  - {step}" for step in asks(written)),
         "Tell the human each ask_human item.",
     ]
     return "\n".join(out)
 
 
-def to_human_write(change: Rewrite) -> list[str]:
-    """The person's view (cli prints it): counts, then what is theirs to decide."""
-    entries = _n(len(change.entries), "entry", "entries")
-    return [f"{entries} · {_counts(change, ' · ')}", *asks(change, "", person=True)]
+def to_human_write(written: list[Written]) -> list[str]:
+    """The person's view (cli prints it): counts per file, then what is theirs to decide."""
+    out = []
+    for w in written:
+        entries = _n(len(w.change.entries), "entry", "entries")
+        where = f"personal {w.file} ({PERSONAL_NOTE}): " if w.personal else ""
+        out.append(f"{where}{entries} · {_counts(w.change, ' · ')}")
+    return [*out, *asks(written, person=True)]
 
 
-def to_agent_check(result: Check, file: str) -> str:
-    if not result.entries:
-        head = f"agentprint baseline --check: no entries in {quote(file)}"
-    else:
-        head = (
-            f"agentprint baseline --check: {_n(result.entries, 'entry', 'entries')} in "
-            f"{quote(file)}, {result.matched} still found, {len(result.stale)} stale"
-        )
-    head += f", {_n(result.new, 'new finding')} not in the baseline"
-    out = [head]
-    if result.stale:
+def _check_line(c: Checked) -> str:
+    r = c.result
+    if not r.entries:
+        return f"no entries in {quote(c.file)}"
+    return (
+        f"{_n(r.entries, 'entry', 'entries')} in {quote(c.file)}, {r.matched} still found, "
+        f"{len(r.stale)} stale"
+    )
+
+
+def to_agent_check(checked: list[Checked]) -> str:
+    lines = [f"{_check_line(c)}, {_n(c.result.new, 'new finding')} not in it" for c in checked]
+    out = [f"agentprint baseline --check: {lines[0]}"]
+    out += [f"personal: {line}" for line in lines[1:]]
+    stale = [e for c in checked for e in c.result.stale]
+    if stale:
         out.append("stale (the finding is gone, so the entry can be dropped):")
-        out += [f"  - {e.check} {quote(e.path)} {quote(e.reason)}" for e in result.stale]
+        out += [f"  - {e.check} {quote(e.path)} {quote(e.reason)}" for e in stale]
     last = ["Nothing was changed."]
-    if result.stale:
+    if stale:
         last.append("To drop the stale entries: agentprint baseline --prune.")
-    if result.new:
+    if any(c.result.new for c in checked):
         last.append("To see the new findings: agentprint scan.")
     out.append(" ".join(last))
     return "\n".join(out)
 
 
-def to_json_write(change: Rewrite, file: str, mode: str) -> str:
-    data = {
-        "tool": "agentprint",
-        "version": __version__,
-        "baseline": clean(file),
-        "mode": mode,
-        "entries": len(change.entries),
-        "added": change.added,
-        "kept": change.kept,
-        "dropped": change.dropped,
-        "ask_human": asks(change, clean(file)),
+def _write_data(w: Written) -> dict:
+    c = w.change
+    return {
+        "baseline": clean(w.file),
+        "entries": len(c.entries),
+        "added": c.added,
+        "kept": c.kept,
+        "dropped": c.dropped,
     }
+
+
+def to_json_write(written: list[Written], mode: str) -> str:
+    data: dict[str, object] = {"tool": "agentprint", "version": __version__, "mode": mode}
+    data |= _write_data(written[0])
+    if len(written) > 1:
+        data["personal"] = _write_data(written[1])
+    data["ask_human"] = asks(written)
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 
-def to_json_check(result: Check, file: str) -> str:
-    data = {
-        "tool": "agentprint",
-        "version": __version__,
-        "baseline": clean(file),
-        "mode": "check",
-        "entries": result.entries,
-        "matched": result.matched,
-        "stale": [{"check_id": e.check, "path": e.path, "reason": e.reason} for e in result.stale],
-        "new": result.new,
-    }
+def _check_data(c: Checked) -> dict:
+    r = c.result
+    stale = [{"check_id": e.check, "path": e.path, "reason": e.reason} for e in r.stale]
+    data = {"baseline": clean(c.file), "entries": r.entries, "matched": r.matched}
+    return data | {"stale": stale, "new": r.new}
+
+
+def to_json_check(checked: list[Checked]) -> str:
+    data: dict[str, object] = {"tool": "agentprint", "version": __version__, "mode": "check"}
+    data |= _check_data(checked[0])
+    if len(checked) > 1:
+        data["personal"] = _check_data(checked[1])
     return json.dumps(data, indent=2, ensure_ascii=False)

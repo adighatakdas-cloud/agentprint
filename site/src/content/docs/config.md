@@ -55,7 +55,7 @@ The project root is the folder you check: the path you give `scan` or `fix`, the
 
 An ignore `path` is a glob over the file's path from the project root, with forward slashes. `*` and `?` stay inside one folder, `**` crosses folders, and a path that ends in `/` means everything under that folder. `.mcp.json` matches only the file at the root; `**/.mcp.json` matches it in any folder. Inside a package, the path is the file's name in the package. An npm tarball puts everything under `package/`, so start package rules with `**/`.
 
-Ignore rules only match the project's own files. They never hide a finding in your home folder, so a repository you clone cannot silence a sweep of your own agent files.
+Ignore rules only match the project's own files. They never hide a finding in your home folder, so a repository you clone cannot silence a sweep of your own agent files. The same goes for the project's baseline (below).
 
 ## Mistakes in the file
 
@@ -80,7 +80,11 @@ agentprint baseline --prune      # drop entries whose finding is gone
 
 `--check` changes nothing and exits `0`. It lists stale entries, whose finding no longer exists, so you can prune them. It also counts findings the baseline does not cover yet.
 
-Your home folder's findings stay out unless you pass `--include-home` (with `--home <folder>` for a different one). They are about your machine, not the project, so a baseline that holds them is personal: keep it out of git.
+### Your home folder: a personal baseline
+
+A project's baseline and its ignore rules only ever cover the project's own files. They are files in the repository, written by whoever wrote it, and a repository can't decide what counts in your home folder: a fingerprint is made of parts anyone can guess, so a cloned repository could otherwise list your `~/.claude/history.jsonl` key as accepted.
+
+Your home folder's findings can only be accepted by your personal baseline, `~/.agentprint/baseline.json`. `agentprint baseline --include-home` writes your home findings there (with `--home <folder>`, into that folder's `.agentprint/baseline.json`) and the project's findings to the project's file, as usual. The personal file is private to you (mode `0600`), never in a repository, and `scan`, `fix` and the MCP `scan_secrets` tool read it whenever they sweep that home folder. A file you name with `--baseline` outside the project is yours too, so it can cover home findings as well. `--no-config` reads none of them.
 
 ### The baseline never stores your keys
 

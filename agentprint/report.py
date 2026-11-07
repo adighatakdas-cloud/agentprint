@@ -97,7 +97,11 @@ def known_groups(known: Sequence[Known]) -> list[tuple[str, str, str, int]]:
     return [(*key, n) for key, n in groups.items()]
 
 
-KNOWN_WORD = {"baseline": "in the baseline", "ignore": "ignored by config"}
+KNOWN_WORD = {
+    "baseline": "in the baseline",
+    "personal": "in your personal baseline",
+    "ignore": "ignored by config",
+}
 
 
 def known_line(known: Sequence[Known]) -> str:

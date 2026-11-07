@@ -22,6 +22,7 @@ from agentprint.config import Config
 from agentprint.guard import evaluate
 from agentprint.models import Finding, Severity
 from tests import fakes
+from tests.conftest import set_home
 from tests.test_hooks import blocked, payload
 from tests.test_mcp import call
 
@@ -124,8 +125,10 @@ def test_the_baseline_file_holds_no_key_bytes(project, fake_home):
     """Not the key, not its stub, not any 5 characters of it (redact() shows 4)."""
     result = baseline(project, "--include-home", "--home", str(fake_home))
     assert result.exit_code == 0, result.output
-    text = (project / ".agentprint-baseline.json").read_text(encoding="utf-8")
-    assert '"~/.claude/history.jsonl"' in text  # home findings are in it this time
+    shared = (project / ".agentprint-baseline.json").read_text(encoding="utf-8")
+    personal = (fake_home / ".agentprint" / "baseline.json").read_text(encoding="utf-8")
+    assert '"~/.claude/history.jsonl"' in personal and '"~' not in shared
+    text = shared + personal
     assert "…(len" not in text  # not even the masked stub
     for key in fakes.ALL.values():
         leaked = [part for part in _windows(key) if part in text]
@@ -233,16 +236,87 @@ def test_rewriting_keeps_the_reasons_of_entries_still_found(project, monkeypatch
     assert reasons[(".mcp.json", "AP005")] == "accepted 2027-01-01"
 
 
-def test_home_findings_stay_out_of_the_baseline_unless_asked(project, fake_home):
+def sweep(project, home, *args):
+    return runner.invoke(app, ["scan", str(project), "--home", str(home), *args])
+
+
+@pytest.mark.posix_only  # file modes
+def test_home_findings_go_to_your_personal_baseline_only(project, fake_home):
     assert baseline(project).exit_code == 0
-    text = (project / ".agentprint-baseline.json").read_text()
-    assert '"~' not in text
-    with_home = runner.invoke(app, ["scan", str(project), "--home", str(fake_home), "-f", "json"])
+    assert '"~' not in (project / ".agentprint-baseline.json").read_text()
+    assert not (fake_home / ".agentprint").exists()  # without --include-home: not touched
+    with_home = sweep(project, fake_home, "-f", "json")
     assert any(f["check_id"] == "AP001" for f in json.loads(with_home.stdout)["findings"])
 
-    assert baseline(project, "--include-home", "--home", str(fake_home)).exit_code == 0
-    swept = runner.invoke(app, ["scan", str(project), "--home", str(fake_home), "-f", "json"])
+    result = baseline(project, "--include-home", "--home", str(fake_home), "-f", "agent")
+    assert result.exit_code == 0, result.output
+    assert "\npersonal: wrote " in result.output
+    personal = fake_home / ".agentprint" / "baseline.json"
+    assert '"~/.claude/history.jsonl"' in personal.read_text()
+    assert personal.stat().st_mode & 0o777 == 0o600 and personal.parent.stat().st_mode & 0o77 == 0
+    assert '"~' not in (project / ".agentprint-baseline.json").read_text()
+    swept = sweep(project, fake_home, "-f", "json")
     assert swept.exit_code == 0 and json.loads(swept.stdout)["findings"] == []
+    vias = {k["via"] for k in json.loads(swept.stdout)["known"]}
+    assert vias == {"baseline", "personal"}
+    assert sweep(project, fake_home, "--no-config").exit_code == 1  # every print counts
+    checked = json.loads(
+        baseline(
+            project, "--check", "--include-home", "--home", str(fake_home), "-f", "json"
+        ).stdout
+    )
+    assert checked["personal"]["stale"] == [] and checked["personal"]["matched"] > 0
+
+
+def _home_with_a_key(tmp_path):
+    home = tmp_path / "victim-home"
+    _write(home / ".claude" / "settings.json", json.dumps({"permissions": {"allow": ["Bash(*)"]}}))
+    _write(
+        home / ".claude" / "history.jsonl", json.dumps({"display": f"K={fakes.ANTHROPIC}"}) + "\n"
+    )
+    return home
+
+
+def _fp(*parts):
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()
+
+
+def test_a_cloned_repositorys_baseline_never_silences_your_home_findings(tmp_path, monkeypatch):
+    """The reviewer's probe: fingerprints of home files are predictable, so a repository can
+    commit them. They must not count: a home key still blocks, and fix still masks it."""
+    home, repo = _home_with_a_key(tmp_path), tmp_path / "cloned-repo"
+    stub = f"sk-a…(len {len(fakes.ANTHROPIC)})"
+    rows = [
+        {"fingerprint": _fp("AP003", "~/.claude/settings.json", "Over-broad agent permission", "")},
+        {"fingerprint": _fp("AP001", "~/.claude/history.jsonl", "Anthropic API key", stub)},
+    ]
+    _write(repo / ".agentprint-baseline.json", json.dumps({"entries": rows}))
+    _write(repo / ".agentprint.toml", '[[ignore]]\ncheck = "AP001"\n[[ignore]]\npath = "**"\n')
+    swept = sweep(repo, home, "-f", "agent")
+    assert swept.exit_code == 1 and swept.output.startswith("agentprint: BLOCK")
+    assert "known:" not in swept.output and "AP001" in swept.output
+    fixed = runner.invoke(app, ["fix", str(repo), "--home", str(home), "--dry-run", "-f", "json"])
+    planned = json.loads(fixed.stdout)["planned"]
+    assert any(c["kind"] == "mask" and c["path"].endswith("history.jsonl") for c in planned)
+    assert call("scan_secrets", path=str(repo), include_home=False).startswith("agentprint: OK")
+    set_home(monkeypatch, home)  # the MCP tool sweeps Path.home(): this fake one
+    assert call("scan_secrets", path=str(repo), include_home=True).startswith("agentprint: BLOCK")
+
+
+def test_a_baseline_you_name_outside_the_project_may_cover_home_findings(project, tmp_path):
+    home = _home_with_a_key(tmp_path)
+    mine = tmp_path / "mine" / "accepted.json"
+    stub = f"sk-a…(len {len(fakes.ANTHROPIC)})"
+    rows = [{"fingerprint": _fp("AP001", "~/.claude/history.jsonl", "Anthropic API key", stub)}]
+    _write(mine, json.dumps({"entries": rows}))
+    inside = project / "accepted.json"
+    _write(inside, json.dumps({"entries": rows}))
+    data = json.loads(
+        sweep(project, home, "--no-config", "--baseline", str(mine), "-f", "json").stdout
+    )
+    assert [k["check_id"] for k in data["known"]] == ["AP001"]  # your own file: your call
+    data = json.loads(sweep(project, home, "--baseline", str(inside), "-f", "json").stdout)
+    assert "known" not in data  # a file inside the project is the project's: own files only
 
 
 def test_ignore_rules_never_hide_home_findings(project, fake_home):

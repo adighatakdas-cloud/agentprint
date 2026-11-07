@@ -52,7 +52,7 @@ def _answer(
 ) -> str:
     """The agent text, with the project config and baseline of `root` applied (Ruling C1 in a
     publish or push) and a `warning:` line for each problem reading them."""
-    project = load_project(root)
+    project = load_project(root, home=home)
     publishing = moment is not Moment.scan
     settled = settle(findings, project, None, publishing=publishing, package=package, home=home)
     text = to_agent(
