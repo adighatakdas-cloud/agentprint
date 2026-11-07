@@ -196,6 +196,32 @@ def test_check_lists_stale_entries_and_prune_drops_them(project):
     assert json.loads(baseline(project, "--check", "--format", "json").stdout)["stale"] == []
 
 
+def test_check_for_a_person(project):
+    assert baseline(project).exit_code == 0
+    assert "2 entries · 2 still found · 0 stale · 0 new" in baseline(project, "--check").output
+    _write(project / SETTINGS, "{}")
+    shown = baseline(project, "--check", "--plain").output
+    assert "0 still found · 2 stale" in shown and "AP002  .claude/settings.json" in shown
+    assert "agentprint baseline --prune drops the stale entries." in shown
+    empty = baseline(project, "--check", "--baseline", str(project / "none.json"), "-f", "agent")
+    assert empty.output.startswith("agentprint baseline --check: no entries in ")
+
+
+def test_baseline_errors_exit_2(project, tmp_path):
+    assert baseline(tmp_path / "missing").exit_code == 2
+    assert baseline(project, "--include-home", "--home", str(tmp_path / "nohome")).exit_code == 2
+    nowhere = tmp_path / "no" / "such" / "folder" / "b.json"
+    result = baseline(project, "--baseline", str(nowhere))
+    assert result.exit_code == 2 and "cannot write the baseline" in result.output
+
+
+def test_check_names_new_findings_for_a_person(project):
+    _write(project / ".agentprint-baseline.json", json.dumps({"entries": []}))
+    shown = baseline(project, "--check", "--plain").output
+    assert "0 entries · 0 still found · 0 stale · 2 new" in shown
+    assert "agentprint scan shows the new ones." in shown
+
+
 def test_rewriting_keeps_the_reasons_of_entries_still_found(project, monkeypatch):
     assert baseline(project).exit_code == 0
     monkeypatch.setattr(bl, "today", lambda: "2027-01-01")
@@ -485,6 +511,17 @@ def test_config_strict_makes_the_guard_strict(tmp_path):
     assert verdict.block and "strict mode" in verdict.reason
     _write(tmp_path / ".agentprint.toml", "strict = false\n")  # can't turn the flag off
     assert evaluate("poetry publish --build", tmp_path, strict=True).block
+
+
+def test_config_strict_holds_when_the_command_parser_fails(tmp_path, monkeypatch):
+    def boom(command, cwd):
+        raise RuntimeError("parser bug")
+
+    monkeypatch.setattr(guard, "detect", boom)
+    assert not evaluate("npm publish", tmp_path).block  # fail open by default
+    _write(tmp_path / ".agentprint.toml", "strict = true\n")
+    verdict = evaluate("npm publish", tmp_path)
+    assert verdict.block and "strict mode" in verdict.reason
 
 
 def test_config_warnings_reach_the_agent_but_never_trip_strict_mode(tmp_path):
