@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from agentprint.cli import app
@@ -259,7 +260,14 @@ def test_loop_script_labels_itself_simulated():
 def test_workflow_takes_a_tape_input_without_expressions_in_run():
     text = (ROOT / ".github" / "workflows" / "demo-gif.yml").read_text(encoding="utf-8")
     assert "demo/agent_loop.tape" in text and "demo/demo.tape" in text
-    for block in re.findall(r"run: \|?\n?((?:\s+.*\n)+?)(?=\s*-|\Z)", text):
+    runs = [
+        step["run"]
+        for job in yaml.safe_load(text)["jobs"].values()
+        for step in job.get("steps", [])
+        if "run" in step
+    ]
+    assert runs
+    for block in runs:
         assert "${{" not in block
 
 
