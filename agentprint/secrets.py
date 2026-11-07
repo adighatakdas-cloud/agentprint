@@ -307,13 +307,58 @@ def _looks_random(value: str, min_entropy: float) -> bool:
     return has_digit and has_alpha and shannon_entropy(value) >= min_entropy
 
 
+# Key-shaped placeholders from READMEs and config examples (ghp_ then 36 x's, AKIA then 16 X's,
+# a Slack prefix then your-bot-token, the AWS docs' key ID that ends in EXAMPLE) are not keys.
+# A placeholder is a match whose body, the part after its literal prefix, is one character
+# repeated (any case, separators aside), or holds a placeholder word that starts or ends the body
+# or sits next to a separator. Inside a run of random letters and digits a word does not count,
+# so a real key that happens to contain "your" is still reported. FAKE, the marker in
+# agentprint's own test keys, is not a placeholder. Brackets need no check: no rule matches text
+# with `<`, `>`, `{` or `}`, so templates such as ghp_<your-token> or sk-proj-{KEY} never match.
+# Output still redacts placeholders (see _matches).
+_KEY_PREFIX = re.compile(
+    r"sk-ant-(?:api|admin)\d{2}-|sk-(?:proj|svcacct|admin|or-v1)-|github_pat_|gh[pousr]_"
+    r"|AKIA|ASIA|(?:sk|rk)_live_|xox[baprs]-|xapp-\d-|AIza|GOCSPX-|npm_|pypi-AgEIcHlwaS5vcmc"
+    r"|glpat-|dckr_(?:pat|oat)_|hf_|api_org_|gsk_|xai-|pplx-|r8_|sbp_|sb_secret_|cf[ua]t_"
+    r"|do[por]_v1_|lin_api_|ntn_|shp(?:at|ca|pa|ss)_|ATATT3|PMAK-|SG\.|dp\.[a-z]+\.|ops_eyJ"
+    r"|sk-|SK|[0-9]+:AA"
+)
+_SEPARATORS = "-_./+=:"
+_PLACEHOLDER_WORDS = ("your", "example", "placeholder", "replace", "changeme", "dummy", "sample")
+_PLACEHOLDER_WORDS += ("redacted", "xxxx")
+_PLACEHOLDER_WORD = re.compile("|".join(_PLACEHOLDER_WORDS).replace("xxxx", "x{4,}"))
+
+
+def is_placeholder(value: str) -> bool:
+    """Is this matched key an obvious placeholder (see above), not a key?"""
+    prefix = _KEY_PREFIX.match(value)
+    body = (value[prefix.end() :] if prefix else value).lower()
+    first = body.lstrip(_SEPARATORS)[:1]
+    if not first or not body.replace(first, "").strip(_SEPARATORS):
+        return True  # one character repeated, separators aside (or separators only)
+    if not any(map(body.__contains__, _PLACEHOLDER_WORDS)):  # a substring test is the fast no
+        return False
+    for word in _PLACEHOLDER_WORD.finditer(body):  # in the lowercased body
+        start, end = word.span()
+        if start == 0 or end == len(body):
+            return True
+        if body[start - 1] in _SEPARATORS or body[end] in _SEPARATORS:
+            return True
+    return False
+
+
 def _matches(
-    text: str, rules: tuple[SecretRule, ...] = RULES, pos: int = 0, endpos: int | None = None
+    text: str,
+    rules: tuple[SecretRule, ...] = RULES,
+    pos: int = 0,
+    endpos: int | None = None,
+    placeholders: bool = False,
 ) -> list[tuple[SecretMatch, int, int]]:
     """Every key in text[pos:endpos] (lookbehinds still see what comes before `pos`), with the
     span of the whole rule match (name and separator included for the generic rules), in text
     order. A rule never reports text an earlier rule claimed: the claimed spans are kept sorted,
-    so each check is a binary search, not a scan of every match so far."""
+    so each check is a binary search, not a scan of every match so far. Obvious placeholders are
+    left out unless `placeholders` (for redaction, which hides anything key-shaped)."""
     end_at = len(text) if endpos is None else endpos
     found: list[tuple[SecretMatch, int, int]] = []
     window = text[pos:end_at] if pos or end_at != len(text) else text
@@ -334,6 +379,8 @@ def _matches(
             value = m.group(rule.group)
             if rule.min_entropy and not _looks_random(value, rule.min_entropy):
                 continue
+            if not placeholders and is_placeholder(value):
+                continue
             mine.append((SecretMatch(rule.id, rule.name, value, start, end), m.start(), m.end()))
         if mine:  # one rule's matches never overlap each other (finditer)
             found += mine
@@ -344,8 +391,10 @@ def _matches(
     return sorted(found, key=lambda f: f[0].start)
 
 
-def find_secrets(text: str) -> list[SecretMatch]:
-    return [match for match, _, _ in _matches(text)]
+def find_secrets(text: str, *, placeholders: bool = False) -> list[SecretMatch]:
+    """Every key written out plainly in `text`, in text order. Obvious placeholders are left
+    out; with `placeholders`, they are kept (for redaction)."""
+    return [match for match, _, _ in _matches(text, placeholders=placeholders)]
 
 
 def redact(value: str) -> str:
@@ -696,7 +745,8 @@ def _in_view(view: _View, plain_wins: bool) -> Iterator[SecretMatch]:
     folded = _fold(view.text)
     rules = RULES if any(word in folded for word in _GENERIC_WORDS) else _SPECIFIC_RULES
     cuts = view.cuts
-    for match, full_start, full_end in _matches(view.text, rules):
+    # Redaction (plain_wins off) keeps placeholders too, so anything key-shaped is hidden.
+    for match, full_start, full_end in _matches(view.text, rules, placeholders=not plain_wins):
         k = bisect_right(cuts, full_start)
         if k == len(cuts) or cuts[k] >= full_end:
             continue  # no join inside: plain text, which find_secrets reads
@@ -773,7 +823,7 @@ def _base64_tokens(
             yield start, end + pad
 
 
-def _in_base64(text: str, budget: Budget) -> Iterator[SecretMatch]:
+def _in_base64(text: str, budget: Budget, placeholders: bool = False) -> Iterator[SecretMatch]:
     mask = text.encode("ascii", "replace").translate(_BASE64_MASK)
     for start, end in _base64_tokens(text, mask):
         if budget.blobs <= 0:
@@ -785,7 +835,7 @@ def _in_base64(text: str, budget: Budget) -> Iterator[SecretMatch]:
         decoded = _decode(head)
         if decoded is None:
             continue
-        for found in find_secrets(decoded):
+        for found in find_secrets(decoded, placeholders=placeholders):
             yield SecretMatch(found.rule_id, found.name, found.value, start, end, "base64")
     # Shorter tokens, after the long ones so they never take a long one's place in the budget.
     for start, end in _base64_tokens(text, mask, _MIN_SHORT_BASE64, _MIN_BASE64):
@@ -798,7 +848,7 @@ def _in_base64(text: str, budget: Budget) -> Iterator[SecretMatch]:
         if decoded is None:
             continue
         key = decoded.removesuffix("\n").removesuffix("\r")  # `echo key | base64` adds one
-        found = find_secrets(key)
+        found = find_secrets(key, placeholders=placeholders)
         if len(found) == 1 and found[0].value == key:  # the whole text is one key
             yield SecretMatch(found[0].rule_id, found[0].name, key, start, end, "base64")
 
@@ -848,7 +898,7 @@ def _hidden_in(
     yield from _joined(text, plain_wins)
     if nested:
         return
-    yield from _in_base64(text, budget)
+    yield from _in_base64(text, budget, placeholders=not plain_wins)
     for start, end, decoded in _in_json_strings(text, budget):
         for found in _hidden_in(decoded, budget, plain_wins, nested=True):
             yield SecretMatch(found.rule_id, found.name, found.value, start, end, found.obfuscation)

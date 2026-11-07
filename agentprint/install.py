@@ -247,7 +247,7 @@ def _shown(home: Path, path: Path) -> str:
 
 
 def _redact_line(line: str) -> str:
-    for match in reversed(find_secrets(line)):
+    for match in reversed(find_secrets(line, placeholders=True)):  # hide anything key-shaped
         line = line[: match.start] + redact(match.value) + line[match.end :]
     return clean(line)
 
