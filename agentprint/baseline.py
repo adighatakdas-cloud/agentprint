@@ -223,13 +223,14 @@ def where(
 
 
 def fingerprint(finding: Finding, path: str) -> str:
-    """sha256 of check id, path, rule name (or check title) and the redact() stub."""
+    """sha256 of check id, path, rule name (for a finding that is not a key, its subject or the
+    check's title) and the redact() stub."""
     stub = STUB.search(finding.detail) if is_key(finding) else None
     if stub is not None:
         rule = finding.detail[: stub.start()].rstrip().removesuffix(":")
         text = "|".join((finding.check_id, path, rule, stub.group()))
-    else:
-        text = "|".join((finding.check_id, path, finding.title, ""))
+    else:  # what it is about (AP003 setting + value, AP004 event + indicators), else the title
+        text = "|".join((finding.check_id, path, finding.subject or finding.title, ""))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 

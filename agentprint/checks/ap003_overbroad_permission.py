@@ -44,18 +44,18 @@ class OverbroadPermission:
         for artifact, config in agent_configs(artifacts):
             for grant in config.grants:
                 setting, value = safe_snippet(grant.setting, 80), safe_snippet(grant.value, 80)
-                findings.append(
-                    Finding(
-                        check_id=self.id,
-                        severity=self.severity,
-                        title=self.title,
-                        agent=artifact.agent,
-                        location=str(artifact.path),
-                        line=_line(artifact.path, grant),
-                        detail=f'{setting} grants "{value}": the agent acts without asking',
-                        fix=grant.fix,
-                    )
+                finding = Finding(
+                    check_id=self.id,
+                    severity=self.severity,
+                    title=self.title,
+                    agent=artifact.agent,
+                    location=str(artifact.path),
+                    line=_line(artifact.path, grant),
+                    detail=f'{setting} grants "{value}": the agent acts without asking',
+                    fix=grant.fix,
                 )
+                finding.subject = f"{setting} {value}"  # a changed grant is a new finding
+                findings.append(finding)
         return findings
 
 
