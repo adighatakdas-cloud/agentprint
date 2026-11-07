@@ -46,6 +46,7 @@ If your npm package has no `.npmignore` yet, `fix` starts one as a copy of `.git
 - **A PyPI package.** Build tools differ, so you get the exclude steps.
 - **A file that is already committed.** You get the `git rm --cached` command: `fix` never rewrites git history.
 - **A `files` list in `package.json`** that includes the agent file: `fix` never edits `package.json`.
+- **What lets an AI rebuild a closed-source package** ([AP009](/agentprint/checks/ap009/)): source maps, original source, AI instruction files. `fix` never edits your build settings. An open-source package's source maps, and a package for a private registry, are only low notes: `fix` lists them under **Notes**, with nothing for you to do.
 
 ## How it keeps you safe
 

@@ -58,7 +58,7 @@
   {
     "id": "AP009",
     "title": "Package lets an AI rebuild your source",
-    "severity": "high to low by licence; no licence, UNLICENSED, SEE LICENSE IN, proprietary or LicenseRef- counts as closed",
+    "severity": "high to low by licence; no licence, UNLICENSED, SEE LICENSE IN, proprietary or only LicenseRef- choices count as closed; low for a private registry",
     "summary": "Source maps, original source or AI instruction files in your package hand an AI your code.",
     "slug": "ap009"
   }
