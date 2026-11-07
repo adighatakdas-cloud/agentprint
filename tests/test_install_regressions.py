@@ -103,7 +103,6 @@ def _claude_home(tmp_path) -> Path:
 
 
 @pytest.mark.posix_only
-@pytest.mark.posix_only
 @pytest.mark.parametrize(
     "gemini_settings",
     [
@@ -385,6 +384,7 @@ def test_throwaway_installs_are_never_written_into_hooks(path, ephemeral):
 # ---- 15. Devin Desktop keeps ~/.devin; Devin CLI config lives in ~/.config/devin ----------
 
 
+@pytest.mark.posix_only
 @pytest.mark.parametrize("existing", [".devin", ".config/devin"])
 def test_devin_is_found_by_either_folder_and_round_trips(tmp_path, monkeypatch, existing):
     home = tmp_path / "home"
