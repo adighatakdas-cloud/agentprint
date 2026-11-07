@@ -84,14 +84,18 @@ def test_baseline_turns_todays_findings_into_known(project):
 
     agent = scan(project, "--format", "agent")
     assert agent.exit_code == 0
-    first, known, *notes = agent.output.strip().splitlines()
+    first, known, ask, rotate, *notes = agent.output.strip().splitlines()
     assert first == "agentprint: OK"
     assert all(note.startswith("not_checked: ") for note in notes)  # Windows: the AP008 note
-    assert known.startswith("known: 2 accepted by this project, not counted")
+    assert known.startswith("known: 2 accepted, not counted: ")  # not "nothing to do": a key
     assert 'AP002 in the baseline "accepted 2026-11-07"' in known
+    assert ask == "ask_human (an accepted key is still live until it is rotated):"
+    assert rotate.startswith('  - Rotate the Anthropic API key that starts "sk-a…(len 105)"')
 
     data = json.loads(scan(project, "--format", "json").stdout)
     assert data["findings"] == [] and data["summary"]["known"] == 2
+    asks = {k["check_id"]: k.get("ask_human") for k in data["known"]}
+    assert asks["AP003"] is None and asks["AP002"][0].startswith("Rotate the Anthropic API key")
     assert {(k["check_id"], k["path"], k["via"]) for k in data["known"]} == {
         ("AP002", SETTINGS, "baseline"),
         ("AP003", SETTINGS, "baseline"),
@@ -383,6 +387,8 @@ def test_ignore_rules_by_check_and_glob(project):
             "reason": "devcontainer",
         }
     ]
+    agent = scan(project, "-f", "agent").output
+    assert "\nknown: 1 accepted, not counted (nothing to do): 1 AP003 ignored by config" in agent
     _write(project / ".agentprint.toml", '[[ignore]]\ncheck = "AP003"\npath = "other/**"\n')
     assert "known" not in json.loads(scan(project, "-f", "json").stdout)
 
@@ -527,7 +533,8 @@ def test_fix_leaves_known_findings_alone(project):
     )
     assert result.exit_code == 0, result.output
     assert result.output.startswith("agentprint fix: CLEAR — nothing to fix")
-    assert "\nknown: 2 accepted by this project" in result.output
+    assert "\nknown: 2 accepted, not counted: " in result.output
+    assert "\n  - Rotate the Anthropic API key" in result.output  # a known key: still rotate it
     data = json.loads(
         runner.invoke(app, ["fix", str(project), "--no-home", "--dry-run", "-f", "json"]).stdout
     )
@@ -697,6 +704,6 @@ def test_a_planted_fifo_or_device_baseline_never_hangs_the_guard(tmp_path):
 def test_mcp_scan_honours_the_project_config(project):
     assert baseline(project).exit_code == 0
     text = call("scan_secrets", path=str(project))
-    assert text.startswith("agentprint: OK\nknown: 2 accepted by this project")
+    assert text.startswith("agentprint: OK\nknown: 2 accepted, not counted: ")
     _write(project / ".agentprint.toml", "colour = 1\n")
     assert "\nwarning: unknown keys" in call("scan_secrets", path=str(project))

@@ -20,7 +20,7 @@ from . import __version__
 from .advice import Moment
 from .fix import Change, Outcome, Plan
 from .models import Finding
-from .report import DATA_NOTE, FailOn, add_known, exit_code, finding_dict, known_line, summary
+from .report import DATA_NOTE, FailOn, add_known, exit_code, finding_dict, known_lines, summary
 from .sanitize import clean, quote
 
 if TYPE_CHECKING:
@@ -133,7 +133,7 @@ def to_agent_fix(
     (so a clean result is never read as covering it)."""
     text = _to_agent_fix(plan, outcome, after, fail_on, dry_run=dry_run)
     if known:
-        text += "\n" + known_line(known)
+        text += "".join(f"\n{line}" for line in known_lines(known))
     return text + "".join(f"\nnot_checked: {clean(note)}" for note in not_checked)
 
 
@@ -254,7 +254,7 @@ def to_json_fix(
     }
     if not_checked:  # absent when everything was checked
         data["not_checked"] = list(not_checked)
-    add_known(data, known, data["after"]["summary"])
+    add_known(data, known, data["after"]["summary"], moment)
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 

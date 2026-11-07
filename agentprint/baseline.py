@@ -33,13 +33,12 @@ from pathlib import Path
 from . import __version__
 from .config import Config, Sources, read_regular
 from .config import load as load_config
-from .models import Finding
+from .models import KEY_CHECKS, Finding
 from .report import FailOn, exit_code
 from .sanitize import clean, quote
 
 FORMAT = 1
 MAX_BASELINE_BYTES = 8 * 1024 * 1024
-KEY_CHECKS = frozenset({"AP001", "AP002", "AP005"})  # findings whose detail is a redacted key
 STUB = re.compile(r"\S{1,4}…\(len \d+\)")  # what secrets.redact() prints
 FINGERPRINT = re.compile(r"[0-9a-f]{64}")
 PERSONAL = Path(".agentprint") / "baseline.json"  # under the home folder: yours alone

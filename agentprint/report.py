@@ -13,7 +13,7 @@ from rich.console import Console
 
 from . import __version__
 from .advice import Moment, advise
-from .models import Finding, Severity
+from .models import KEY_CHECKS, Finding, Severity
 from .sanitize import clean, quote, safe_step
 
 if TYPE_CHECKING:
@@ -61,31 +61,37 @@ def to_json(
     }
     if not_checked:  # absent when everything was checked, so existing output is unchanged
         data["not_checked"] = list(not_checked)
-    add_known(data, known)
+    add_known(data, known, moment=moment)
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 
-def known_dicts(known: Sequence[Known]) -> list[dict]:
-    """Known findings for JSON: where and why, never the finding's text (no stub needed)."""
-    return [
-        {
+def known_dicts(known: Sequence[Known], moment: Moment = Moment.scan) -> list[dict]:
+    """Known findings for JSON: where and why, never the finding's text. An accepted key keeps
+    its ask_human (rotate it): accepting a key does not make it safe."""
+    out = []
+    for k in known:
+        data = {
             "check_id": k.finding.check_id,
             "severity": k.finding.severity.name.lower(),
             "path": clean(k.path),
             "via": k.via,
             "reason": clean(k.reason),
         }
-        for k in known
-    ]
+        if k.finding.check_id in KEY_CHECKS:
+            data["ask_human"] = advise(k.finding, moment).ask_human
+        out.append(data)
+    return out
 
 
-def add_known(data: dict, known: Sequence[Known], counts: dict | None = None) -> None:
+def add_known(
+    data: dict, known: Sequence[Known], counts: dict | None = None, moment: Moment = Moment.scan
+) -> None:
     """Known findings into a JSON report: counted in the summary (`counts`, default
     data["summary"]), listed under "known". Absent when there are none, so output without a
     config or baseline is unchanged."""
     if known:
         (data["summary"] if counts is None else counts)["known"] = len(known)
-        data["known"] = known_dicts(known)
+        data["known"] = known_dicts(known, moment)
 
 
 def known_groups(known: Sequence[Known]) -> list[tuple[str, str, str, int]]:
@@ -104,16 +110,23 @@ KNOWN_WORD = {
 }
 
 
-def known_line(known: Sequence[Known]) -> str:
-    """The agent text's `known:` line: counts and reasons. Nothing for the AI to do."""
+KNOWN_KEYS = "ask_human (an accepted key is still live until it is rotated):"
+
+
+def known_lines(known: Sequence[Known], moment: Moment = Moment.scan) -> list[str]:
+    """The agent text's `known:` line, with counts and reasons. Nothing to do for the AI,
+    except about a key: accepting one does not make it safe, so each keeps its ask_human."""
     parts = [
         f"{n} {check_id} {KNOWN_WORD.get(via, via)} {quote(reason)}"
         for check_id, via, reason, n in known_groups(known)
     ]
-    return (
-        f"known: {len(known)} accepted by this project, not counted (nothing to do): "
-        + "; ".join(parts)
-    )
+    keys = [k.finding for k in known if k.finding.check_id in KEY_CHECKS]
+    todo = "" if keys else " (nothing to do)"
+    lines = [f"known: {len(known)} accepted, not counted{todo}: " + "; ".join(parts)]
+    if keys:
+        lines.append(KNOWN_KEYS)
+        lines += [f"  - {step}" for f in keys for step in advise(f, moment).ask_human]
+    return lines
 
 
 def _short(location: str) -> str:
@@ -190,7 +203,7 @@ def to_agent(
     findings (baseline, ignore rules) are one `known:` line with counts and reasons."""
     text = _to_agent(findings, fail_on, moment, rerun)
     if known:
-        text += "\n" + known_line(known)
+        text += "".join(f"\n{line}" for line in known_lines(known, moment))
     return text + "".join(f"\nnot_checked: {clean(note)}" for note in not_checked)
 
 

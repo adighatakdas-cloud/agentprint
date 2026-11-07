@@ -108,6 +108,7 @@ A finding that the baseline or an ignore rule covers is known. Known findings:
 - never fail a run or change the verdict,
 - are counted in the summary, as in `no prints · 2 known · keys masked`,
 - are shown apart. A person sees a dim `known` section with counts and reasons. An AI agent gets one `known:` line. JSON gets a `known` list with the check id, severity, path and reason, plus `known` in `summary`, and never the finding's text,
+- still come with "rotate this key" when they are keys, for the AI agent to tell you (in JSON, as `ask_human`): accepting a key quiets the scan, but the key is still live until you rotate it,
 - are left out of SARIF, so code scanning shows only what counts,
 - are left alone by `agentprint fix`,
 - are counted in `verdict.json` when you write a [badge](/agentprint/badge/), so a reader can see that some findings were accepted.
