@@ -53,8 +53,6 @@ npx agentprint-cli
 
 ## Quickstart
 
-> **Pre-release:** the `uvx` and `npx` commands work after the first release. Until then, see [Get started](https://adighatakdas-cloud.github.io/agentprint/get-started/) to run from source.
-
 ```bash
 uvx agentprint scan      # sweep this machine and folder (keys masked)
 uvx agentprint fix       # make the safe fixes; shows the plan and asks first
