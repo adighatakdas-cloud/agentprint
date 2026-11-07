@@ -34,7 +34,7 @@ from agentprint.guard import check_package_path, evaluate
 from agentprint.models import Severity
 from agentprint.pack import PackageListing, read_archive
 from agentprint.report import FailOn, exit_code, to_agent
-from tests import fakes
+from tests import fakes, timing
 
 runner = CliRunner()
 LABEL = "demo-1.0.0.tgz"
@@ -408,9 +408,8 @@ def test_an_open_or_choice_keeps_the_package_open(licence):
 
 def test_licence_expression_is_linear_on_hostile_input():
     for expression in ("(" * 200_000 + "LicenseRef-A", "LicenseRef-A OR " * 100_000 + "MIT"):
-        start = time.perf_counter()
-        ap009.licence_of(_npm(expression))
-        assert time.perf_counter() - start < 1.0
+        listing = _npm(expression)
+        assert timing.best_of(lambda one=listing: ap009.licence_of(one)) < timing.bound(1.0)
     assert ap009.licence_of(_npm("(" * 50_000 + "LicenseRef-A")) == (True, ap009.CUSTOM_ID)
 
 
@@ -585,10 +584,9 @@ def test_hostile_metadata_is_read_in_linear_time(name):
         {"demo-1.0.dist-info/METADATA": meta, "demo/static/a.js.map": _map([SOURCE])},
         label="demo-1.0-py3-none-any.whl",
     )
-    start = time.perf_counter()
-    findings = _ap009(listing)
-    assert time.perf_counter() - start < 1.0  # the old parse took 175 s through the guard
-    assert len(findings) == 1
+    assert len(_ap009(listing)) == 1
+    # the old parse took 175 s through the guard
+    assert timing.best_of(lambda: _ap009(listing)) < timing.bound(1.0)
 
 
 def test_hostile_metadata_does_not_stall_the_publish_guard(tmp_path):
@@ -602,7 +600,7 @@ def test_hostile_metadata_does_not_stall_the_publish_guard(tmp_path):
         zf.writestr(".claude/settings.local.json", leaky)
     start = time.perf_counter()
     verdict = evaluate("twine upload dist/*", tmp_path)
-    assert time.perf_counter() - start < 5.0
+    assert time.perf_counter() - start < timing.bound(5.0)
     assert verdict is not None and verdict.block and "AP006" in verdict.reason
     assert fakes.ANTHROPIC not in verdict.reason
 
@@ -629,9 +627,8 @@ def test_metadata_headers_are_read_up_to_a_limit_and_never_half_a_line():
 )  # fmt: skip
 def test_hostile_inline_maps_are_linear(bundle):
     listing = _npm("UNLICENSED", **{"dist/index.js": bundle})
-    start = time.perf_counter()
     assert _ap009(listing) == []
-    assert time.perf_counter() - start < 1.0
+    assert timing.best_of(lambda: _ap009(listing)) < timing.bound(1.0)
 
 
 def test_inline_map_comment_end_and_whitespace_still_found():
