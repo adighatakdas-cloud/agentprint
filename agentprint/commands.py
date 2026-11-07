@@ -9,24 +9,17 @@ and the `preversion`/`version`/`postversion` scripts `npm version` runs), worksp
 (`npm publish -w pkg`, `pnpm -r publish`) and release tools (changesets, lerna, np,
 semantic-release, release-it). A word scan over the unquoted text runs as a backstop.
 
-It also reads the files a command hands its work to, and reads them only inside the folder the
-agent's command runs in (symlinks resolved), 64 KB at most each, text only: shell scripts
-(`./release.sh`, `bash scripts/release.sh`, `source x.sh`, an executable `scripts/x` with a shell
-shebang or none), Makefile targets with their prerequisites and `$(MAKE) <target>` calls, and
-justfile recipes with their dependencies. Their commands go back through this reader, up to
-`MAX_DEPTH` levels deep and `MAX_STEPS` commands per command line. A script in another language
-(`python scripts/release.py`, `node release.js`, inline `python -c` code, a Taskfile task) is not
-read as commands: if its text names a publish or push, the result is `unsure`. So is a file too
-large or unreadable, and a file where the reader stops following that names a publish or runs
-yet another file.
+It also follows the files a command hands its work to (`following`): shell scripts, Makefile
+targets, justfile recipes, and scripts in other languages, read only inside the folder the
+agent's command runs in. Where following stops (`MAX_DEPTH` levels here, budgets there) the text
+is read once more without following anything: its own commands are checked, and the files it
+runs are only scanned for a publish or push ("could not check" when one is named).
 
 When it can't tell what a publish would upload (a `cd "$DIR"`, a `--filter` selector, a
 target built from a variable) the result says so in `unsure`; the guard then reports
-"could not check" instead of "OK". Here-documents on the command line itself are not understood
-yet (their bodies are read as commands). Inside a script, a here-document fed to a shell is read
-as commands, one fed to another language is word-scanned, and one fed to anything else is data.
-Not followed: files outside the folder, compiled programs, script paths built from a variable,
-and PowerShell.
+"could not check" instead of "OK". A script shlex can't read as a whole is read line by line.
+Here-documents on the command line itself are not understood yet (their bodies are read as
+commands).
 """
 
 from __future__ import annotations
@@ -161,20 +154,13 @@ _BACKSTOP = re.compile(
     rf"(?:{_OPTION})*\s+publish\b|(twine)(?:{_OPTION})*\s+upload\b"
     rf"|(git)(?:{_OPTION}(?:{_OPTION_VALUE})?)*\s+push\b)"
 )
-# A file that runs another file: a path, make/just/task, `source`, or a script handed to an
-# interpreter. Used only where agentprint stops following (too deep, or too many commands).
-_RUNS_A_FILE = re.compile(
-    _PROGRAM_POSITION + rf"(?:{_WORD}*/{_WORD}|(?:make|gmake|just|task|source|\.)(?![\w./-])"
-    r"|(?:sh|bash|zsh|dash|ksh|fish|python[0-9.]*|node|tsx|ruby|perl)[ \t]+[^-\s])"
-)
-
 _ANSI_C_QUOTE = re.compile(r"\$'(?:[^'\\]|\\.)*'")  # $'it\'s': shlex can't read the \'
 
 
 def detect(command: str, cwd: Path, _depth: int = 0) -> list[Risky]:
     """Every publish or push in `command`, in order, with the directory each runs in."""
     if following._READING.get() is None:  # the agent's own command line: files stay in cwd
-        token = following._READING.set(following._Reading(following._real(cwd)))
+        token = following._READING.set(following._Reading(following._real(cwd), command))
         try:
             return _detect(command, cwd, _depth)
         finally:
@@ -183,8 +169,8 @@ def detect(command: str, cwd: Path, _depth: int = 0) -> list[Risky]:
 
 
 def _detect(command: str, cwd: Path, depth: int) -> list[Risky]:
-    if depth > MAX_DEPTH:
-        return []
+    if depth > MAX_DEPTH:  # never a silent OK: look once more without following anything
+        return following.too_deep(command, cwd)
     seen: set[tuple[Action, str]] = set()  # also counts dry runs, so the backstop skips them
     try:
         found = _parse(command, cwd, depth, seen)
@@ -297,10 +283,10 @@ def _segment(words: list[str], where: _Where, found: list[Risky], depth: int, se
         if script is not None:
             found.extend(detect(script, where.cwd, depth + 1))
         elif (file := following._shell_file_arg(args)) is not None:
-            found.extend(following._script(file, where.cwd, depth, runner=program))
+            found.extend(following._script(file, where.cwd, depth, program, where.unknown))
     elif words[0] in {"source", "."}:
         if args:
-            found.extend(following._script(args[0], where.cwd, depth, runner="sh"))
+            found.extend(following._script(args[0], where.cwd, depth, "sh", where.unknown))
     elif program == "eval":
         found.extend(detect(" ".join(args), where.cwd, depth + 1))
     elif program == "git":
@@ -320,7 +306,7 @@ def _segment(words: list[str], where: _Where, found: list[Risky], depth: int, se
     elif following._interpreter(program):
         found.extend(following._interpreted(program, args, where.cwd, depth))
     elif "/" in words[0]:  # ./release.sh, scripts/release, /abs/path/in/project/x
-        found.extend(following._script(words[0], where.cwd, depth))
+        found.extend(following._script(words[0], where.cwd, depth, None, where.unknown))
     if where.unknown:
         found[before:] = [replace(r, unsure=r.unsure or where.unknown) for r in found[before:]]
     return where

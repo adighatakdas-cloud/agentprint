@@ -2,9 +2,17 @@
 and scripts in other languages.
 
 `commands` reads the command line; for a command that runs a file it asks this module, which
-reads the file (inside the folder of the agent's command, 64 KB at most, text only) and sends
-shell text back through `commands.detect`. The two call each other, so this module looks
+reads the file (inside the folder of the agent's command, text only) and sends shell text of up
+to 64 KB back through `commands.detect`. The two call each other, so this module looks
 `commands` names up when it runs, never at import.
+
+Never cry wolf, never a silent OK. A file over 64 KB is scanned in chunks (up to 8 MB) for a
+publish or push word, and only a match means "could not check"; so does a file over 8 MB or one
+that can't be opened, but only when the command or the file name looks like a release. Where
+following stops (`commands.MAX_DEPTH` levels, `MAX_STEPS` commands or `MAX_BYTES` of text per
+command line) the text is read once more without following anything: its own commands are
+checked, and the scripts, recipes and package scripts it runs are only scanned for a publish or
+push.
 """
 
 from __future__ import annotations
@@ -13,6 +21,7 @@ import glob
 import os
 import re
 import shlex
+import stat
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -20,8 +29,10 @@ from pathlib import Path
 from . import commands as c
 from . import recipes
 
-MAX_FILE_BYTES = 64 * 1024  # each script, Makefile, justfile or Taskfile is read up to this
-MAX_STEPS = 400  # file commands followed per command line; later ones are only word-scanned
+MAX_FILE_BYTES = 64 * 1024  # a file up to this size is read whole and its commands followed
+MAX_SCAN_BYTES = 8 * 1024 * 1024  # a larger one is only scanned for publish words, up to this
+MAX_STEPS = 400  # file commands followed per command line; past it they are looked at once more
+MAX_BYTES = 1024 * 1024  # text from files followed per command line; past it, only word-scanned
 MAKES = {"make", "gmake"}
 TASKS = {"task", "go-task"}
 # Programs that run a script file in another language: (options that take inline code,
@@ -60,6 +71,9 @@ _TASK_NO_RUN = {"-n", "--dry", "-l", "--list", "-a", "--list-all", "--summary", 
 # case, first name first: the way just and task look for them.
 JUSTFILES = ("justfile", ".justfile")
 TASKFILES = ("taskfile.yml", "taskfile.yaml", "taskfile.dist.yml", "taskfile.dist.yaml")
+MAKEFILES = ("GNUmakefile", "makefile", "Makefile")  # the order make looks for them
+MAX_INCLUDES = 16  # makefiles or justfiles read for one make or just command
+_SHELL_VALUES = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
 # A publish or push named in a file agentprint does not read as commands (Python, JS, a
 # Taskfile). Tool word, then its verb within a few characters: `["npm", "publish"]`,
 # `execSync('git push --tags')`, `git.push()`, `twine.commands.upload`. Bare words like `push`
@@ -76,31 +90,54 @@ _NAMED_PUBLISH = re.compile(
 )
 
 
+# In a file too large to follow: a publish, upload or push word on its own (`"$NPM" publish`).
+_BARE_PUBLISH = re.compile(r"(?<![\w./$-])(publish|upload|push)(?![\w.-])")
+# Does a command line or file name look like a release? Then a file agentprint could not open
+# (or one over 8 MB) means "could not check"; otherwise it is left alone.
+_RELEASE_WORD = re.compile(
+    r"(?<![a-z])(?:publish|push|upload|release|deploy|ship|twine|changesets?|lerna|release-it"
+    r"|semantic-release)(?![a-z])",
+    re.I,
+)
+# Why agentprint could not check something, after "could not check `<label>`: ".
+_CODE = "it runs `{what}` from code agentprint does not read as commands"
+_TASK = "it runs `{what}` from a Taskfile task, which agentprint does not read as commands"
+_DEEP = "it runs `{what}` deeper in its scripts than agentprint follows"
+_LARGE = "it is larger than 64 KB and names `{what}`, so agentprint did not follow it"
+_NESTED = "it is nested deeper in scripts than agentprint follows"
+_HUGE = "it is larger than 8 MB, so agentprint did not read it"
+_UNREADABLE = "agentprint could not open it"
+_UNREAD_INCLUDE = "it may run a recipe from a {kind} agentprint did not read"
+
+Hit = tuple["c.Action", str]  # a publish or push named in text: (action, tool)
+
+
 @dataclass(frozen=True)
 class _File:
     path: Path  # symlinks resolved
     name: str  # as shown to the agent: relative to the folder its command runs in
-    text: str | None  # None when it could not be read; `problem` says why
-    problem: str = ""
+    text: str | None  # the whole text when it is at most 64 KB; else None, and `size` says why
+    size: str = ""  # "large" (scanned in chunks), "huge" (over 8 MB) or "unreadable"
+    named: tuple[Hit, ...] = ()  # a large file: the publishes and pushes it names
+    bare: str = ""  # a large file: the first publish/upload/push word on its own
+    first_line: str = ""  # a large file: its shebang, if any
 
 
 @dataclass
 class _Reading:
-    """The files one command line runs: the folder they must stay inside, and a budget."""
+    """The files one command line runs: the folder they must stay inside, budgets, caches."""
 
     root: Path
+    command: str = ""  # the agent's command line
     files: dict[Path, _File | None] = field(default_factory=dict)
     steps: int = 0
+    bytes: int = 0
+    peeking: bool = False  # reading once more without following anything
+    results: dict[tuple, list] = field(default_factory=dict)  # a script's result, per call
+    parsed: dict[tuple, object] = field(default_factory=dict)  # makefiles and justfiles
 
 
 _READING: ContextVar[_Reading | None] = ContextVar("agentprint_reading", default=None)
-
-
-# ---- files a command runs: scripts, Makefiles, justfiles, Taskfiles -------------------------
-
-_SHELL_VALUES = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
-MAKEFILES = ("GNUmakefile", "makefile", "Makefile")  # the order make looks for them
-MAX_INCLUDES = 16  # makefiles or justfiles read for one make or just command
 
 
 def _real(path: Path) -> Path:
@@ -113,6 +150,17 @@ def _real(path: Path) -> Path:
 def _reading(cwd: Path) -> _Reading:
     reading = _READING.get()
     return reading if reading is not None else _Reading(_real(cwd))
+
+
+def _is_shell(program: str) -> bool:
+    return Path(program).name in c.SHELLS
+
+
+def _looks_like_release(*texts: str) -> bool:
+    return any(_RELEASE_WORD.search(text) for text in texts)
+
+
+# ---- reading files --------------------------------------------------------------------------
 
 
 def _read(arg: str, cwd: Path) -> _File | None:
@@ -142,70 +190,168 @@ def _is_file(path: Path) -> bool:
 
 
 def _load(path: Path, name: str) -> _File | None:
-    if not _is_file(path):  # folders, and FIFOs or devices that could block a read
+    if not _is_file(path):
         return None
-    try:
-        with path.open("rb") as handle:
-            data = handle.read(MAX_FILE_BYTES + 1)
+    try:  # O_NONBLOCK and fstat: a FIFO swapped in after the check can't hang the read
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
     except OSError:
-        why = f"agentprint could not read {name} to see whether it publishes or pushes"
-        return _File(path, name, None, why)
-    if b"\0" in data:
-        return None  # a compiled program, not a script
-    if len(data) > MAX_FILE_BYTES:
-        why = (
-            f"{name} is larger than 64 KB, so agentprint did not read it to see whether it "
-            "publishes or pushes"
-        )
-        return _File(path, name, None, why)
-    return _File(path, name, data.decode("utf-8", "replace").removeprefix("\ufeff"))
+        return _File(path, name, None, "unreadable")
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1  # the file object closes it now
+            head = handle.read(MAX_FILE_BYTES + 1)
+            if b"\0" in head:
+                return None  # a compiled program, not a script
+            if len(head) <= MAX_FILE_BYTES:
+                return _File(path, name, head.decode("utf-8", "replace").removeprefix("﻿"))
+            return _scan_large(handle, head, path, name)
+    except OSError:
+        return _File(path, name, None, "unreadable")
+    finally:
+        if fd >= 0:
+            os.close(fd)
 
 
-def _cannot(file: _File, cwd: Path, runner: str) -> list[c.Risky]:
-    return [c.Risky(c.Action.publish, runner, cwd, unsure=file.problem)]
+def _scan_large(handle, head: bytes, path: Path, name: str) -> _File:
+    """Scan a file too large to follow, 64 KB at a time with an overlap, up to 8 MB."""
+    named: list[Hit] = []
+    bare = ""
+    first_line = head[:4096].decode("utf-8", "replace").removeprefix("﻿").split("\n", 1)[0]
+    total, chunk, tail = len(head), head, ""
+    while chunk:
+        text = tail + chunk.decode("utf-8", "replace")
+        for hit in _named(text):
+            if hit not in named:
+                named.append(hit)
+        bare = bare or next((m.group(1) for m in _BARE_PUBLISH.finditer(text)), "")
+        tail = text[-128:]
+        if total >= MAX_SCAN_BYTES:
+            if handle.read(1):
+                return _File(path, name, None, "huge", first_line=first_line)
+            break
+        chunk = handle.read(min(MAX_FILE_BYTES, MAX_SCAN_BYTES - total))
+        total += len(chunk)
+    return _File(path, name, None, "large", tuple(named), bare, first_line)
 
 
-def _mentions(text: str, name: str, cwd: Path, deep: bool = False) -> list[c.Risky]:
-    """A publish or push named in text agentprint does not read as commands: never OK."""
-    where = f"{name}, deeper in its scripts than agentprint follows" if deep else name
-    found: list[c.Risky] = []
+# ---- what text names ------------------------------------------------------------------------
+
+
+def _named(text: str) -> list[Hit]:
+    """The publishes and pushes `_NAMED_PUBLISH` finds in text, in order, once each."""
+    hits: list[Hit] = []
     for match in _NAMED_PUBLISH.finditer(text):
         tool = next(group for group in match.groups() if group)
-        action = c.Action.push if tool == "git" else c.Action.publish
-        verb = "pushes" if action is c.Action.push else "publishes"
-        risky = c.Risky(action, tool, cwd, unsure=f"{verb} from inside {where}; could not check")
-        if risky not in found:
-            found.append(risky)
-    return found
+        hit = (c.Action.push if tool == "git" else c.Action.publish, tool)
+        if hit not in hits:
+            hits.append(hit)
+    return hits
+
+
+def _hits(text: str, cwd: Path) -> list[Hit]:
+    """Shell text only scanned, not read as commands: named publishes and backstop hits."""
+    hits = _named(text)
+    for risky in c._backstop(text, cwd):
+        if (risky.action, risky.tool) not in hits:
+            hits.append((risky.action, risky.tool))
+    return hits
+
+
+def _what(action: c.Action, tool: str) -> str:
+    if action is c.Action.push:
+        return "git push"
+    if tool == "twine":
+        return "twine upload"
+    return tool if tool in c.ROOT_RELEASERS else f"{tool} publish"
+
+
+def _flag(hits: list[Hit], label: str, cwd: Path, why: str) -> list[c.Risky]:
+    """A publish or push agentprint saw but could not check: never OK."""
+    return [
+        c.Risky(action, tool, cwd, unsure=why.format(what=_what(action, tool)), label=label)
+        for action, tool in hits
+    ]
+
+
+def _unread(file: _File, cwd: Path, runner: str, shell: bool) -> list[c.Risky]:
+    """A file agentprint could not read whole: "could not check" only on evidence."""
+    if file.size == "large":
+        hits = list(file.named)
+        if shell and not hits and file.bare:
+            hits = [(c.Action.push if file.bare == "push" else c.Action.publish, runner)]
+            return [c.Risky(*hits[0], cwd, unsure=_LARGE.format(what=file.bare), label=file.name)]
+        return _flag(hits, file.name, cwd, _LARGE)
+    if _looks_like_release(file.name, _reading(cwd).command):
+        why = _HUGE if file.size == "huge" else _UNREADABLE
+        return [c.Risky(c.Action.publish, runner, cwd, unsure=why, label=file.name)]
+    return []
+
+
+# ---- following ------------------------------------------------------------------------------
 
 
 def _step(step: recipes.Step, name: str, cwd: Path, depth: int) -> list[c.Risky]:
     """One script or recipe line from file `name`. Shell is read as commands; other languages
     are only scanned for a publish or push they name."""
-    if Path(step.program).name not in c.SHELLS:
-        return _mentions(step.text, name, cwd)
+    if not _is_shell(step.program):
+        return _flag(_named(step.text), name, cwd, _CODE)
     text, other = recipes.shell_text(step.text)
-    found = [risky for body in other for risky in _mentions(body, name, cwd)]
+    found = [risky for body in other for risky in _flag(_named(body), name, cwd, _CODE)]
     reading = _reading(cwd)
-    if depth >= c.MAX_DEPTH or reading.steps >= MAX_STEPS:  # stop following: never silently OK
-        found += _mentions(text, name, cwd, deep=True)
-        if not found and c._RUNS_A_FILE.search(text):
-            why = f"{name} runs more scripts than agentprint follows, so it could not check them"
-            found.append(c.Risky(c.Action.publish, "sh", cwd, unsure=why))
-        return found
+    if reading.peeking or reading.bytes >= MAX_BYTES:
+        return found + _flag(_hits(text, cwd), name, cwd, _DEEP)
+    if depth >= c.MAX_DEPTH or reading.steps >= MAX_STEPS:
+        return found + _peek(text, cwd, min(depth, c.MAX_DEPTH))
     reading.steps += 1
+    reading.bytes += len(text)
     return found + c.detect(text, cwd, depth + 1)
 
 
-def _script(arg: str, cwd: Path, depth: int, runner: str | None = None) -> list[c.Risky]:
+def _peek(text: str, cwd: Path, depth: int) -> list[c.Risky]:
+    """Read `text` once more without following anything it runs: its own commands are checked;
+    the scripts, recipes and package scripts it runs are only scanned for a publish or push."""
+    reading = _reading(cwd)
+    reading.peeking = True
+    reading.bytes += len(text)
+    try:
+        return c._detect(text, cwd, depth)
+    finally:
+        reading.peeking = False
+
+
+def too_deep(text: str, cwd: Path) -> list[c.Risky]:
+    """`commands.detect` past `MAX_DEPTH` (a `bash -c` or package script at the limit)."""
+    reading = _reading(cwd)
+    if reading.peeking or reading.bytes >= MAX_BYTES:
+        return _flag(_hits(text, cwd), _fragment(text), cwd, _NESTED)
+    return _peek(text, cwd, c.MAX_DEPTH)
+
+
+def _fragment(text: str) -> str:
+    """A command fragment as a label: its first line, shortened."""
+    line = next((part.strip() for part in text.split("\n") if part.strip()), "")
+    return line if len(line) <= 60 else line[:57] + "..."
+
+
+def _script(
+    arg: str, cwd: Path, depth: int, runner: str | None = None, unknown: str = ""
+) -> list[c.Risky]:
     """`./release.sh`, `bash scripts/release.sh`, `python release.py`: what the file runs."""
     file = _read(arg, cwd)
     if file is None:
         return []
+    program = runner or recipes.interpreter(
+        file.text if file.text is not None else file.first_line, file.name
+    )
     if file.text is None:
-        return _cannot(file, cwd, runner or "sh")
-    program = runner or recipes.interpreter(file.text, file.name)
-    return _step(recipes.Step(file.text, program), file.name, cwd, depth)
+        return _unread(file, cwd, program, _is_shell(program))
+    reading = _reading(cwd)
+    key = (file.path, cwd, program, depth, reading.peeking)
+    if key not in reading.results:
+        reading.results[key] = _step(recipes.Step(file.text, program), file.name, cwd, depth)
+    return list(reading.results[key])
 
 
 def _shell_file_arg(args: list[str]) -> str | None:
@@ -236,7 +382,7 @@ def _interpreted(program: str, args: list[str], cwd: Path, depth: int) -> list[c
     code, values = INTERPRETERS[key]
     if key == "deno":
         if args[:1] == ["eval"]:
-            return _mentions(" ".join(args[1:]), "the deno eval code", cwd)
+            return _flag(_named(" ".join(args[1:])), "deno eval", cwd, _CODE)
         if args[:1] != ["run"]:
             return []
         args = args[1:]
@@ -248,7 +394,7 @@ def _interpreted(program: str, args: list[str], cwd: Path, depth: int) -> list[c
             return c.detect(shlex.join(args[i + 1 :]), cwd, depth + 1)
         if flag in code:
             text = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
-            return _mentions(text, f"the {program} {flag} code", cwd)
+            return _flag(_named(text), f"{program} {flag}", cwd, _CODE)
         if arg == "--":
             i += 1
             break
@@ -276,6 +422,9 @@ def _find_up(start: Path, wanted: tuple[str, ...]) -> Path | None:
         if here == root or root not in here.parents:
             return None
         here = here.parent
+
+
+# ---- make, just, task -----------------------------------------------------------------------
 
 
 def _make(args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
@@ -328,21 +477,52 @@ def _make(args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
         except OSError:
             return []
         files = [name for name in MAKEFILES if name in present][:1]
+    loaded = _makefile(cwd, files)
+    if not isinstance(loaded, tuple):
+        return loaded
+    mf, name, incomplete = loaded
+    plan = recipes.make_plan(mf, goals, overrides)
+    found: list[c.Risky] = []
+    unknown = plan.missing + plan.absent  # may be defined in a makefile agentprint did not read
+    asked = goals or [mf.default]
+    if incomplete and unknown and _looks_like_release(*unknown, *asked):
+        why = _UNREAD_INCLUDE.format(kind="makefile")
+        label = " ".join(["make", *goals])
+        found.append(c.Risky(c.Action.publish, "make", cwd, unsure=why, label=label))
+    reading = _reading(cwd)
+    for raw in plan.raw:
+        if reading.peeking or reading.bytes >= MAX_BYTES:  # scan only, with a small expansion
+            found += _flag(_hits(plan.text(raw, limit=4096), cwd), name, cwd, _DEEP)
+        elif text := plan.text(raw):
+            found += _step(recipes.Step(text), name, cwd, depth)
+    return found
+
+
+def _makefile(cwd: Path, files: list[str]) -> tuple[recipes.Makefile, str, bool] | list[c.Risky]:
+    """The makefile(s) and their includes, read once per command line. A list when they can't
+    be followed: empty (missing, outside the folder, not text) or "could not check"."""
+    reading = _reading(cwd)
+    key = ("make", _real(cwd), tuple(files))
+    cached = reading.parsed.get(key)
+    if cached is not None:
+        return cached  # type: ignore[return-value]
     mf: recipes.Makefile | None = None
     name = ""
     incomplete = False
     queue = [(path, False) for path in files]
     read = 0
+    result: tuple[recipes.Makefile, str, bool] | list[c.Risky] = []
     while queue and read < MAX_INCLUDES:
         path, optional = queue.pop(0)
         file = _read(path, cwd)
         if file is None:
             if mf is None:
-                return []  # the makefile is missing, outside the folder, or not text
+                break  # the makefile is missing, outside the folder, or not text
             incomplete = incomplete or not optional
             continue
         if file.text is None:
-            return _cannot(file, cwd, "make")
+            mf, result = None, _unread(file, cwd, "make", True)
+            break
         before = len(mf.includes) if mf else 0
         mf = recipes.parse_make(file.text, mf)
         name = name or file.name
@@ -355,16 +535,10 @@ def _make(args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
                 else:
                     queue.append((word, optional))
         read += 1
-    if mf is None:
-        return []
-    steps, missing = recipes.make_steps(mf, goals, overrides)
-    found: list[c.Risky] = []
-    if missing and (incomplete or queue):
-        why = f"`make {' '.join(missing)}` may run a recipe from a makefile agentprint did not read"
-        found.append(c.Risky(c.Action.publish, "make", cwd, unsure=why))
-    for text in steps:
-        found += _step(recipes.Step(text), name, cwd, depth)
-    return found
+    if mf is not None:
+        result = (mf, name, incomplete or bool(queue))
+    reading.parsed[key] = result
+    return result
 
 
 def _just(args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
@@ -394,34 +568,17 @@ def _just(args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
     path = cwd / os.path.expanduser(justfile) if justfile else _find_up(cwd, JUSTFILES)
     if path is None:
         return []
-    main = _read(str(path), cwd)
-    if main is None:
-        return []
-    if main.text is None:
-        return _cannot(main, cwd, "just")
-    jf = recipes.parse_just(main.text)
-    incomplete = False
-    queue = [(p, optional, main.path.parent) for p, optional in jf.imports]
-    read = 1
-    while queue and read < MAX_INCLUDES:
-        target, optional, base = queue.pop(0)
-        file = _read(target, base)
-        if file is None:
-            incomplete = incomplete or not optional
-            continue
-        if file.text is None:
-            return _cannot(file, cwd, "just")
-        before = len(jf.imports)
-        jf = recipes.parse_just(file.text, jf)
-        queue += [(p, optional, file.path.parent) for p, optional in jf.imports[before:]]
-        read += 1
+    loaded = _justfile(path, cwd)
+    if not isinstance(loaded, tuple):
+        return loaded
+    jf, main, incomplete = loaded
     names = names[:1] + [n for n in names[1:] if n in jf.recipes or n in jf.aliases]  # args
     steps, missing = recipes.just_steps(jf, names)
     found: list[c.Risky] = []
-    if missing and (incomplete or queue or jf.modules):
-        why = f"`just {' '.join(missing)}` may run a recipe from a just module or import"
-        why += " agentprint did not read"
-        found.append(c.Risky(c.Action.publish, "just", cwd, unsure=why))
+    if missing and (incomplete or jf.modules) and _looks_like_release(*missing):
+        why = _UNREAD_INCLUDE.format(kind="just module or import")
+        label = " ".join(["just", *names])
+        found.append(c.Risky(c.Action.publish, "just", cwd, unsure=why, label=label))
     home = cwd if main.path.parent == _real(cwd) else main.path.parent  # where just runs them
     folder = home / jf.workdir if jf.workdir else home
     folder = cwd / workdir if workdir else folder
@@ -431,6 +588,40 @@ def _just(args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
         why = "the folder its recipes run in is only known when just runs"
         found = [replace(r, unsure=r.unsure or why) for r in found]
     return found
+
+
+def _justfile(path: Path, cwd: Path) -> tuple[recipes.Justfile, _File, bool] | list[c.Risky]:
+    """The justfile and its imports, read once per command line (a list when not followed)."""
+    reading = _reading(cwd)
+    key = ("just", str(path), _real(cwd))
+    cached = reading.parsed.get(key)
+    if cached is not None:
+        return cached  # type: ignore[return-value]
+    main = _read(str(path), cwd)
+    result: tuple[recipes.Justfile, _File, bool] | list[c.Risky] = []
+    if main is not None and main.text is None:
+        result = _unread(main, cwd, "just", True)
+    elif main is not None and main.text is not None:
+        jf = recipes.parse_just(main.text)
+        incomplete = False
+        queue = [(p, optional, main.path.parent) for p, optional in jf.imports]
+        read = 1
+        while queue and read < MAX_INCLUDES:
+            target, optional, base = queue.pop(0)
+            file = _read(target, base)
+            if file is None:
+                incomplete = incomplete or not optional
+                continue
+            if file.text is None:
+                incomplete = True  # an import too large to follow
+                continue
+            before = len(jf.imports)
+            jf = recipes.parse_just(file.text, jf)
+            queue += [(p, optional, file.path.parent) for p, optional in jf.imports[before:]]
+            read += 1
+        result = (jf, main, incomplete or bool(queue))
+    reading.parsed[key] = result
+    return result
 
 
 def _task(args: list[str], cwd: Path) -> list[c.Risky]:
@@ -464,5 +655,5 @@ def _task(args: list[str], cwd: Path) -> list[c.Risky]:
     if file is None:
         return []
     if file.text is None:
-        return _cannot(file, cwd, "task")
-    return _mentions(recipes.taskfile_text(file.text, names), file.name, cwd)
+        return _unread(file, cwd, "task", True)
+    return _flag(_named(recipes.taskfile_text(file.text, names)), file.name, cwd, _TASK)

@@ -35,8 +35,20 @@ def tools(command, cwd):
     return [(r.action, r.tool) for r in detect(command, cwd)]
 
 
-def unsure(verb: str, name: str) -> str:
-    return f"{verb} from inside {name}; could not check"
+def labelled(command, cwd):
+    return [(r.action, r.tool, r.unsure, r.label) for r in detect(command, cwd)]
+
+
+def code(what: str) -> str:
+    return f"it runs `{what}` from code agentprint does not read as commands"
+
+
+def deep(what: str) -> str:
+    return f"it runs `{what}` deeper in its scripts than agentprint follows"
+
+
+def large(what: str) -> str:
+    return f"it is larger than 64 KB and names `{what}`, so agentprint did not follow it"
 
 
 # ---- the backstop word scan -----------------------------------------------------------------
@@ -186,7 +198,7 @@ def test_shell_text_still_finds_real_publishes(tmp_path, text):
 def test_here_document_fed_to_python_is_could_not_check(tmp_path):
     text = "python3 - <<'EOF'\nimport subprocess\nsubprocess.run(['npm', 'publish'])\nEOF\n"
     write(tmp_path, "x.sh", text)
-    assert found("bash x.sh", tmp_path) == [(P, "npm", tmp_path, unsure("publishes", "x.sh"))]
+    assert labelled("bash x.sh", tmp_path) == [(P, "npm", code("npm publish"), "x.sh")]
 
 
 # ---- (2) make -------------------------------------------------------------------------------
@@ -300,10 +312,12 @@ def test_make_reads_included_makefiles_inside_the_folder(tmp_path):
 
 
 def test_make_target_from_an_include_it_cannot_read_is_could_not_check(tmp_path):
-    write(tmp_path, "Makefile", "include $(shell ls *.mk)\nall:\n\techo\n")
-    [risky] = detect("make release", tmp_path)
-    assert risky.unsure == "`make release` may run a recipe from a makefile agentprint did not read"
+    write(tmp_path, "Makefile", "include $(shell ls *.mk)\nall:\n\techo\nship: publish-npm\n")
+    why = "it may run a recipe from a makefile agentprint did not read"
+    assert labelled("make release", tmp_path) == [(P, "make", why, "make release")]
+    assert labelled("make ship", tmp_path) == [(P, "make", why, "make ship")]  # its prerequisite
     assert detect("make all", tmp_path) == []
+    assert detect("make test", tmp_path) == []  # nothing says it releases: never cry wolf
 
 
 # ---- (3) just -------------------------------------------------------------------------------
@@ -357,8 +371,8 @@ scripted:
         ("just -f justfile release", [(P, "npm", ".", ""), (G, "git", ".", "")]),
         ("just shebang", [(P, "npm", "pkg", "")]),
         ("just here", [(P, "npm", ".", "")]),
-        ("just notes", [(P, "twine", ".", unsure("publishes", "justfile"))]),
-        ("just scripted", [(G, "git", ".", unsure("pushes", "justfile"))]),
+        ("just notes", [(P, "twine", ".", code("twine upload"))]),
+        ("just scripted", [(G, "git", ".", code("git push"))]),
         ("just --command npm publish", [(P, "npm", ".", "")]),
         ("just", []),  # the first recipe: default -> build
         ("just build", []),
@@ -387,8 +401,9 @@ def test_just_imports_are_read_and_modules_are_could_not_check(tmp_path):
     write(tmp_path, "just/release.just", "release:\n    npm publish\n")
     assert tools("just release", tmp_path) == [(P, "npm")]
     assert tools("just build", tmp_path) == []
-    [risky] = detect("just docs::build", tmp_path)
-    assert risky.unsure.startswith("`just docs::build` may run a recipe from a just module")
+    why = "it may run a recipe from a just module or import agentprint did not read"
+    assert labelled("just docs::release", tmp_path) == [(P, "just", why, "just docs::release")]
+    assert detect("just docs::build", tmp_path) == []  # never cry wolf
 
 
 # ---- (4) npm version ------------------------------------------------------------------------
@@ -443,8 +458,8 @@ subprocess.run(["twine", "upload", "dist/*"], check=True)
 )
 def test_python_release_script_is_could_not_check(tmp_path, command):
     write(tmp_path, "scripts/release.py", RELEASE_PY, 0o755)
-    want = [(P, "twine", tmp_path, unsure("publishes", "scripts/release.py"))]
-    assert found(command, tmp_path) == want
+    want = [(P, "twine", code("twine upload"), "scripts/release.py")]
+    assert labelled(command, tmp_path) == want
 
 
 RELEASE_JS = """\
@@ -473,9 +488,9 @@ await git.push();
 def test_js_release_script_is_could_not_check(tmp_path, command):
     write(tmp_path, "scripts/release.mjs", RELEASE_JS)
     name = "scripts/release.mjs"
-    assert found(command, tmp_path) == [
-        (P, "npm", tmp_path, unsure("publishes", name)),
-        (G, "git", tmp_path, unsure("pushes", name)),
+    assert labelled(command, tmp_path) == [
+        (P, "npm", code("npm publish"), name),
+        (G, "git", code("git push"), name),
     ]
 
 
@@ -489,7 +504,7 @@ def test_js_release_script_is_could_not_check(tmp_path, command):
     ],
 )
 def test_inline_code_naming_a_publish_is_could_not_check(command, flag):
-    assert found(command, CWD) == [(P, "npm", CWD, unsure("publishes", f"the {flag} code"))]
+    assert labelled(command, CWD) == [(P, "npm", code("npm publish"), flag)]
 
 
 def test_python_dash_m_after_options_is_read_as_a_command():
@@ -536,7 +551,10 @@ def test_taskfile_tasks_that_publish_are_could_not_check(tmp_path, command, want
     (tmp_path / "sub").mkdir()
     got = detect(command, tmp_path)
     assert [(r.action, r.tool) for r in got] == want
-    assert all(r.unsure.endswith("from inside Taskfile.yml; could not check") for r in got)
+    assert all(
+        r.unsure.endswith("from a Taskfile task, which agentprint does not read as commands")
+        for r in got
+    ) and all(r.label == "Taskfile.yml" for r in got)
 
 
 def test_taskfile_with_includes_is_read_whole(tmp_path):
@@ -610,23 +628,51 @@ def test_compiled_programs_are_not_followed(tmp_path):
     assert detect("./a.out", tmp_path) == []
 
 
-def test_a_script_too_large_to_read_is_could_not_check(tmp_path):
-    write(tmp_path, "configure", "#!/bin/sh\n" + "# padding\n" * 7000, 0o755)  # 70 KB
-    why = "configure is larger than 64 KB, so agentprint did not read it to see whether it "
-    assert found("./configure", tmp_path) == [(P, "sh", tmp_path, why + "publishes or pushes")]
-    write(tmp_path, "Makefile", "all:\n\techo\n" + "# padding\n" * 7000)
-    [risky] = detect("make", tmp_path)
-    assert (risky.tool, risky.unsure.split(" is ")[0]) == ("make", "Makefile")
+PAD = "ac_cv_x=yes; echo checking for something\n" * 2000  # 82 KB of ordinary shell
+
+
+def test_a_script_too_large_to_follow_is_scanned_for_publish_words(tmp_path):
+    write(tmp_path, "configure", "#!/bin/sh\n" + PAD, 0o755)
+    assert detect("./configure", tmp_path) == []  # nothing names a publish: never cry wolf
+    write(tmp_path, "release.sh", "#!/bin/sh\n" + PAD + "npm publish\n", 0o755)
+    assert labelled("./release.sh", tmp_path) == [(P, "npm", large("npm publish"), "release.sh")]
+    write(tmp_path, "ship.sh", "#!/bin/sh\n" + PAD + '"$NPM" publish\n', 0o755)
+    assert labelled("./ship.sh", tmp_path) == [(P, "sh", large("publish"), "ship.sh")]
+    write(tmp_path, "Makefile", "all:\n\techo\n" + "# " + PAD)
+    assert detect("make", tmp_path) == []
+    write(tmp_path, "Makefile", "all:\n\tgit push\n" + "# " + PAD)
+    assert labelled("make", tmp_path) == [(G, "git", large("git push"), "Makefile")]
+
+
+def test_a_publish_across_a_chunk_boundary_is_found(tmp_path, monkeypatch):
+    monkeypatch.setattr(following, "MAX_FILE_BYTES", 1024)
+    write(tmp_path, "big.py", "x = 1\n" * 170 + "run(['npm',\n 'publish'])\n")  # ~1 KB in
+    assert tools("python big.py", tmp_path) == [(P, "npm")]
+
+
+def test_a_file_over_the_scan_limit_is_flagged_only_when_it_looks_like_a_release(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(following, "MAX_SCAN_BYTES", 128 * 1024)
+    write(tmp_path, "build.sh", PAD * 2, 0o755)
+    write(tmp_path, "release.sh", PAD * 2, 0o755)
+    assert detect("./build.sh", tmp_path) == []
+    why = "it is larger than 8 MB, so agentprint did not read it"
+    assert labelled("./release.sh", tmp_path) == [(P, "sh", why, "release.sh")]
+    assert labelled("./build.sh && npm run release", tmp_path)[:1] == [(P, "sh", why, "build.sh")]
 
 
 @pytest.mark.skipif(os.name != "posix" or os.geteuid() == 0, reason="needs binding permissions")
-def test_an_unreadable_script_is_could_not_check(tmp_path):
-    path = write(tmp_path, "release.sh", "npm publish\n", 0o000)
+def test_an_unreadable_script_is_could_not_check_only_when_it_looks_like_a_release(tmp_path):
+    release = write(tmp_path, "release.sh", "npm publish\n", 0o000)
+    build = write(tmp_path, "build.sh", "npm publish\n", 0o000)
     try:
-        why = "agentprint could not read release.sh to see whether it publishes or pushes"
-        assert found("bash release.sh", tmp_path) == [(P, "bash", tmp_path, why)]
+        why = "agentprint could not open it"
+        assert labelled("bash release.sh", tmp_path) == [(P, "bash", why, "release.sh")]
+        assert detect("bash build.sh", tmp_path) == []
     finally:
-        path.chmod(0o644)
+        release.chmod(0o644)
+        build.chmod(0o644)
 
 
 @pytest.mark.parametrize(
@@ -639,31 +685,33 @@ def test_nothing_to_read_is_not_a_publish(tmp_path, command):
     assert detect(command, tmp_path) == []
 
 
-def test_a_chain_deeper_than_agentprint_follows_is_could_not_check(tmp_path):
+def test_where_following_stops_it_looks_one_level_further(tmp_path):
     for i in range(1, 8):
         write(tmp_path, f"s{i}.sh", f"echo step {i}\n./s{i + 1}.sh\n", 0o755)
-    write(tmp_path, "s8.sh", "npm publish\n", 0o755)
-    [risky] = detect("./s1.sh", tmp_path)  # s5.sh is as deep as it reads: never a silent OK
-    stops = "s5.sh runs more scripts than agentprint follows, so it could not check them"
-    assert risky.unsure == stops
-    write(tmp_path, "s5.sh", "npm publish\n", 0o755)  # named right where it stops
-    [risky] = detect("./s1.sh", tmp_path)
-    assert (risky.action, risky.tool) == (P, "npm")
-    deep = "s5.sh, deeper in its scripts than agentprint follows"
-    assert risky.unsure == unsure("publishes", deep)
+    write(tmp_path, "s8.sh", "echo done\n", 0o755)
+    assert detect("./s1.sh", tmp_path) == []  # no publish anywhere: never cry wolf
+    write(tmp_path, "s5.sh", "npm publish\n", 0o755)  # read once more where it stops: checked
+    assert found("./s1.sh", tmp_path) == [(P, "npm", tmp_path, "")]
+    write(tmp_path, "s5.sh", "./s6.sh\n", 0o755)
+    write(tmp_path, "s6.sh", "npm publish\n", 0o755)  # one level further: scanned
+    assert labelled("./s1.sh", tmp_path) == [(P, "npm", deep("npm publish"), "s6.sh")]
 
 
 def test_a_script_that_runs_itself_stops(tmp_path):
     write(tmp_path, "loop.sh", "echo again\n./loop.sh\n", 0o755)
-    assert [r.action for r in detect("./loop.sh", tmp_path)] == [P]  # could not check, no hang
-    assert detect("./loop.sh", tmp_path)[0].unsure
+    assert detect("./loop.sh", tmp_path) == []  # no hang, and no wolf
+    write(tmp_path, "loop.sh", "npm publish\n./loop.sh\n", 0o755)
+    assert found("./loop.sh", tmp_path)[0] == (P, "npm", tmp_path, "")
 
 
 def test_too_many_commands_fall_back_to_a_word_scan(tmp_path, monkeypatch):
     monkeypatch.setattr(following, "MAX_STEPS", 1)
     write(tmp_path, "Makefile", "release:\n\techo one\n\tnpm publish\n")
-    [risky] = detect("make release", tmp_path)
-    assert (risky.tool, "deeper in its scripts" in risky.unsure) == ("npm", True)
+    assert found("make release", tmp_path) == [(P, "npm", tmp_path, "")]  # read, not followed
+    monkeypatch.setattr(following, "MAX_BYTES", 1)
+    write(tmp_path, "Makefile", "release:\n\techo one\n\t./publish.sh\n\tnpm publish\n")
+    write(tmp_path, "publish.sh", "git push\n", 0o755)
+    assert labelled("make release", tmp_path) == [(P, "npm", deep("npm publish"), "Makefile")]
 
 
 def test_each_command_line_starts_a_fresh_reading(tmp_path):
@@ -705,6 +753,7 @@ def test_make_include_named_by_a_variable_marks_the_makefile_incomplete(tmp_path
     write(tmp_path, "Makefile", "include $(HOME)/x.mk\nall:\n\techo\n")
     [risky] = detect("make release", tmp_path)
     assert risky.tool == "make" and "did not read" in risky.unsure
+    assert detect("make lint", tmp_path) == []
 
 
 @pytest.mark.parametrize(
@@ -723,21 +772,24 @@ def test_just_import_it_cannot_read_and_its_working_directory(tmp_path):
     assert risky.unsure.endswith(
         "may run a recipe from a just module or import agentprint did not read"
     )
+    assert detect("just lint", tmp_path) == []
     write(tmp_path, "justfile", "set working-directory := env('DIR')\nrelease:\n    npm publish\n")
     [risky] = detect("just release", tmp_path)
     assert risky.unsure == "the folder its recipes run in is only known when just runs"
 
 
-def test_just_or_taskfile_too_large_to_read_is_could_not_check(tmp_path):
+def test_just_or_taskfile_too_large_to_follow_is_scanned(tmp_path):
     write(tmp_path, "justfile", "release:\n    npm publish\n" + "# pad\n" * 12000)
-    [risky] = detect("just release", tmp_path)
-    assert (risky.tool, "larger than 64 KB" in risky.unsure) == ("just", True)
+    assert labelled("just release", tmp_path) == [(P, "npm", large("npm publish"), "justfile")]
+    write(tmp_path, "justfile", "build:\n    cc x.c\n" + "# pad\n" * 12000)
+    assert detect("just build", tmp_path) == []
     write(tmp_path, "justfile", "import 'big.just'\nrelease:\n    npm publish\n")
     write(tmp_path, "big.just", "x:\n    echo\n" + "# pad\n" * 12000)
-    assert detect("just release", tmp_path)[0].tool == "just"
+    assert found("just release", tmp_path) == [(P, "npm", tmp_path, "")]
+    write(tmp_path, "Taskfile.yml", "tasks:\n  r:\n    cmds: [git push]\n" + "# pad\n" * 12000)
+    assert labelled("task r", tmp_path) == [(G, "git", large("git push"), "Taskfile.yml")]
     write(tmp_path, "Taskfile.yml", "tasks: {}\n" + "# pad\n" * 12000)
-    [risky] = detect("task release", tmp_path)
-    assert (risky.tool, "larger than 64 KB" in risky.unsure) == ("task", True)
+    assert detect("task release", tmp_path) == []
 
 
 @pytest.mark.parametrize(
@@ -772,6 +824,23 @@ def test_a_folder_that_can_be_listed_but_not_entered_has_nothing_to_read(tmp_pat
         assert detect("just release", folder) == []
     finally:
         folder.chmod(0o755)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs FIFOs")
+def test_a_fifo_is_never_opened(tmp_path):
+    os.mkfifo(tmp_path / "release.sh")  # opening it for reading would wait for a writer
+    assert detect("./release.sh", tmp_path) == []
+    assert detect("bash release.sh", tmp_path) == []
+
+
+def test_a_script_run_many_times_is_read_and_followed_once(tmp_path, monkeypatch):
+    write(tmp_path, "helper.sh", "echo help\n" * 2000, 0o755)
+    write(tmp_path, "caller.sh", "./helper.sh\n" * 300 + "npm publish\n", 0o755)
+    steps = []
+    step = following._step
+    monkeypatch.setattr(following, "_step", lambda *a: steps.append(a[1]) or step(*a))
+    assert found("./caller.sh", tmp_path) == [(P, "npm", tmp_path, "")]
+    assert steps.count("helper.sh") == 1
 
 
 @pytest.mark.parametrize("after", ["make release", "./publish.sh", "npm version patch"])
