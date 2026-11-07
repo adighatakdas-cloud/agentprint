@@ -8,4 +8,4 @@
 - [ ] New behavior has a test built on fake files (no real home folder, no real keys).
 - [ ] Any output that could include a secret goes through `redact()`, and the test checks the full fake key is absent.
 - [ ] No network calls during a scan.
-- [ ] Docs updated if a check, agent or command changed (`README.md`, `docs/supported-agents.md`).
+- [ ] Docs updated if a check, agent or command changed (`site/check-notes/`, `site/src/content/docs/`), then `uv run python -m tools.gen_docs`.
