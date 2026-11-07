@@ -44,6 +44,8 @@ steps, and what to ask the human). Who is running it decides which (`ui/detect.p
   `credentials`;
 - how to read its config (`read_config`): which settings let it act without asking (grants),
   which hooks it runs, and which MCP servers it starts;
+- which of its history files are only records (`pure_history`), so `agentprint fix` may mask a
+  key there, and which it reads back as instructions or config;
 - which of its files must never ship in a package (`package_rules`).
 
 `agents/scan_only.py` holds 15 lighter agents that are only package rules and project files.

@@ -21,7 +21,15 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
-from .base import artifacts, dig, from_home, hook_commands, is_blanket_command, mcp_servers
+from .base import (
+    artifacts,
+    dig,
+    from_home,
+    hook_commands,
+    is_blanket_command,
+    matches_any,
+    mcp_servers,
+)
 
 NAME = "cursor"
 
@@ -77,6 +85,15 @@ def _grants(data: dict[str, Any]) -> tuple[Grant, ...]:
     if data.get("approvalMode") == "unrestricted":
         grants.append(Grant("approvalMode", "unrestricted", _MODE_FIX))
     return tuple(grants)
+
+
+# History that is only a record (fix masks keys there): agent transcripts and terminal output
+# per project, and the chat databases (which fix never edits). Nothing else under projects/.
+_RECORDS = (
+    re.compile(r"(^|/)\.cursor/projects/[^/]+/(agent-transcripts|terminals)/"),
+    re.compile(r"(^|/)\.cursor/chats/"),
+    re.compile(r"(^|/)state\.vscdb$"),
+)
 
 
 class Cursor:
@@ -136,6 +153,9 @@ class Cursor:
         yield from artifacts(
             NAME, Kind.SETTINGS, base / "mcp.json", base / "cli.json", base / "hooks.json"
         )
+
+    def pure_history(self, path: Path) -> bool:
+        return matches_any(path, _RECORDS)
 
     def read_config(self, artifact: Artifact) -> AgentConfig:
         name = artifact.path.name

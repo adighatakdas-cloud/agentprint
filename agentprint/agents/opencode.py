@@ -20,7 +20,7 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
-from .base import artifacts, from_home, is_blanket_command, mcp_servers
+from .base import artifacts, from_home, is_blanket_command, matches_any, mcp_servers
 
 NAME = "opencode"
 
@@ -53,6 +53,16 @@ def _grants(permission: Any) -> tuple[Grant, ...]:
             if action == "allow" and is_blanket_command(str(pattern), prefix=False):
                 grants.append(Grant(f'permission.bash["{pattern}"]', "allow", _PERMISSION_FIX))
     return tuple(grants)
+
+
+# History that is only a record (fix masks keys there): the session database and the JSON
+# session, message and part files under storage/, and the logs. Other storage/ folders (todo
+# lists the agent reads back, project data) are not.
+_RECORDS = (
+    re.compile(r"(^|/)opencode/opencode\.db$"),
+    re.compile(r"(^|/)opencode/storage/(session|message|part|session_diff)/"),
+    re.compile(r"(^|/)opencode/log/"),
+)
 
 
 class OpenCode:
@@ -88,6 +98,9 @@ class OpenCode:
 
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         yield from artifacts(NAME, Kind.SETTINGS, *(root / name for name in _CONFIG_NAMES))
+
+    def pure_history(self, path: Path) -> bool:
+        return matches_any(path, _RECORDS)
 
     def read_config(self, artifact: Artifact) -> AgentConfig:
         if artifact.path.name not in _CONFIG_NAMES:

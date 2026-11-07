@@ -59,6 +59,15 @@ class ScanOnlyAgent:
         for rel, kind, personal in self.project_files:
             yield from artifacts(self.name, kind, root / rel, personal=personal)
 
+    def pure_history(self, path: Path) -> bool:
+        """Every history file listed here is a transcript or a log (the rule of thumb above)."""
+        text = path.as_posix()
+        return any(
+            text.endswith(f"/{rel}") or f"/{rel}/" in text
+            for rel, kind, _ in self.project_files
+            if kind is Kind.HISTORY
+        )
+
     def read_config(self, artifact: Artifact) -> AgentConfig:
         return AgentConfig()
 
