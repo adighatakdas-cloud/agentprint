@@ -65,6 +65,7 @@ Blocks to expect in strict mode, and what to do:
 - **Build and publish in one command** (`uv build && uv publish`) is always blocked: when the hook runs, nothing is built yet, so there is nothing to check. Run the build and the publish as two commands.
 - **A push from a folder known only when the command runs** is blocked: `cd "$(git rev-parse --show-toplevel)" && git push`, `cd $REPO && git push`, or a loop such as `for r in a b; do (cd $r && git push); done`. Push from the repo folder itself: run `git push` there, or write the folder out (`cd my-repo && git push`), one repo per command.
 - **A workspace publish of more than 30 packages** (`pnpm -r publish` in a large pnpm workspace) is blocked: checking each package would outlast the agent's hook time limit. Publish the packages in smaller groups.
+- **A script agentprint cannot read through** is blocked. That means a release script in another language that names a publish or push (`python scripts/release.py` running `twine upload`), a script over 64 KB (an autoconf `./configure`, a generated Makefile), or scripts nested more than 4 levels deep. Run the publish or push as its own command, so agentprint can check it.
 
 ## Good to know
 
@@ -72,6 +73,15 @@ Blocks to expect in strict mode, and what to do:
 - **Hermes Agent** asks before it runs any new hook, and agentprint never approves its own. Start `hermes chat` once and accept it. Until then, and in gateway or cron runs that never ask, the hook is off. The MCP server still works.
 - **Hooks need macOS or Linux.** On Windows, only the MCP server and the note are installed for now.
 - **agentprint only ever blocks, never approves.** Your agents' own approval rules still apply. If agentprint itself fails, the command runs, with a note that it could not check (unless you turn on strict mode, above).
-- **Spotting a publish is best effort.** agentprint reads the command line. It is not a shell. It follows `cd`, `&&`, `bash -c`, package scripts, workspaces and release tools. A publish hidden in a Makefile, a script file or a heredoc can slip past, though the note still tells the agent to check. When agentprint is unsure what would be uploaded, it says "could not check", never "OK".
+- **Spotting a publish is best effort.** agentprint reads the command line. It is not a shell. It follows `cd`, `&&`, `bash -c`, package scripts, workspaces and release tools. When agentprint is unsure what would be uploaded, it says "could not check", never "OK".
+- **It reads the scripts a command runs**, as long as they are inside the folder your agent works in. It reads at most 64 KB of each, and follows scripts that run other scripts up to 4 levels deep:
+  - shell scripts: `./release.sh`, `bash scripts/release.sh`, `source x.sh`
+  - Makefile targets, with their prerequisites and `$(MAKE) <target>` calls
+  - justfile recipes, with their dependencies
+  - the `preversion`, `version` and `postversion` scripts that `npm version` runs
+
+  The publishes and pushes in them are checked like ones typed on the command line.
+- **Some scripts get "could not check" instead.** agentprint does not run a script in another language through its reader: `python scripts/release.py`, `node release.js`, a Taskfile task. If that script names a publish or push, the guard says "could not check" and lets it run. Strict mode blocks it. A script larger than 64 KB, one agentprint cannot open, and scripts nested more than 4 levels deep get "could not check" too.
+- **Not followed yet:** scripts outside the project folder, compiled programs, a script path built from a variable (`"$DIR/release.sh"`), heredocs typed on the command line, and PowerShell commands such as `pwsh -File release.ps1`. A publish hidden in one of these can slip past. The note in the agent's instructions still tells it to check.
 
 See which agents are armed with `agentprint status`.
