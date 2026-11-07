@@ -527,9 +527,9 @@ def _make(args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
     loaded = _makefile(cwd, files)
     if not isinstance(loaded, tuple):
         return loaded
-    mf, name, incomplete = loaded
+    mf, name, incomplete, scanned = loaded
     plan = recipes.make_plan(mf, goals, overrides)
-    found: list[c.Risky] = []
+    found: list[c.Risky] = list(scanned)
     unknown = plan.missing + plan.absent  # may be defined in a makefile agentprint did not read
     asked = goals or [mf.default]
     if incomplete and unknown and _looks_like_release(*unknown, *asked):
@@ -545,9 +545,13 @@ def _make(args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
     return found
 
 
-def _makefile(cwd: Path, files: list[str]) -> tuple[recipes.Makefile, str, bool] | list[c.Risky]:
-    """The makefile(s) and their includes, read once per command line. A list when they can't
-    be followed: empty (missing, outside the folder, not text) or "could not check"."""
+_Loaded = tuple[recipes.Makefile, str, bool, list["c.Risky"]]
+
+
+def _makefile(cwd: Path, files: list[str]) -> _Loaded | list[c.Risky]:
+    """The makefile(s) and their includes, read once per command line: the rules, the name, whether
+    some include was not read, and what a scan of an include too large to follow found. A list
+    when the makefile itself can't be followed: empty (missing, outside, not text) or a scan."""
     reading = _reading(cwd)
     key = ("make", _real(cwd), tuple(files))
     cached = reading.parsed.get(key)
@@ -558,7 +562,8 @@ def _makefile(cwd: Path, files: list[str]) -> tuple[recipes.Makefile, str, bool]
     incomplete = False
     queue = [(path, False) for path in files]
     read = 0
-    result: tuple[recipes.Makefile, str, bool] | list[c.Risky] = []
+    scanned: list[c.Risky] = []  # includes too large to follow: what their scan found
+    result: _Loaded | list[c.Risky] = []
     while queue and read < MAX_INCLUDES:
         path, optional = queue.pop(0)
         file = _read(path, cwd)
@@ -568,8 +573,12 @@ def _makefile(cwd: Path, files: list[str]) -> tuple[recipes.Makefile, str, bool]
             incomplete = incomplete or not optional
             continue
         if file.text is None:
-            mf, result = None, _unread(file, cwd, "make", True)
-            break
+            if mf is None:  # the makefile itself: only its scan
+                result = _unread(file, cwd, "make", True)
+                break
+            incomplete = True  # an include (or a second -f) too large to follow
+            scanned += _unread(file, cwd, "make", True)
+            continue
         before = len(mf.includes) if mf else 0
         mf = recipes.parse_make(file.text, mf)
         name = name or file.name
@@ -583,7 +592,7 @@ def _makefile(cwd: Path, files: list[str]) -> tuple[recipes.Makefile, str, bool]
                     queue.append((word, optional))
         read += 1
     if mf is not None:
-        result = (mf, name, incomplete or bool(queue))
+        result = (mf, name, incomplete or bool(queue), scanned)
     reading.parsed[key] = result
     return result
 

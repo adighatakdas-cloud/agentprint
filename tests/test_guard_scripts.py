@@ -354,3 +354,36 @@ def test_git_push_after_a_quoted_regex_is_read_exactly(tmp_path):
     )
     got = detect("./tag.sh", tmp_path)
     assert [(r.action, r.tool, r.cwd, r.unsure) for r in got] == want
+
+
+# ---- an include too large to follow does not hide the makefile's own recipes ----------------
+
+DEPS = "".join(f"obj/f{i}.o: src/f{i}.c include/common.h include/util.h\n" for i in range(1500))
+
+
+@pytest.mark.parametrize("include", ["include deps.mk", "-include deps.mk", "sinclude deps.mk"])
+def test_a_large_include_keeps_the_makefiles_own_recipes(leaky, include):
+    _repo(
+        leaky,
+        {
+            "deps.mk": DEPS,
+            "Makefile": f"{include}\nall:\n\tcc -o app main.c\nrelease:\n\t{PUBLISH}",
+        },
+    )
+    assert evaluate("make release", leaky).block
+    assert evaluate("make all", leaky) is None  # and no wolf from the include's own scan
+
+
+def test_a_large_include_or_second_makefile_that_names_a_publish_is_scanned(tmp_path):
+    from agentprint.commands import detect
+
+    _repo(
+        tmp_path,
+        {"deps.mk": DEPS + "ship:\n\tgit push\n", "Makefile": "include deps.mk\nall:\n\techo\n"},
+    )
+    got = detect("make all", tmp_path)
+    assert [(r.tool, r.label) for r in got] == [("git", "deps.mk")] and got[0].unsure
+    _repo(tmp_path, {"a.mk": "release:\n\techo hi\n"})
+    assert [(r.tool, r.label) for r in detect("make -f a.mk -f deps.mk release", tmp_path)] == [
+        ("git", "deps.mk")
+    ]
