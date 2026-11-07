@@ -350,6 +350,50 @@ def test_npm_licence_classification(licence, closed):
     assert ap009.licence_of(_npm(licence))[0] is closed
 
 
+@pytest.mark.parametrize(
+    ("licence", "reason"),
+    [
+        ("proprietary", "closed-source package: licence proprietary"),
+        ("  Proprietary ", "closed-source package: licence proprietary"),
+        ("COMMERCIAL", "closed-source package: licence commercial"),
+        ("UNLICENSED", "closed-source package: licence UNLICENSED"),
+        (" unlicensed", "closed-source package: licence UNLICENSED"),
+        ("see license in terms.txt", "closed-source package: licence SEE LICENSE IN a file"),
+        ("LicenseRef-Acme-EULA", ap009.CUSTOM_ID),
+        ("MIT OR LicenseRef-Acme", ap009.CUSTOM_ID),
+        ("(Apache-2.0 AND licenseref-acme.1)", ap009.CUSTOM_ID),
+        ({"type": "Proprietary"}, "closed-source package: licence proprietary"),  # old form
+    ],
+)
+def test_npm_explicit_closed_markers(licence, reason):
+    assert ap009.licence_of(_npm(licence)) == (True, reason)
+
+
+def test_custom_licence_id_detail_says_how_to_fix_a_false_call():
+    listing = _npm("LicenseRef-Acme", **{"a.js": b"1", "a.js.map": _map([SOURCE])})
+    [finding] = _ap009(listing)
+    assert finding.severity is Severity.HIGH
+    assert (
+        "uses a custom licence id, so treated as closed source; use an SPDX licence id if it's "
+        "open source"
+    ) in finding.detail
+    assert "Acme" not in finding.detail
+
+
+@pytest.mark.parametrize(
+    "licence",
+    ["MIT", "Apache-2.0 OR MIT", "(MIT OR Apache-2.0)", "BSD-3-Clause", "Unlicense",
+     "GPL-3.0-or-later WITH Classpath-exception-2.0", "MPL-2.0 AND CC-BY-4.0"],
+)  # fmt: skip
+def test_ordinary_spdx_licence_stays_open(licence):
+    assert ap009.licence_of(_npm(licence)) == (False, ap009.OPEN)
+    for header in (f"License-Expression: {licence}", f"License: {licence}"):
+        wheel = _listing({"demo-1.0.dist-info/METADATA": _metadata(header)}, label="demo.whl")
+        assert ap009.licence_of(wheel) == (False, ap009.OPEN)
+    listing = _npm(licence, **{"a.js": b"1", "a.js.map": _map([SOURCE]), "CLAUDE.md": b"x"})
+    assert _severities(_ap009(listing)) == ["LOW"]
+
+
 def test_npm_old_licenses_array_is_a_licence():
     listing = _listing(
         {"package/package.json": json.dumps({"licenses": [{"type": "BSD-3-Clause"}]}).encode()}
@@ -392,6 +436,34 @@ def test_pypi_metadata_licence_classification(headers, closed):
         label="demo-1.0.tar.gz",
     )
     assert ap009.licence_of(sdist)[0] is closed
+
+
+@pytest.mark.parametrize(
+    ("headers", "reason"),
+    [
+        (["License-Expression: LicenseRef-Acme-EULA"], ap009.CUSTOM_ID),
+        (["License-Expression: MIT OR LicenseRef-Acme"], ap009.CUSTOM_ID),
+        (
+            # A custom id is closed even next to an OSI classifier.
+            ["License-Expression: LicenseRef-Acme",
+             "Classifier: License :: OSI Approved :: MIT License"],
+            ap009.CUSTOM_ID,
+        ),
+        (["License: Proprietary"], "closed-source package: licence proprietary"),
+        (["License: commercial"], "closed-source package: licence commercial"),
+        (["License: All rights reserved"], "closed-source package: licence all rights reserved"),
+        (["License: All Rights Reserved."], "closed-source package: licence all rights reserved"),
+        (
+            ["Classifier: License :: Other/Proprietary License"],
+            "closed-source package: classifier License :: Other/Proprietary License",
+        ),
+    ],
+)  # fmt: skip
+def test_pypi_explicit_closed_markers(headers, reason):
+    wheel = _listing({"demo-1.0.dist-info/METADATA": _metadata(*headers)}, label="demo.whl")
+    assert ap009.licence_of(wheel) == (True, reason)
+    sdist = _listing({"demo-1.0/PKG-INFO": _metadata(*headers)}, label="demo-1.0.tar.gz")
+    assert ap009.licence_of(sdist) == (True, reason)
 
 
 def test_pypi_licence_reasons_and_a_wheel_finding(tmp_path):

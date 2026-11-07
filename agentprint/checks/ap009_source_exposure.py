@@ -58,7 +58,15 @@ NPM_UNREADABLE = f"package.json could not be read, {_ADD_LICENCE}"
 PYPI_MISSING = f"no licence metadata, {_ADD_ONE}"
 PYPI_UNREADABLE = f"package metadata could not be read, {_ADD_LICENCE}"
 NOTHING_FOUND = f"no package.json or package metadata found, {_ADD_LICENCE}"
+CUSTOM_ID = (
+    "uses a custom licence id, so treated as closed source; use an SPDX licence id if it's "
+    "open source"
+)
 PROPRIETARY = "License :: Other/Proprietary License"
+# Licence values that say "closed source" outright (compared trimmed and case-insensitively).
+NPM_CLOSED_WORDS = ("proprietary", "commercial")
+PYPI_CLOSED_WORDS = ("proprietary", "commercial", "all rights reserved")
+_LICENSE_REF = re.compile(r"\bLicenseRef-[A-Za-z0-9.-]+", re.IGNORECASE)  # a custom SPDX id
 
 _BUNDLE = (".js", ".mjs", ".cjs")
 _ORIGINAL = re.compile(r"\.(tsx?|mts|cts|vue|svelte)$")
@@ -137,11 +145,15 @@ def _npm_licence(raw: bytes | None) -> tuple[bool, str]:
         value = next((t for t in types if isinstance(t, str) and t.strip()), None)
     if not isinstance(value, str) or not value.strip():
         return True, NPM_MISSING
-    text = " ".join(value.split()).upper()
-    if text == "UNLICENSED":
+    text = " ".join(value.split()).lower()
+    if text == "unlicensed":
         return True, "closed-source package: licence UNLICENSED"
-    if text.startswith("SEE LICENSE IN"):
+    if text.startswith("see license in"):
         return True, "closed-source package: licence SEE LICENSE IN a file"
+    if text in NPM_CLOSED_WORDS:
+        return True, f"closed-source package: licence {text}"
+    if _LICENSE_REF.search(text):
+        return True, CUSTOM_ID
     return False, OPEN
 
 
@@ -168,6 +180,12 @@ def _pypi_licence(raw: bytes | None) -> tuple[bool, str]:
     classifiers = [" ".join(value.split()) for key, value in headers if key == "classifier"]
     if PROPRIETARY in classifiers:
         return True, f"closed-source package: classifier {PROPRIETARY}"
+    for key, value in headers:
+        if key == "license-expression" and _LICENSE_REF.search(value):
+            return True, CUSTOM_ID
+        word = " ".join(value.split()).lower().rstrip(".")
+        if key == "license" and word in PYPI_CLOSED_WORDS:
+            return True, f"closed-source package: licence {word}"
     stated = any(
         key in ("license", "license-expression") and value and value.upper() != "UNKNOWN"
         for key, value in headers
@@ -179,10 +197,12 @@ def _pypi_licence(raw: bytes | None) -> tuple[bool, str]:
 def licence_of(listing: PackageListing) -> tuple[bool, str]:
     """(closed source?, why), from package.json (npm) or METADATA / PKG-INFO (PyPI).
 
-    Closed: npm `license` missing, `UNLICENSED` or `SEE LICENSE IN ...`; PyPI no License /
-    License-Expression and no OSI classifier, or the Other/Proprietary classifier. A licence
-    file that is missing or could not be read counts as closed, and `why` says so. `why` never
-    repeats what the file says."""
+    Closed: npm `license` missing, `UNLICENSED`, `SEE LICENSE IN ...`, `proprietary`,
+    `commercial`, or an expression with a custom `LicenseRef-...` id; PyPI the Other/Proprietary
+    classifier, a License-Expression with a `LicenseRef-...` id, a License field that is
+    `Proprietary`, `Commercial` or `All rights reserved`, or no License / License-Expression and
+    no OSI classifier. A licence file that is missing or could not be read counts as closed, and
+    `why` says so. `why` never repeats what the file says."""
     found = _licence_file(listing.files)
     if found is None:
         return True, NOTHING_FOUND
