@@ -11,13 +11,15 @@ A public, repeatable test of how well agentprint finds keys in the files AI codi
 
 ## Overall
 
-| Tool | Version | Recall | Precision | Keys found | False positives | Recall, any hit in file |
-|---|---|---|---|---|---|---|
-| agentprint | 0.1.0 | 73% | 90% | 61 of 84 | 7 of 63 | 77% |
-| gitleaks | 8.30.1 | 55% | 77% | 46 of 84 | 14 of 63 | 55% |
-| trufflehog | 3.99.8 | 55% | 100% | 46 of 84 | 0 of 63 | 55% |
+| Tool | Version | Recall | Recall, plain keys | Recall, hidden keys | Precision | Keys found | False positives | Recall, any hit in file |
+|---|---|---|---|---|---|---|---|---|
+| agentprint | 0.1.0 | 73% | 100% (42 of 42) | 45% (19 of 42) | 90% | 61 of 84 | 7 of 63 | 77% |
+| gitleaks | 8.30.1 | 55% | 88% (37 of 42) | 21% (9 of 42) | 77% | 46 of 84 | 14 of 63 | 55% |
+| trufflehog | 3.99.8 | 55% | 86% (36 of 42) | 24% (10 of 42) | 100% | 46 of 84 | 0 of 63 | 55% |
 
-**How a case is scored, the same for every tool.** Each fake key sits on known lines of its file (the manifest records the span when the corpus is built). A key counts as *found* only if a finding's reported line falls inside that span. *Recall* is found / (found + missed). A negative case (look-alikes, no key) counts as a *false positive* if the tool reports anything in its file. *Precision* is found / (found + false positives); it is file-level, not per-finding. The last column is the looser reading, any finding anywhere in a key's file, shown so the two can be compared. Each case file holds one key, so the two differ only where a tool reported something else in the file but not on the key; in practice that is the paired AWS secret access key, which agentprint's generic rule flags on its own line.
+*Plain keys* are the rows where the key is written out as an agent writes it; *hidden keys* are the rows where it is hidden by one trick. 42 of the 84 keys are hidden, so the overall recall leans on them. **The hidden-key rows favour agentprint:** they test the tricks this release (agentprint 0.1.1) added, and were written alongside the new detection. Compare the tools on plain keys first.
+
+**How a case is scored, the same for every tool.** Each fake key sits on known lines of its file (the manifest records the span when the corpus is built). A key counts as *found* only if a finding's reported line falls inside that span. A finding on the key's line counts even when only part of the key matched: agentprint's "hidden: split string" hits, for example, are matches of the key's first part, not the whole joined key. *Recall* is found / (found + missed). A negative case (look-alikes, no key) counts as a *false positive* if the tool reports anything in its file. *Precision* is found / (found + false positives); it is file-level, not per-finding. The last column is the looser reading, any finding anywhere in a key's file, shown so the two can be compared. Each case file holds one key, so the two differ only where a tool reported something else in the file but not on the key; in practice that is the paired AWS secret access key, which agentprint's generic rule flags on its own line.
 
 ## Keys the tool should find
 

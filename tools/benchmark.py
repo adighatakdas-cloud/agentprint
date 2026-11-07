@@ -69,6 +69,17 @@ def _summary(cases: Sequence[Case], flagged: set[str]) -> dict:
     }
 
 
+KEY_GROUPS = {"plain_keys": "plain-", "hidden_keys": "obf-"}  # overall field -> category prefix
+
+
+def key_recall(categories: dict, prefix: str) -> dict:
+    """Recall over the positive categories whose name starts with `prefix` (plain- or obf-)."""
+    group = [c for n, c in categories.items() if n.startswith(prefix) and c["kind"] == "positive"]
+    found = sum(c["found"] for c in group)
+    cases = sum(c["cases"] for c in group)
+    return {"found": found, "cases": cases, "recall": rate(found, cases)}
+
+
 def score(cases: Sequence[Case], hits: Hits) -> dict:
     """Per-category and overall numbers for one tool, given what it reported where.
 
@@ -109,6 +120,8 @@ def score(cases: Sequence[Case], hits: Hits) -> dict:
         for k, v in _summary(cases, anywhere | negatives).items()
         if k in ("tp", "recall", "precision")
     }
+    for field, prefix in KEY_GROUPS.items():  # keys written plainly vs hidden on purpose
+        overall[field] = key_recall(cats, prefix)
     return {"overall": overall, "categories": dict(sorted(cats.items()))}
 
 
@@ -305,9 +318,11 @@ def summary(results: dict) -> str:
     lines = []
     for name, r in results["tools"].items():
         o = r["overall"]
+        plain, hidden = (key_recall(r["categories"], prefix) for prefix in KEY_GROUPS.values())
         lines.append(
             f"{name} {r['version']}: recall {o['recall']} precision {o['precision']} "
-            f"(key found {o['tp']}/{o['tp'] + o['fn']}, any hit in file recall "
+            f"(key found {o['tp']}/{o['tp'] + o['fn']}: plain {plain['found']}/{plain['cases']}, "
+            f"hidden {hidden['found']}/{hidden['cases']}; any hit in file recall "
             f"{o['any_hit']['recall']}, false positives {o['fp']}/{o['fp'] + o['tn']})"
         )
     if results["not_run"]:

@@ -94,6 +94,73 @@ def test_score_math():
     assert cats["neg-z"]["false_positives"] == 1 and cats["neg-z"]["false_positive_rate"] == 0.25
 
 
+def test_score_splits_recall_into_plain_and_hidden_keys():
+    hits = {"p-0": [(2, 2)], "o-0": [(5, 6)], "n-1": [(1, 1)]}
+    overall = benchmark.score(_cases(), hits)["overall"]
+    assert overall["plain_keys"] == {"found": 1, "cases": 2, "recall": 0.5}
+    assert overall["hidden_keys"] == {"found": 1, "cases": 1, "recall": 1.0}
+    assert benchmark.score(_cases(), {})["overall"]["hidden_keys"]["recall"] == 0.0
+
+
+def _results(categories: dict[str, dict[str, dict]]) -> dict:
+    """A results file for the page, with the given categories per tool."""
+    tools = {}
+    for tool, cats in categories.items():
+        found = sum(c.get("found", 0) for c in cats.values())
+        cases = sum(c["cases"] for c in cats.values() if c["kind"] == "positive")
+        tools[tool] = {
+            "version": "9.9.9",
+            "overall": {
+                "tp": found,
+                "fn": cases - found,
+                "fp": 0,
+                "tn": 7,
+                "recall": found / cases,
+                "precision": 1.0,
+                "any_hit": {"recall": found / cases},
+            },
+            "categories": cats,
+        }
+    return {
+        "generated": "2026-11-07",
+        "seed": 1,
+        "corpus": {"cases": 21, "positives": 14, "negatives": 7},
+        "tools": tools,
+        "not_run": [],
+    }
+
+
+def _positive(found: int) -> dict:
+    return {"kind": "positive", "cases": 7, "found": found}
+
+
+def test_page_shows_plain_and_hidden_recall_per_tool():
+    negative = {"kind": "negative", "cases": 7, "false_positives": 0}
+    results = _results(
+        {
+            "agentprint": {"plain-a": _positive(7), "obf-b": _positive(6), "neg-c": negative},
+            "gitleaks": {"plain-a": _positive(5), "obf-b": _positive(1), "neg-c": negative},
+        }
+    )
+    page = gen_docs.benchmark_page(results)
+    header = next(line for line in page.splitlines() if line.startswith("| Tool |"))
+    assert "| Recall, plain keys | Recall, hidden keys |" in header
+    rows = {line.split(" | ")[0]: line for line in page.splitlines() if line.startswith("| ")}
+    assert "| 100% (7 of 7) | 86% (6 of 7) |" in rows["| agentprint"]
+    assert "| 71% (5 of 7) | 14% (1 of 7) |" in rows["| gitleaks"]
+    assert "7 of the 14 keys are hidden" in page
+
+
+def test_page_says_the_hidden_rows_favour_agentprint_and_partial_matches_count():
+    results = json.loads((ROOT / "bench" / "results.json").read_text(encoding="utf-8"))
+    page = " ".join(gen_docs.benchmark_page(results).split())
+    assert "The hidden-key rows favour agentprint:** they test the tricks this release" in page
+    assert "written alongside the new detection" in page
+    assert "counts even when only part of the key matched" in page
+    assert "split string\" hits, for example, are matches of the key's first part" in page
+    assert "jwt in token field" in page
+
+
 def test_a_finding_off_the_key_line_does_not_count_but_shows_in_any_hit():
     hits = {"p-0": [(9, 9)], "p-1": [(0, 0)], "o-0": [(1, 2)]}
     result = benchmark.score(_cases(), hits)

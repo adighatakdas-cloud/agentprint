@@ -43,6 +43,7 @@ from agentprint.ui import fixview
 from agentprint.ui.results import render
 from agentprint.ui.theme import theme
 from agentprint.ui.welcome import welcome_lines
+from tools.benchmark import key_recall
 
 ROOT = Path(__file__).resolve().parents[1]
 SITE = ROOT / "site"
@@ -152,6 +153,12 @@ def _bench_name(category: str) -> str:
     return {"plain": f"plain, in {rest}", "obf": f"hidden: {rest}"}.get(kind, rest)
 
 
+def _key_group(categories: dict, prefix: str) -> str:
+    """Recall over the plain- or obf- positive rows, as "95% (40 of 42)"."""
+    group = key_recall(categories, prefix)
+    return f"{_pct(group['recall'])} ({group['found']} of {group['cases']})"
+
+
 def benchmark_page(results: dict) -> str:
     """The benchmark page: numbers come from bench/results.json, prose is fixed here."""
     tools = [t for t in BENCH_TOOLS if t in results["tools"]]
@@ -165,17 +172,19 @@ def benchmark_page(results: dict) -> str:
         else "All three tools were included in this run."
     )
     rows = [
-        "| Tool | Version | Recall | Precision | Keys found | False positives"
-        " | Recall, any hit in file |",
-        "|---|---|---|---|---|---|---|",
+        "| Tool | Version | Recall | Recall, plain keys | Recall, hidden keys | Precision"
+        " | Keys found | False positives | Recall, any hit in file |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for t in tools:
         r = results["tools"][t]
         o = r["overall"]
+        # From the categories, so a results file written before these columns renders too.
+        plain, hidden = (_key_group(r["categories"], prefix) for prefix in ("plain-", "obf-"))
         rows.append(
-            f"| {t} | {r['version']} | {_pct(o['recall'])} | {_pct(o['precision'])} "
-            f"| {o['tp']} of {o['tp'] + o['fn']} | {o['fp']} of {o['fp'] + o['tn']} "
-            f"| {_pct(o['any_hit']['recall'])} |"
+            f"| {t} | {r['version']} | {_pct(o['recall'])} | {plain} | {hidden} "
+            f"| {_pct(o['precision'])} | {o['tp']} of {o['tp'] + o['fn']} "
+            f"| {o['fp']} of {o['fp'] + o['tn']} | {_pct(o['any_hit']['recall'])} |"
         )
     overall = "\n".join(rows)
     cats = {}
@@ -202,6 +211,7 @@ def benchmark_page(results: dict) -> str:
         "generated": results["generated"],
         "cases": str(corpus["cases"]),
         "positives": str(corpus["positives"]),
+        "hidden_cases": str(key_recall(results["tools"][tools[0]]["categories"], "obf-")["cases"]),
         "negatives": str(corpus["negatives"]),
         "seed": str(results["seed"]),
         "ran": ran,
