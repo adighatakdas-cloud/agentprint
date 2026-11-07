@@ -32,12 +32,13 @@ def _git(root, *args):
     )
 
 
+def _rel(location: str) -> str:
+    """The finding's path from the project folder, with forward slashes on every OS."""
+    return location.replace("\\", "/").rsplit("agents-proj/", 1)[1]
+
+
 def _ap007(findings):
-    return sorted(
-        (f.location.rsplit("agents-proj/", 1)[1], f.detail)
-        for f in findings
-        if f.check_id == "AP007"
-    )
+    return sorted((_rel(f.location), f.detail) for f in findings if f.check_id == "AP007")
 
 
 def test_ap007_is_registered():
@@ -55,7 +56,7 @@ def test_personal_files_not_ignored_are_reported(agents_project, isolated_git):
     (agents_project / "CLAUDE.local.md").write_text("my notes\n")
     _git(agents_project, "init", "-q")
     findings = [f for f in scan(None, agents_project) if f.check_id == "AP007"]
-    assert sorted(f.location.rsplit("agents-proj/", 1)[1] for f in findings) == [
+    assert sorted(_rel(f.location) for f in findings) == [
         ".claude/settings.local.json",
         ".gemini/.env",
         "CLAUDE.local.md",

@@ -52,7 +52,7 @@ def home(tmp_path) -> Path:
 
 def snapshot(root: Path) -> dict[str, bytes | None]:
     return {
-        str(p.relative_to(root)): (None if p.is_dir() else p.read_bytes())
+        p.relative_to(root).as_posix(): (None if p.is_dir() else p.read_bytes())
         for p in sorted(root.rglob("*"))
     }
 
@@ -176,7 +176,7 @@ def test_only_detected_agents_are_touched(tmp_path):
     home = tmp_path / "home"
     (home / ".claude").mkdir(parents=True)
     assert run("install", "--home", str(home)).exit_code == 0
-    assert (home / ".claude" / "settings.json").is_file()
+    assert (home / ".claude.json").is_file()  # the MCP entry; hooks (settings.json) are POSIX-only
     assert not (home / ".cursor").exists() and not (home / ".codex").exists()
 
 

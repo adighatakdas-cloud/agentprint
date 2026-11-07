@@ -58,6 +58,7 @@ def test_permissions_are_empty_at_the_top_and_minimal_on_the_job():
     }
 
 
+@pytest.mark.posix_only  # runs the workflow step with bash
 def test_fail_on_none_is_refused_before_anything_runs():
     first = _steps()[0]
     assert first["run"].count("none)") == 1
@@ -72,6 +73,7 @@ def test_fail_on_none_is_refused_before_anything_runs():
     assert bash.returncode == 2 and "refused" in bash.stdout
 
 
+@pytest.mark.posix_only  # runs the workflow step with bash
 @pytest.mark.parametrize(
     ("command", "path", "fail_on", "code"),
     [
@@ -108,6 +110,7 @@ def test_installs_the_released_agentprint_pinned_by_one_constant():
     assert released and version == released.group(0)
 
 
+@pytest.mark.posix_only  # runs the workflow step with bash
 def test_pack_is_refused_with_a_pointer_to_the_action():
     env = {"AP_COMMAND": "pack", "AP_PATH": ".", "AP_FAIL_ON": "high", "PATH": "/usr/bin:/bin"}
     result = subprocess.run(

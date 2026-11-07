@@ -231,8 +231,9 @@ def test_human_needs_you_is_written_for_a_person(world, monkeypatch):
         assert phrase not in result.output, phrase
     words = _person_words(result.output)
     assert "https://platform.openai.com/api-keys. Treat the old key as public." in words
+    settings = os.sep.join(["", "fake-home", ".claude", "settings.json"])  # \ on Windows
     assert (
-        '/fake-home/.claude/settings.json" line 4: permissions.allow grants "Bash(*)": the '
+        f'{settings}" line 4: permissions.allow grants "Bash(*)": the '
         "agent acts without asking. Delete this entry"
     ) in words
     agent = _fix(world, "--dry-run", "--format", "agent").output  # the agent's words stay
@@ -291,6 +292,7 @@ def _normalise(text: str, tmp_path: Path) -> str:
     return text.replace(str(tmp_path), "<TMP>").replace(__version__, "<VERSION>")
 
 
+@pytest.mark.posix_only  # snapshot holds POSIX paths and the 2 permission fixes
 @needs_demo
 def test_agent_format_snapshot(world, tmp_path):
     result = _fix(world, "--yes", "--format", "agent")

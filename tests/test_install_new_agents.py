@@ -47,7 +47,7 @@ def _uninstall(home, names=None):
 
 def snapshot(root: Path) -> dict[str, bytes | None]:
     return {
-        str(p.relative_to(root)): (None if p.is_dir() else p.read_bytes())
+        p.relative_to(root).as_posix(): (None if p.is_dir() else p.read_bytes())
         for p in sorted(root.rglob("*"))
     }
 
@@ -114,6 +114,7 @@ def test_hermes_config_gets_hook_and_server_and_keeps_comments(home):
     assert "inactive until you approve it" in out and "hermes chat" in out
 
 
+@pytest.mark.posix_only  # asserts hook entries; Windows installs no hooks
 def test_hermes_users_lines_stay_byte_for_byte(home):
     _install(home, ["hermes"])
     lines = (home / ".hermes" / "config.yaml").read_text().splitlines()
@@ -121,6 +122,7 @@ def test_hermes_users_lines_stay_byte_for_byte(home):
     assert "    - matcher: terminal" in lines  # ours follow the file's own list style
 
 
+@pytest.mark.posix_only  # asserts hook entries; Windows installs no hooks
 def test_hermes_flush_list_style_is_followed(tmp_path):
     home = tmp_path / "home"
     flush = "hooks:\n  post_tool_call:\n  - matcher: terminal\n    command: x\n"
@@ -207,6 +209,7 @@ def test_round_trip_is_byte_identical_and_reinstall_changes_nothing(home, agent)
     assert snapshot(home) == before
 
 
+@pytest.mark.posix_only  # asserts hook entries; Windows installs no hooks
 def test_dry_run_over_all_nine_agents_is_a_coherent_plan(tmp_path):
     home = tmp_path / "home"
     for folder in (".claude", ".codex", ".cursor", ".codeium/windsurf", ".devin",

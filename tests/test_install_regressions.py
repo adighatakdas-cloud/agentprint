@@ -29,7 +29,7 @@ def _uninstall(home, names=None, dry_run=False, echo=QUIET):
 
 def snapshot(root: Path) -> dict[str, bytes | None]:
     return {
-        str(p.relative_to(root)): (None if p.is_dir() else p.read_bytes())
+        p.relative_to(root).as_posix(): (None if p.is_dir() else p.read_bytes())
         for p in sorted(root.rglob("*"))
     }
 
