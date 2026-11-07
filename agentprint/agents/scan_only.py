@@ -16,15 +16,12 @@ kilo   https://kilo.ai/docs/code-with-ai/agents/session-history, https://kilo.ai
 qwen   github.com/QwenLM/qwen-code docs/users/configuration/settings.md, features/memory.md
 crush  github.com/charmbracelet/crush README and schema.json (data_directory ".crush")
 goose  https://goose-docs.ai/docs/guides/config-files, https://goose-docs.ai/docs/guides/logs
-kiro   https://kiro.dev/docs/mcp/configuration/, https://kiro.dev/docs/configuration/
-factory https://docs.factory.com/droid-cli/settings.md, https://docs.factory.com/harness/mcp.md
 continue https://docs.continue.dev/faqs, github.com/continuedev/continue core/util/paths.ts
 zed    github.com/zed-industries/zed crates/agent/src/db.rs (threads/threads.db)
 pi     github.com/earendil-works/pi packages/coding-agent/docs/{configuration,mcp}.md
 openclaw https://docs.openclaw.ai/help/environment, .../gateway/security/secrets-and-storage
 warp   ~/Library/Group Containers/<team>.dev.warp/.../warp.sqlite (name verified on macOS)
 roo    https://roocodeinc.github.io/Roo-Code/features/settings-management, .../using-mcp-in-roo
-augment https://docs.augmentcode.com/cli/config, .../cli/automation/service-accounts
 
 Ruling (Zed): .zed/settings.json is not flagged. It can hold context_servers keys, but a path
 rule can't see that, and editor settings are committed on purpose in many repos.
@@ -152,20 +149,6 @@ SCAN_ONLY_AGENTS: tuple[ScanOnlyAgent, ...] = (
             ),
         ],
     ),
-    _agent("kiro", [(r"(^|/)\.kiro/settings/mcp\.json$", L, MCP_WHY)]),
-    _agent(
-        "factory-droid",
-        [
-            (r"(^|/)\.factory/sessions/", H, "Factory Droid session transcripts."),
-            (
-                r"(^|/)\.factory/settings\.local\.json$",
-                M,
-                "Personal Factory Droid settings; meant to be gitignored.",
-            ),
-            (r"(^|/)\.factory/mcp\.json$", L, MCP_WHY),
-        ],
-        ((".factory/settings.local.json", Kind.SETTINGS, True),),
-    ),
     _agent(
         "continue",
         [
@@ -223,13 +206,5 @@ SCAN_ONLY_AGENTS: tuple[ScanOnlyAgent, ...] = (
             ),
             (r"(^|/)\.roo/mcp\.json$", L, MCP_WHY),
         ],
-    ),
-    _agent(
-        "augment",
-        [
-            (r"(^|/)\.augment/session\.json$", H, "Augment (Auggie) login token in plain text."),
-            (r"(^|/)\.augment/settings\.local\.json$", M, "Personal Augment settings."),
-        ],
-        ((".augment/settings.local.json", Kind.SETTINGS, True),),
     ),
 )

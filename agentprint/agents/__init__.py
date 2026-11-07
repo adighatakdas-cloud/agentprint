@@ -1,14 +1,20 @@
 """Registry of supported agents. Add a new agent here; checks pick it up automatically."""
 
+from .amp import Amp
 from .antigravity import Antigravity
+from .augment import Augment
 from .base import Agent
 from .claude_code import ClaudeCode
+from .claude_desktop import ClaudeDesktop
 from .cline import Cline
 from .codex import Codex
 from .copilot import Copilot
 from .cursor import Cursor
+from .factory_droid import FactoryDroid
 from .gemini import Gemini
 from .hermes import Hermes
+from .junie import Junie
+from .kiro import Kiro
 from .opencode import OpenCode
 from .scan_only import SCAN_ONLY_AGENTS
 from .windsurf import Windsurf
@@ -27,6 +33,12 @@ ALL_AGENTS: tuple[Agent, ...] = (
     Hermes(),
     Antigravity(),
     Cline(),
+    ClaudeDesktop(),
+    Kiro(),
+    FactoryDroid(),
+    Augment(),
+    Amp(),
+    Junie(),
     *SCAN_ONLY_AGENTS,
 )
 

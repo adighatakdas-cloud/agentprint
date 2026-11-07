@@ -68,3 +68,102 @@ def cline(home: Path) -> None:
     task = home / MAC_CODE / "globalStorage" / "saoudrizwan.claude-dev" / "tasks" / "t1"
     history = [{"role": "user", "content": [{"type": "text", "text": f"deploy {fakes.STRIPE}"}]}]
     write(task / "api_conversation_history.json", json.dumps(history))
+
+
+# --- MCP-config agents ------------------------------------------------------------------------
+
+
+def claude_desktop(home: Path) -> None:
+    app = home / "Library" / "Application Support" / "Claude"
+    brave = stdio("BRAVE_API_KEY", fakes.GENERIC_VALUE, "@brave/brave-search-mcp-server")
+    write(app / "claude_desktop_config.json", json.dumps({"mcpServers": {"brave-search": brave}}))
+    write(home / "Library" / "Logs" / "Claude" / "mcp-server-github.log", f"token {fakes.GITHUB}\n")
+
+
+def claude_desktop_windows(home: Path) -> None:
+    servers = {"stripe": stdio("STRIPE_SECRET_KEY", fakes.STRIPE)}
+    config = home / WIN_APPDATA / "Claude" / "claude_desktop_config.json"
+    write(config, json.dumps({"mcpServers": servers}))
+
+
+def vscode(home: Path) -> None:
+    """VS Code's user and profile mcp.json (read by the Copilot module)."""
+    servers = {"github": stdio("GITHUB_TOKEN", fakes.GITHUB)}
+    write(home / MAC_CODE / "mcp.json", json.dumps({"servers": servers, "inputs": []}))
+    profile = {"servers": {"aws": stdio("AWS_ACCESS_KEY_ID", fakes.AWS)}}
+    write(home / MAC_CODE / "profiles" / "-5f3a1b" / "mcp.json", json.dumps(profile))
+
+
+def kiro(home: Path) -> None:
+    base = home / ".kiro"
+    servers = {
+        "github": stdio("GITHUB_PERSONAL_ACCESS_TOKEN", fakes.GITHUB),
+        "api": remote(fakes.OPENAI),
+    }
+    write(base / "settings" / "mcp.json", json.dumps({"mcpServers": servers}))
+    write(base / "settings" / "cli.json", json.dumps({"chat.defaultModel": "auto"}))
+    hook = {
+        "name": "notify",
+        "trigger": "Stop",
+        "action": {"type": "command", "command": "curl -s https://hooks.example.invalid/x"},
+    }
+    write(base / "hooks" / "notify.json", json.dumps({"version": "v1", "hooks": [hook]}))
+    write(base / "steering" / "product.md", "We build demos.\n")  # instructions: not read
+
+
+def kiro_project(root: Path) -> None:
+    servers = {"slack": stdio("SLACK_BOT_TOKEN", fakes.SLACK)}
+    write(root / ".kiro" / "settings" / "mcp.json", json.dumps({"mcpServers": servers}))
+    write(root / ".kiro" / "specs" / "login" / "design.md", "# design\n")  # plans: not read
+
+
+def factory(home: Path) -> None:
+    base = home / ".factory"
+    model = {"model": "gpt-x", "baseUrl": "https://api.example.invalid", "apiKey": fakes.OPENAI}
+    write(base / "settings.json", json.dumps({"customModels": [model]}))
+    write(base / "mcp.json", json.dumps({"mcpServers": {"api": remote(fakes.STRIPE)}}))
+    hook = {"type": "command", "command": "wget -qO- https://hooks.example.invalid/x"}
+    write(
+        base / "hooks.json", json.dumps({"PreToolUse": [{"matcher": "Execute", "hooks": [hook]}]})
+    )
+    turn = {"role": "user", "content": f"key {fakes.AWS}"}
+    write(base / "sessions" / "-Users-demo-app" / "s1.jsonl", jsonl(turn))
+
+
+def factory_project(root: Path) -> None:
+    write(
+        root / ".factory" / "mcp.json",
+        json.dumps({"mcpServers": {"gh": stdio("GH_TOKEN", fakes.GITHUB)}}),
+    )
+    write(root / ".factory" / "settings.local.json", json.dumps({"model": "x"}))  # personal
+
+
+def augment(home: Path) -> None:
+    base = home / ".augment"
+    hook = {"type": "command", "command": "curl -s https://hooks.example.invalid/x"}
+    settings = {
+        "mcpServers": {"context7": stdio("CONTEXT7_API_KEY", fakes.GENERIC_VALUE)},
+        "hooks": {"PreToolUse": [{"matcher": "bash", "hooks": [hook]}]},
+    }
+    write(base / "settings.json", json.dumps(settings))
+    # Augment's own login: never secret-scanned.
+    write(base / "session.json", json.dumps({"accessToken": fakes.GENERIC_VALUE}))
+
+
+def amp(home: Path) -> None:
+    config = home / ".config" / "amp"
+    servers = {"linear": stdio("LINEAR_API_KEY", fakes.STRIPE), "api": remote(fakes.OPENAI)}
+    write(config / "settings.json", json.dumps({"amp.mcpServers": servers}))
+    write(
+        home / ".local" / "share" / "amp" / "secrets.json", json.dumps({"apiKey": fakes.ANTHROPIC})
+    )
+
+
+def junie(home: Path) -> None:
+    base = home / ".junie"
+    write(base / "mcp" / "mcp.json", json.dumps({"mcpServers": {"api": remote(fakes.GITHUB)}}))
+    hook = {"type": "command", "command": "nc logs.example.invalid 9000"}
+    write(base / "config.json", json.dumps({"hooks": {"Stop": [{"hooks": [hook]}]}}))
+    session = base / "sessions" / "s-0001"
+    write(session / "transcript.md", f"user: my key is {fakes.ANTHROPIC}\n")
+    write(session / "events.jsonl", jsonl({"type": "user", "text": "hello"}))

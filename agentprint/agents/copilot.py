@@ -25,7 +25,16 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
-from .base import artifacts, from_home, hook_commands, is_blanket_command, matches_any, mcp_servers
+from .base import (
+    artifacts,
+    from_home,
+    glob,
+    hook_commands,
+    is_blanket_command,
+    matches_any,
+    mcp_servers,
+    read_mcp_servers,
+)
 
 NAME = "copilot"
 
@@ -66,13 +75,6 @@ def _user_dirs(home: Path) -> list[Path]:
         home / ".config" / "Code" / "User",
         home / "AppData" / "Roaming" / "Code" / "User",
     ]
-
-
-def _glob(base: Path, pattern: str) -> list[Path]:
-    try:
-        return sorted(base.glob(pattern))
-    except OSError:
-        return []
 
 
 def _grants(data: dict[str, Any]) -> tuple[Grant, ...]:
@@ -166,6 +168,8 @@ class Copilot:
             base / "hooks",
             base / "permissions-config.json",
             *(user / name for user in users for name in ("settings.json", "mcp.json")),
+            # Each VS Code profile keeps its own mcp.json (the folder name is not in the docs).
+            *(mcp for user in users for mcp in glob(user / "profiles", "*/mcp.json")),
         )
         yield from artifacts(
             NAME,
@@ -178,7 +182,7 @@ class Copilot:
                 session
                 for user in users
                 for pattern in ("*/chatSessions", "*/chatEditingSessions")
-                for session in _glob(user / "workspaceStorage", pattern)
+                for session in glob(user / "workspaceStorage", pattern)
             ),
             *(
                 user / "globalStorage" / name
@@ -223,7 +227,8 @@ class Copilot:
             return AgentConfig(hooks=hook_commands(data.get("hooks")))
         if path.name in ("mcp-config.json", "mcp.json"):
             if isinstance(data.get("servers"), dict):  # VS Code format: .vscode/mcp.json
-                return AgentConfig(mcp_servers=mcp_servers(data["servers"], _VSCODE_SECRET_FIX))
+                servers = read_mcp_servers(data, _VSCODE_SECRET_FIX, "servers")
+                return AgentConfig(mcp_servers=servers)
             servers = data.get("mcpServers")
             if servers is None and path.parent.name == ".github":
                 servers = data  # project files may leave out the mcpServers wrapper
