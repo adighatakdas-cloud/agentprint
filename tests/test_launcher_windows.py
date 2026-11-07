@@ -13,6 +13,7 @@ it as a hook failure. agentprint is replaced by a Python script that records wha
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -86,11 +87,19 @@ def fake(tmp_path) -> Fake:
     return made
 
 
+def _env() -> dict[str, str]:
+    """The environment an agent gives its hooks: CI's PYTHONUTF8=1 taken out, so the tests see
+    that the launcher sets it."""
+    return {k: v for k, v in os.environ.items() if k.upper() != "PYTHONUTF8"}
+
+
+def _run(args: list[str] | str, payload: bytes):
+    return subprocess.run(args, input=payload, capture_output=True, timeout=120, env=_env())
+
+
 def run_file(shell: str, launcher: Path, *args: str, payload: bytes = PAYLOAD):
     argv = [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]
-    return subprocess.run(
-        [*argv, str(launcher), *args], input=payload, capture_output=True, timeout=120
-    )
+    return _run([*argv, str(launcher), *args], payload)
 
 
 def hook_command(agent: str, launch: Launch) -> str:
@@ -111,10 +120,8 @@ def hook_command(agent: str, launch: Launch) -> str:
 
 def run_as_agent(runner: str, command: str, payload: bytes = PAYLOAD):
     if runner == "cmd.exe":  # codex-rs: %COMSPEC% /C "<commandWindows>", the payload on stdin
-        line = f'cmd.exe /C "{command}"'
-        return subprocess.run(line, input=payload, capture_output=True, timeout=120)
-    argv = [runner, "-NoProfile", "-NonInteractive", "-Command", command]
-    return subprocess.run(argv, input=payload, capture_output=True, timeout=120)
+        return _run(f'cmd.exe /C "{command}"', payload)
+    return _run([runner, "-NoProfile", "-NonInteractive", "-Command", command], payload)
 
 
 def out(result) -> str:
