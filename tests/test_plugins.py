@@ -8,6 +8,7 @@ one stderr line when uvx is missing or fails.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 import shlex
@@ -396,3 +397,91 @@ def test_antigravity_plugin():
     assert hooks[0]["matcher"] == "run_command"
     rule = (folder / "rules" / "agentprint.md").read_text()
     assert yaml.safe_load(rule.split("---\n")[1])["trigger"] == "always_on"
+
+
+# ---- Hermes Agent --------------------------------------------------------------------------------
+
+
+def _hermes(name: str = "agentprint_hermes_plugin"):
+    spec = importlib.util.spec_from_file_location(name, PLUGIN / "hermes" / "__init__.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class _Ctx:
+    def __init__(self):
+        self.hooks: dict = {}
+        self.skills: dict = {}
+
+    def register_hook(self, event, callback):
+        self.hooks[event] = callback
+
+    def register_skill(self, name, path):
+        self.skills[name] = path
+
+
+def test_hermes_manifest():
+    manifest = yaml.safe_load((PLUGIN / "hermes" / "plugin.yaml").read_text())
+    assert manifest["name"] == "agentprint" and manifest["version"] == __version__
+    assert manifest["provides_hooks"] == ["pre_tool_call"]
+
+
+def test_hermes_registers_the_hook_and_the_skill():
+    module, ctx = _hermes(), _Ctx()
+    module.register(ctx)
+    assert ctx.hooks == {"pre_tool_call": module.check}
+    assert Path(ctx.skills["agentprint"]).read_text().endswith(INSTRUCTIONS)
+    hermes_command = module.COMMAND
+    assert hermes_command == list(plugins.guard_argv("hermes"))
+
+
+def test_hermes_skill_failure_keeps_the_hook():
+    class Broken(_Ctx):
+        def register_skill(self, name, path):
+            raise TypeError("wrong arguments")
+
+    module, ctx = _hermes(), Broken()
+    module.register(ctx)
+    assert "pre_tool_call" in ctx.hooks
+
+
+@pytest.mark.posix_only
+def test_hermes_blocks_a_leaky_publish(project, tmp_path, monkeypatch):
+    module = _hermes()
+    bin_dir = tmp_path / "bin"
+    _real_guard_uvx(bin_dir)
+    monkeypatch.setattr(module.shutil, "which", lambda name, path=None: str(bin_dir / "uvx"))
+    monkeypatch.chdir(project)
+    answer = module.check(tool_name="terminal", args={"command": LEAKY_PUBLISH}, task_id="t")
+    assert answer["action"] == "block"
+    assert answer["message"].startswith("agentprint: BLOCK")
+    assert module.check(tool_name="terminal", args={"command": "ls"}, task_id="t") is None
+
+
+def test_hermes_ignores_other_tools_and_fails_open(monkeypatch, capsys):
+    module = _hermes()
+    assert module.check(tool_name="read_file", args={"path": "x"}) is None
+    monkeypatch.setattr(module.shutil, "which", lambda name, path=None: None)
+    for _ in range(3):
+        assert module.check(tool_name="terminal", args={"command": "npm publish"}) is None
+    assert capsys.readouterr().err.splitlines() == [plugins.NO_UVX]  # once, never a loop
+
+    def boom(*args, **kwargs):
+        raise subprocess.TimeoutExpired("uvx", module.TIMEOUT)
+
+    monkeypatch.setattr(module.shutil, "which", lambda name, path=None: "/usr/bin/uvx")
+    monkeypatch.setattr(module.subprocess, "run", boom)
+    assert module.check(tool_name="terminal", args={"command": "npm publish"}) is None
+    assert "TimeoutExpired" in capsys.readouterr().err
+    assert module.TIMEOUT < 30  # Hermes blocks a callback past its 30 s default
+
+
+def test_hermes_strict_block_exit_blocks(monkeypatch):
+    module = _hermes()
+    done = subprocess.CompletedProcess([], BLOCK_EXIT, stdout="", stderr="strict: blocked")
+    monkeypatch.setattr(module.shutil, "which", lambda name, path=None: "/usr/bin/uvx")
+    monkeypatch.setattr(module.subprocess, "run", lambda *a, **k: done)
+    answer = module.check(tool_name="terminal", args={"command": "npm publish"})
+    assert answer == {"action": "block", "message": "strict: blocked"}
