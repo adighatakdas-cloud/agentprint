@@ -3,6 +3,9 @@
 # --signer-workflow` proves these steps, which the caller cannot edit, produced the verdict.
 # It installs the released agentprint from PyPI, so it works from v0.1.0.
 #
+# Only `scan` is supported: it reads files and runs none of the caller's code. `pack` runs the
+# caller's build, so packages use the action-based badge mode instead.
+#
 # Caller (push-only, default branch):
 #   jobs:
 #     badge:
@@ -14,10 +17,10 @@ on:
   workflow_call:
     inputs:
       command:
-        description: "`pack` checks what your package would publish; `scan` checks the repository's agent files."
+        description: "Only `scan` (the repository's agent files) is supported here; it runs none of your code. Use the action for `pack`."
         type: string
         required: false
-        default: pack
+        default: scan
       path:
         description: Project directory, relative to the repository root.
         type: string
@@ -50,8 +53,8 @@ jobs:
       - name: Check the inputs
         shell: bash
         run: |
-          case "$AP_COMMAND" in scan | pack) ;; *)
-            echo "::error title=agentprint::input 'command' must be 'scan' or 'pack'"
+          case "$AP_COMMAND" in scan) ;; *)
+            echo "::error title=agentprint::this workflow only supports command 'scan', because checking a package (pack) runs your build. Use the agentprint action with badge-dir for packages."
             exit 2
             ;;
           esac
@@ -85,14 +88,17 @@ jobs:
         shell: bash
         env:
           COLUMNS: "160"
+          UV_NO_CONFIG: "1" # never read the repository's uv.toml or pyproject.toml [tool.uv]
         run: |
           set +e
           set -uo pipefail
           AP_BADGE_DIR="$RUNNER_TEMP/agentprint-badge"
           mkdir -p "$AP_BADGE_DIR"
-          case "$AP_COMMAND" in scan) cmd=(scan --no-home) ;; *) cmd=(pack) ;; esac
-          uvx --from "agentprint==$AGENTPRINT_VERSION" agentprint "${cmd[@]}" \
-            --fail-on "$AP_FAIL_ON" --format table --badge "$AP_BADGE_DIR" -- "$AP_PATH"
+          # Run from outside the checkout so no repository file can steer uv, and point at the
+          # repository by absolute path. scan only reads files; it runs none of the repo's code.
+          cd "$RUNNER_TEMP" || exit 2
+          uvx --no-config --from "agentprint==$AGENTPRINT_VERSION" agentprint scan --no-home \
+            --fail-on "$AP_FAIL_ON" --format table --badge "$AP_BADGE_DIR" -- "$GITHUB_WORKSPACE/$AP_PATH"
           code=$?
           echo "exit-code=$code" >> "$GITHUB_OUTPUT"
           if [ "$code" -le 1 ] && [ -f "$AP_BADGE_DIR/badge.json" ] && [ -f "$AP_BADGE_DIR/verdict.json" ]; then
@@ -124,16 +130,15 @@ jobs:
         shell: bash
         run: echo "::notice title=agentprint::badge not signed, this repository is private (build attestations need a public repository)"
 
-      # The publish script lives in agentprint's repository, at the release tag. Checked out only
-      # now, so the scan above never saw it.
+      # The publish script lives in agentprint's repository, at the release tag. Cloned outside
+      # the workspace (public repository, no credentials) so nothing in the caller's checkout can
+      # stand in for it.
       - name: Fetch the publish script
         if: steps.run.outputs.badge-file != '' && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: adighatakdas-cloud/agentprint
-          ref: v${{ env.AGENTPRINT_VERSION }}
-          path: .agentprint-tool
-          persist-credentials: false
+        shell: bash
+        run: |
+          git clone --quiet --depth 1 --branch "v$AGENTPRINT_VERSION" \
+            https://github.com/adighatakdas-cloud/agentprint.git "$RUNNER_TEMP/agentprint-tool"
 
       - name: Publish badge to the agentprint-badge branch
         if: steps.run.outputs.badge-file != '' && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
@@ -143,7 +148,7 @@ jobs:
           AP_PUBLISH_MODE: "true"
           AP_REPOSITORY: ${{ github.repository }}
           AP_TOKEN: ${{ github.token }}
-        run: bash .agentprint-tool/scripts/publish-badge.sh
+        run: bash "$RUNNER_TEMP/agentprint-tool/scripts/publish-badge.sh"
 
       # Last, so the badge is signed and published even when findings fail the job.
       - name: Finish with agentprint's exit code

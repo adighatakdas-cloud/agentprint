@@ -170,8 +170,11 @@ def test_badge_page_offers_both_modes_and_recommends_signed_by_agentprint():
     assert "uses: adighatakdas-cloud/agentprint/.github/workflows/badge.yml@v0.1.0" in text
     assert "--signer-workflow adighatakdas-cloud/agentprint/.github/workflows/badge.yml" in text
     assert "works from v0.1.0" in text
+    assert "supports `scan` only" in text and "`command: pack` is refused" in text
+    assert "uvx --no-config" in text and "runs none of your code" in text
     assert "`path`" in text and "`command`" in text and "`fail_on`" in text
-    assert "proves" in text and "agentprint's own" in text
+    assert "proves" in text and "agentprint's workflow file" in text
+    assert "cannot edit" not in text
     assert "fail-on: none" in text and "refused" in text
 
 

@@ -25,7 +25,7 @@ It does not prove the workflow ran agentprint unchanged. The repository owner co
 
 ## Signed by agentprint (recommended)
 
-Your workflow calls a reusable workflow that lives in the agentprint repository. It checks out your repository, installs the released agentprint from PyPI, scans, and signs the result. Because the signature names agentprint's own workflow file, a passing check proves that agentprint's own steps, which you cannot edit, produced the verdict.
+Your workflow calls a reusable workflow that lives in the agentprint repository. It checks out your repository, installs the released agentprint from PyPI, runs `agentprint scan`, and signs the result. The signature names agentprint's workflow file, so a check that names it shows the signing workflow was agentprint's, not one in your repository.
 
 Add this to `.github/workflows/agentprint.yml`:
 
@@ -41,21 +41,21 @@ jobs:
       id-token: write       # signs with GitHub's OIDC identity
       attestations: write   # stores the attestation
     uses: adighatakdas-cloud/agentprint/.github/workflows/badge.yml@v0.1.0  # better: pin the release's commit SHA
-    with:
-      command: pack
 ```
 
-The inputs are `command` (`pack` or `scan`, default `pack`), `path` (relative to your repository, default `.`) and `fail-on` (default `high`). `fail-on: none` is refused: a report-only run must never publish a signed CLEAR. Like the other mode, it only signs and publishes on a push to the default branch of a public repository.
+The inputs are `command` (only `scan`, the default), `path` (relative to your repository, default `.`) and `fail-on` (default `high`). `fail-on: none` is refused: a report-only run must never publish a signed CLEAR. Like the other mode, it only signs and publishes on a push to the default branch of a public repository.
+
+This mode supports `scan` only, and `command: pack` is refused. `scan` reads files and runs none of your code. Checking a package means running your build, and build code could tamper with the result before it is signed, so for packages use the action-based mode below. agentprint runs from outside your checkout with `uvx --no-config`, so a `uv.toml` or `[tool.uv]` setting in your repository cannot change which agentprint is installed.
 
 In this mode `verdict.json` also holds the `path` that was scanned (relative) and the `command`, so a verifier can see the whole repository was checked and not an empty folder. They are public repositories and the path is relative, so nothing private is added. The other mode leaves them out.
 
 A passing check, bound to the current commit, proves:
 
-- agentprint's own workflow file, at the release you pinned, signed this exact badge file.
+- agentprint's workflow file, at the release you pinned, ran `scan` on that commit with uv isolated from your repository's config, and signed this exact badge file.
 - It was signed on the default branch, at the commit you name.
 - The verdict, with `path`, `command`, `fail_on` and `version`, is attached to the signature.
 
-It does not prove the repository is safe: one scan, with those settings, gave that verdict. An old CLEAR file is byte-identical to a new one, so always bind the check to the current commit. The `pack` command runs your project's own build, so project code runs in that job.
+It does not prove the repository is safe: one scan, with those settings, gave that verdict. An old CLEAR file is byte-identical to a new one, so always bind the check to the current commit.
 
 Verify it with the commands [below](#verify-a-badge), using the signer workflow `adighatakdas-cloud/agentprint/.github/workflows/badge.yml`.
 

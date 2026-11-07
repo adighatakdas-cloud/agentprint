@@ -42,7 +42,7 @@ def _action_step(name: str) -> dict:
 def test_is_a_reusable_workflow_with_three_inputs_and_safe_defaults():
     call = _load()["on"]["workflow_call"]
     assert set(call["inputs"]) == {"command", "path", "fail-on"}
-    assert call["inputs"]["command"]["default"] == "pack"
+    assert call["inputs"]["command"]["default"] == "scan"
     assert call["inputs"]["path"]["default"] == "."
     assert call["inputs"]["fail-on"]["default"] == "high"
     assert set(_load()["on"]) == {"workflow_call"}  # nothing else can trigger it
@@ -65,7 +65,7 @@ def test_fail_on_none_is_refused_before_anything_runs():
     assert "uses" not in first
     bash = subprocess.run(
         ["bash", "-c", first["run"]],
-        env={"AP_COMMAND": "pack", "AP_PATH": ".", "AP_FAIL_ON": "none", "PATH": "/usr/bin:/bin"},
+        env={"AP_COMMAND": "scan", "AP_PATH": ".", "AP_FAIL_ON": "none", "PATH": "/usr/bin:/bin"},
         capture_output=True,
         text=True,
     )
@@ -75,13 +75,14 @@ def test_fail_on_none_is_refused_before_anything_runs():
 @pytest.mark.parametrize(
     ("command", "path", "fail_on", "code"),
     [
-        ("pack", ".", "high", 0),
+        ("pack", ".", "high", 2),
         ("scan", "sub/dir", "low", 0),
+        ("scan", ".", "high", 0),
         ("other", ".", "high", 2),
-        ("pack", "/etc", "high", 2),
-        ("pack", "../x", "high", 2),
-        ("pack", "a/../b", "high", 2),
-        ("pack", ".", "everything", 2),
+        ("scan", "/etc", "high", 2),
+        ("scan", "../x", "high", 2),
+        ("scan", "a/../b", "high", 2),
+        ("scan", ".", "everything", 2),
     ],
 )
 def test_input_check(command, path, fail_on, code):
@@ -100,11 +101,40 @@ def test_installs_the_released_agentprint_pinned_by_one_constant():
     assert re.search(r"^\s*# bumped by the release checklist", text, re.M)
     assert text.count("AGENTPRINT_VERSION:") == 1
     run = _named("Run agentprint")["run"]
-    assert 'uvx --from "agentprint==$AGENTPRINT_VERSION" agentprint' in run
+    assert '--from "agentprint==$AGENTPRINT_VERSION" agentprint' in run
     assert "--badge" in run
     # the constant is the version in the source tree, minus any .dev/pre-release suffix
     released = re.match(r"\d+\.\d+\.\d+", agentprint.__version__)
     assert released and version == released.group(0)
+
+
+def test_pack_is_refused_with_a_pointer_to_the_action():
+    env = {"AP_COMMAND": "pack", "AP_PATH": ".", "AP_FAIL_ON": "high", "PATH": "/usr/bin:/bin"}
+    result = subprocess.run(
+        ["bash", "-c", _steps()[0]["run"]], env=env, capture_output=True, text=True
+    )
+    assert result.returncode == 2 and "action" in result.stdout and "pack" in result.stdout
+
+
+def test_agentprint_runs_isolated_from_the_repository_and_never_runs_its_code():
+    step = _named("Run agentprint")
+    assert step["env"]["UV_NO_CONFIG"] == "1"
+    run = step["run"]
+    assert 'cd "$RUNNER_TEMP"' in run and run.index("cd ") < run.index("uvx")
+    assert "uvx --no-config --from" in run
+    assert "agentprint scan --no-home" in run and "pack" not in run
+    assert '"$GITHUB_WORKSPACE/$AP_PATH"' in run
+
+
+def test_the_publish_script_is_cloned_outside_the_workspace():
+    fetch = _named("Fetch the publish script")
+    assert "uses" not in fetch
+    assert '"$RUNNER_TEMP/agentprint-tool"' in fetch["run"]
+    assert '--branch "v$AGENTPRINT_VERSION"' in fetch["run"]
+    assert (
+        '"$RUNNER_TEMP/agentprint-tool/scripts/publish-badge.sh"' in _named("Publish badge")["run"]
+    )
+    assert ".agentprint-tool" not in WORKFLOW.read_text()
 
 
 def test_checks_out_the_callers_repository_without_credentials():
@@ -139,8 +169,7 @@ def test_publish_gate_matches_the_actions_and_uses_the_same_script():
     assert "scripts/publish-badge.sh" in publish["run"]
     fetch = _named("Fetch the publish script")
     assert fetch["if"] == publish["if"]
-    assert fetch["with"]["repository"] == "adighatakdas-cloud/agentprint"
-    assert fetch["with"]["persist-credentials"] is False
+    assert "adighatakdas-cloud/agentprint.git" in fetch["run"]
 
 
 def test_the_tool_checkout_comes_after_the_scan():
