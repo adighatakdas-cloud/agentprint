@@ -99,6 +99,16 @@ _RELEASE_WORD = re.compile(
     r"|semantic-release)(?![a-z])",
     re.I,
 )
+# A script's own folder, as scripts spell it: $(dirname "$0"), ${BASH_SOURCE%/*},
+# $(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd), `dirname $0`.
+_SELF = r"\$(?:0|\{0\}|\{BASH_SOURCE(?:\[0\])?\}|BASH_SOURCE(?:\[0\])?)"
+_DIRNAME = rf"\$\(\s*dirname\s+(?:\"{_SELF}\"|{_SELF})\s*\)|`\s*dirname\s+\"?{_SELF}\"?\s*`"
+_STRIP = r"\$\{(?:0|BASH_SOURCE(?:\[0\])?)%/\*\}"
+_OWN_FOLDER = re.compile(
+    rf"\$\(\s*cd\s+(?:\"(?:{_DIRNAME}|{_STRIP})\"|{_DIRNAME}|{_STRIP})\s*(?:&&|;)\s*pwd(?:\s+-P)?\s*\)"
+    rf"|{_DIRNAME}|{_STRIP}"
+)
+
 # Why agentprint could not check something, after "could not check `<label>`: ".
 _CODE = "it runs `{what}` from code agentprint does not read as commands"
 _TASK = "it runs `{what}` from a Taskfile task, which agentprint does not read as commands"
@@ -335,13 +345,30 @@ def _fragment(text: str) -> str:
     return line if len(line) <= 60 else line[:57] + "..."
 
 
+def _own_folder(text: str, folder: Path) -> str:
+    """A shell script with `$(dirname "$0")` and friends replaced by its own folder, and the
+    variables set to that folder (`ROOT="$(cd "$(dirname "$0")/.." && pwd)"`) filled in."""
+    where = str(folder)
+    text = _OWN_FOLDER.sub(lambda _: where, text)
+    assigned = re.findall(
+        r"(?m)^[ \t]*(?:export[ \t]+|readonly[ \t]+|local[ \t]+|declare[ \t]+)?([A-Za-z_]\w*)="
+        r"(\"?)(" + re.escape(where) + r"[^\"\s;&|]*)\2[ \t]*(?:;|$)",
+        text,
+    )
+    for variable, _, value in assigned:
+        text = re.sub(rf"\$\{{{variable}\}}|\${variable}\b", lambda _, v=value: v, text)
+    return text
+
+
 def _script(
     arg: str, cwd: Path, depth: int, runner: str | None = None, unknown: str = ""
 ) -> list[c.Risky]:
-    """`./release.sh`, `bash scripts/release.sh`, `python release.py`: what the file runs."""
+    """`./release.sh`, `bash scripts/release.sh`, `python release.py`: what the file runs.
+
+    `unknown` is set when an earlier `cd` went somewhere only known at run time."""
     file = _read(arg, cwd)
     if file is None:
-        return []
+        return _lost(arg, cwd, depth, unknown)
     program = runner or recipes.interpreter(
         file.text if file.text is not None else file.first_line, file.name
     )
@@ -350,8 +377,19 @@ def _script(
     reading = _reading(cwd)
     key = (file.path, cwd, program, depth, reading.peeking)
     if key not in reading.results:
-        reading.results[key] = _step(recipes.Step(file.text, program), file.name, cwd, depth)
+        text = _own_folder(file.text, file.path.parent) if _is_shell(program) else file.text
+        reading.results[key] = _step(recipes.Step(text, program), file.name, cwd, depth)
     return list(reading.results[key])
+
+
+def _lost(arg: str, cwd: Path, depth: int, unknown: str) -> list[c.Risky]:
+    """A script a followed file runs after a `cd` to a folder only known at run time, which
+    isn't where agentprint looked: "could not check" when it looks like a release."""
+    if not unknown or depth == 0 or c._UNKNOWABLE.search(arg) or os.path.lexists(cwd / arg):
+        return []
+    if not _looks_like_release(arg):
+        return []
+    return [c.Risky(c.Action.publish, "sh", cwd, unsure=unknown, label=arg)]
 
 
 def _shell_file_arg(args: list[str]) -> str | None:

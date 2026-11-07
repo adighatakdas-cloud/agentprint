@@ -215,6 +215,47 @@ def test_a_bad_quote_does_not_hide_the_rest_of_a_script(leaky, files):
     assert evaluate("./release.sh", root).block
 
 
+# ---- a script's own folder ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'cd "$(dirname "$0")"',
+        "cd $(dirname $0)",
+        'cd "$(dirname "${BASH_SOURCE[0]}")"',
+        'cd "${BASH_SOURCE%/*}"',
+        'cd "${0%/*}"',
+        'cd "$(cd "$(dirname "$0")" && pwd)"',
+        'HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\ncd "$HERE"',
+    ],
+)
+def test_cd_to_the_scripts_own_folder(leaky, line):
+    root = _repo(
+        leaky,
+        {
+            "scripts/release.sh": f"#!/bin/sh\n{line}\n./publish-npm.sh\n",
+            "scripts/publish-npm.sh": "npm publish ../demo-1.0.0.tgz\n",
+        },
+    )
+    assert evaluate("./scripts/release.sh", root).block
+
+
+def test_a_missing_script_after_an_unknown_cd_is_could_not_check_when_it_looks_like_a_release(
+    tmp_path,
+):
+    root = _repo(
+        tmp_path,
+        {
+            "release.sh": 'cd "$PKG_DIR"\n./publish.sh\n',
+            "build.sh": 'cd "$BUILD_DIR"\n./configure\n',
+        },
+    )
+    verdict = evaluate("./release.sh", root)
+    assert not verdict.block and "could not check `./publish.sh`" in verdict.warning
+    assert evaluate("./build.sh", root) is None
+
+
 def test_could_not_check_names_the_file_and_the_next_step():
     from pathlib import Path
 
