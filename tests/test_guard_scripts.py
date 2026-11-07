@@ -296,3 +296,61 @@ def test_a_script_with_windows_line_ends_is_read_the_same(leaky):
         f"#!/bin/sh\r\n{line}\r\n./publish-npm.sh\r\n".encode()
     )
     assert evaluate("./scripts/release.sh", leaky).block
+
+
+# ---- a `$'` inside an ordinary quote is a regex end, not an ANSI-C string --------------------
+
+CLEAN = {
+    "package/package.json": b'{"name": "demo", "version": "1.0.0"}',
+    "package/index.js": b"1\n",
+}
+
+
+@pytest.mark.parametrize(
+    ("command", "script"),
+    [
+        ("grep -q '1.0.0$' CHANGELOG.md && npm publish demo-1.0.0.tgz --tag 'next'", None),
+        ("./release.sh", "#!/bin/sh\nif grep -q 'release$' notes.txt; then\n"
+         "  npm publish demo-1.0.0.tgz\nfi\necho 'a' 'b'\n"),
+    ],
+    ids=["command-line", "script"],
+)  # fmt: skip
+def test_a_dollar_at_the_end_of_a_quoted_regex_is_just_text(leaky, command, script):
+    if script:
+        _script(leaky, "release.sh", script)
+    assert evaluate(command, leaky).block
+
+
+@pytest.mark.parametrize(
+    ("command", "script"),
+    [
+        ("grep -q 'v1$' CHANGELOG.md && cd pkg && echo 'ok'; npm publish demo-1.0.0.tgz", None),
+        ("./release.sh", "#!/bin/sh\nset -e\ngrep -q 'v1$' CHANGELOG.md && cd pkg && echo 'ok'\n"
+         "npm publish demo-1.0.0.tgz\n"),
+    ],
+    ids=["command-line", "script"],
+)  # fmt: skip
+def test_a_dollar_quote_does_not_swallow_a_cd(tmp_path, command, script):
+    (tmp_path / "pkg").mkdir()
+    _tgz(tmp_path / "demo-1.0.0.tgz", CLEAN)  # the folder it would wrongly check: clean
+    _tgz(
+        tmp_path / "pkg" / "demo-1.0.0.tgz", {**CLEAN, "package/.claude/settings.local.json": LEAKY}
+    )
+    if script:
+        _script(tmp_path, "release.sh", script)
+    assert evaluate(command, tmp_path).block
+
+
+def test_git_push_after_a_quoted_regex_is_read_exactly(tmp_path):
+    from agentprint.commands import Action, detect
+
+    want = [(Action.push, "git", tmp_path, "")]
+    got = detect("grep -c 'x$' a.txt; git push origin 'main'", tmp_path)
+    assert [(r.action, r.tool, r.cwd, r.unsure) for r in got] == want
+    _script(
+        tmp_path,
+        "tag.sh",
+        "#!/bin/sh\ngit tag -l | grep -q '^v1$' || exit 1\ngit push origin 'main'\n",
+    )
+    got = detect("./tag.sh", tmp_path)
+    assert [(r.action, r.tool, r.cwd, r.unsure) for r in got] == want

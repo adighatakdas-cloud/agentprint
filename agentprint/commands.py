@@ -154,7 +154,6 @@ _BACKSTOP = re.compile(
     rf"(?:{_OPTION})*\s+publish\b|(twine)(?:{_OPTION})*\s+upload\b"
     rf"|(git)(?:{_OPTION}(?:{_OPTION_VALUE})?)*\s+push\b)"
 )
-_ANSI_C_QUOTE = re.compile(r"\$'(?:[^'\\]|\\.)*'")  # $'it\'s': shlex can't read the \'
 
 
 def detect(command: str, cwd: Path, _depth: int = 0) -> list[Risky]:
@@ -226,11 +225,10 @@ def _parse_lines(command: str, cwd: Path, depth: int, seen: set) -> list[Risky]:
 
 def _parse_into(command: str, where: _Where, depth: int, seen: set, found: list[Risky]) -> _Where:
     """Add what `command` publishes to `found`; returns where the shell is after it."""
-    text = _FD_DUP.sub(" ", _ANSI_C_QUOTE.sub("''", command).replace("\n", " ; "))
-    text = _AMP_REDIRECT.sub(" > ", text)
-    lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|()")
-    lexer.whitespace_split = True
-    tokens = list(lexer)
+    try:
+        tokens = _tokens(command)
+    except ValueError:  # $'it\'s' is a quote shlex can't read: try once without it
+        tokens = _tokens(_without_ansi_c(command))
     state = where
     stack: list[_Where] = []
     segment: list[str] = []
@@ -247,6 +245,46 @@ def _parse_into(command: str, where: _Where, depth: int, seen: set, found: list[
                 if stack:
                     state = stack.pop()
     return state
+
+
+def _tokens(command: str) -> list[str]:
+    text = _FD_DUP.sub(" ", command.replace("\n", " ; "))
+    text = _AMP_REDIRECT.sub(" > ", text)
+    lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|()")
+    lexer.whitespace_split = True
+    return list(lexer)
+
+
+def _without_ansi_c(command: str) -> str:
+    """`command` with each ANSI-C `$'...'` string outside quotes made `''`. Only a `$'` that is
+    not inside a quote starts one: in `grep 'v1$' x` the `$'` is a regex end and a closing quote."""
+    out: list[str] = []
+    quote = ""
+    i = 0
+    while i < len(command):
+        char = command[i]
+        if quote:
+            if char == "\\" and quote == '"':
+                out.append(command[i : i + 2])
+                i += 2
+                continue
+            quote = "" if char == quote else quote
+        elif char == "\\":
+            out.append(command[i : i + 2])
+            i += 2
+            continue
+        elif command.startswith("$'", i):
+            i += 2
+            while i < len(command) and command[i] != "'":
+                i += 2 if command[i] == "\\" else 1
+            out.append("''")
+            i += 1
+            continue
+        elif char in "'\"":
+            quote = char
+        out.append(char)
+        i += 1
+    return "".join(out)
 
 
 @dataclass(frozen=True)
