@@ -23,6 +23,7 @@ If `pack` cannot check the package at all (a missing or unreadable file, say), i
 
 Add `.github/workflows/agentprint.yml`:
 
+<!-- ci-action:start -->
 ```yaml
 on: [push, pull_request]
 permissions: { contents: read, security-events: write }  # security-events: for upload-sarif
@@ -34,6 +35,7 @@ jobs:
       - uses: adighatakdas-cloud/agentprint@v0.1.1  # better: pin the release's commit SHA
         with: { command: pack, upload-sarif: true }  # command: pack or scan
 ```
+<!-- ci-action:end -->
 
 | Input | Meaning | Default |
 |---|---|---|
@@ -48,6 +50,7 @@ Outputs: `exit-code` and `sarif-file`. To also show a signed CLEAR or BLOCK badg
 
 Add to `.pre-commit-config.yaml`:
 
+<!-- ci-hooks:start -->
 ```yaml
 repos:
   - repo: https://github.com/adighatakdas-cloud/agentprint
@@ -76,5 +79,6 @@ After `npx husky init`, add the check to `.husky/pre-push`:
 ```bash
 echo "uvx agentprint==0.1.1 scan --no-home" > .husky/pre-push
 ```
+<!-- ci-hooks:end -->
 
 Both need [uv](https://docs.astral.sh/uv/). `scan --no-home` checks only this repository, never your home folder, and exits `1` when it finds something at or above `--fail-on`, which stops the push.

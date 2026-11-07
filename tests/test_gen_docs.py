@@ -81,6 +81,14 @@ def test_missing_readme_marker_fails_loudly():
         gen_docs.replace_block("no markers here", "x")
 
 
+def test_ci_page_pins_come_from_templates():
+    for name, template in gen_docs.CI_BLOCKS.items():
+        text = (gen_docs.ROOT / "tools" / "templates" / template).read_text()
+        assert "{{version}}" in text and not re.search(r"\d+\.\d+\.\d+", text), template
+        page = gen_docs.outputs()[SITE / "src/content/docs/ci.md"]
+        assert page.count(f"<!-- {name}:start -->") == 1
+
+
 def test_plugins_page_block_and_plugin_files_are_generated():
     files = gen_docs.outputs()
     page = files[SITE / "src/content/docs/plugins.md"]
