@@ -8,8 +8,9 @@ config.json, opencode.json[c] there), with MCP servers under "mcp"
 .kilo/kilo.json[c] at the repo root. Before April 2026 the extension was a Cline fork and kept
 settings/cline_mcp_settings.json in VS Code's globalStorage/kilocode.kilo-code/.
 Docs: https://kilo.ai/docs/code-with-ai/agents/session-history,
-https://kilo.ai/docs/automate/mcp/using-in-kilo-code, https://kilo.ai/docs/contributing/architecture/
-cli-runtime (auth.json under the data folder; its exact path is inferred from kilo.db's).
+https://kilo.ai/docs/automate/mcp/using-in-kilo-code ({env:NAME} in config files),
+https://kilo.ai/docs/contributing/architecture/cli-runtime (auth.json under the data folder; its
+exact path is inferred from kilo.db's).
 
 auth.json is Kilo's own key store: never secret-scanned, only checked for who can read it.
 Not covered: plugins (JavaScript), permission rules (AP003), KILO_DB / KILO_CONFIG_DIR /
@@ -23,18 +24,31 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from ..models import AgentConfig, Artifact, Kind, PackageRule, Severity
-from .base import AgentDoc, app_dirs, artifacts, from_home, matches_any, read_mcp_file
+from .base import (
+    MCP_WHY,
+    AgentDoc,
+    EnvReference,
+    app_dirs,
+    artifacts,
+    from_home,
+    matches_any,
+    read_mcp_file,
+)
 
 NAME = "kilo"
-MCP_WHY = "MCP server config; rarely meant for a package (keys inside are reported separately)."
 _CONFIG_NAMES = ("kilo.jsonc", "kilo.json", "config.json", "opencode.json", "opencode.jsonc")
 _PROJECT_NAMES = ("kilo.jsonc", "kilo.json")
 _LEGACY_MCP = ("cline_mcp_settings.json", "mcp.json")
 _SECRET_FIX = (
-    "put the new key only in your own ~/.config/kilo/ config (never in a project's kilo.jsonc) "
-    "and make that file private with chmod 600: Kilo's MCP docs name no environment-variable "
-    "reference, so <VAR> cannot be read from your shell."
+    'replace the value with "{env:<VAR>}" (Kilo Code reads {env:NAME} anywhere in its config, '
+    "as OpenCode does), then export <VAR> in the shell that starts Kilo Code."
 )
+_LEGACY_FIX = (
+    "move this server into ~/.config/kilo/kilo.jsonc, where Kilo Code reads {env:NAME}, and "
+    'set its value to "{env:<VAR>}"; then export <VAR> in the shell that starts Kilo Code.'
+)
+# Local servers keep their variables under "environment" (OpenCode's format).
+ENV = EnvReference("mcp", "{env:{var}}", "the shell that starts Kilo Code", env="environment")
 
 # History that is only a record (fix leaves SQLite to the human; this is for completeness).
 _RECORDS = (re.compile(r"(^|/)\.local/share/kilo/kilo\.db$"),)
@@ -46,7 +60,10 @@ DOC = AgentDoc(
         "and project `kilo.json(c)`, `.kilo/kilo.json(c)` (MCP); the old extension's MCP file"
     ),
     keys="`~/.local/share/kilo/auth.json`",
-    fix="keys in the database: needs you (agentprint never edits a database); MCP keys: needs you",
+    fix=(
+        'MCP `environment` keys become `"{env:NAME}"` (headers: needs you); keys in the '
+        "database: needs you (agentprint never edits a database)"
+    ),
     checked="docs, 2026-11-05",
     unverified=(
         "`auth.json` (inferred from `kilo.db`); the config folder on Windows; the old extension "
@@ -104,10 +121,13 @@ class Kilo:
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)
 
+    def env_reference(self, path: Path) -> EnvReference | None:
+        return ENV if path.name in _CONFIG_NAMES else None
+
     def read_config(self, artifact: Artifact) -> AgentConfig:
         name = artifact.path.name
         if name in _LEGACY_MCP:
-            return read_mcp_file(artifact.path, _SECRET_FIX, "mcpServers")
+            return read_mcp_file(artifact.path, _LEGACY_FIX, "mcpServers")
         if name in _CONFIG_NAMES:
             # One page of the docs still wraps servers in "mcpServers"; read both.
             return read_mcp_file(artifact.path, _SECRET_FIX, "mcp", "mcpServers")

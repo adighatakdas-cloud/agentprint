@@ -77,6 +77,15 @@ def fixes(n: int) -> str:
     return f"{n} fix" if n == 1 else f"{n} fixes"
 
 
+def env_field(change: Change) -> str:
+    """The env block an env change is in: "env", or "environment" (Kilo Code's name)."""
+    try:
+        field = json.loads(change.json_path)[-2]
+    except (ValueError, IndexError, TypeError):
+        return "env"
+    return field if field in ("env", "environment") else "env"
+
+
 def server_name(change: Change) -> str:
     """The MCP server an env change is in (scanned text: quote or clean it before showing)."""
     try:
@@ -99,7 +108,7 @@ def describe(row: Row) -> str:
     if row.kind == "env":
         reference = first.reference or "${" + first.var + "}"
         server = quote(server_name(first))
-        return f"env.{first.var} of MCP server {server} set to {quote(reference)}"
+        return f"{env_field(first)}.{first.var} of MCP server {server} set to {quote(reference)}"
     if row.kind == "ignore":
         return f"line {quote(first.line_text)} added"
     if row.kind == "lock" and len(row.changes) > 1:

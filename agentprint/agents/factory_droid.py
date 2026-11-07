@@ -8,8 +8,9 @@ fallback), mcp.json
 event with no wrapper). A project has the same files under .factory/; settings.local.json is
 personal. Sessions: JSONL under ~/.factory/sessions/ according to Factory's own plugin repo (seen
 through a mirror), not the docs.
-Docs: https://docs.factory.com/droid-cli/settings.md, https://docs.factory.com/harness/mcp.md,
-https://docs.factory.com/reference/hooks-reference, https://docs.factory.com/model-independence/byok.md.
+Docs: https://docs.factory.com/droid-cli/settings.md, https://docs.factory.com/harness/mcp.md
+(${NAME} in mcp.json), https://docs.factory.com/reference/hooks-reference,
+https://docs.factory.com/model-independence/byok.md.
 
 Not read: where the login token is kept (the docs give no path); permission rules (AP003).
 """
@@ -22,15 +23,23 @@ from pathlib import Path
 
 from ..models import AgentConfig, Artifact, Kind, PackageRule, Severity
 from ..structured import load
-from .base import AgentDoc, artifacts, from_home, hook_commands, matches_any, read_mcp_servers
+from .base import (
+    MCP_WHY,
+    AgentDoc,
+    EnvReference,
+    artifacts,
+    from_home,
+    hook_commands,
+    matches_any,
+    read_mcp_servers,
+)
 
 NAME = "factory-droid"
-MCP_WHY = "MCP server config; rarely meant for a package (keys inside are reported separately)."
 _SECRET_FIX = (
-    "put the new key only in ~/.factory/mcp.json (never in a project's .factory/mcp.json, which "
-    "is meant to be committed) and make it private with chmod 600 ~/.factory/mcp.json: Factory's "
-    "MCP docs name no environment-variable reference, so <VAR> cannot be read from your shell."
+    'replace the value with "${<VAR>}" (Droid expands ${NAME} in mcp.json, in env and headers, '
+    "from the shell that starts it), then export <VAR> in the shell that starts Droid."
 )
+ENV = EnvReference("mcpServers", "${{var}}", "the shell that starts Droid")
 
 _RECORDS = (re.compile(r"(^|/)\.factory/sessions/"),)
 
@@ -41,7 +50,10 @@ DOC = AgentDoc(
         "`hooks.json`, and the same under a project's `.factory/`; sessions (JSONL)"
     ),
     keys="",
-    fix="masks keys in sessions; settings and MCP keys: needs you",
+    fix=(
+        'masks keys in sessions; MCP `env` keys in `mcp.json` become `"${NAME}"` (headers: '
+        "needs you); keys in settings: needs you"
+    ),
     checked="docs, 2026-11-05",
     unverified="`~/.factory/sessions/` (from Factory's plugin repo, not the docs)",
 )
@@ -88,6 +100,9 @@ class FactoryDroid:
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)
+
+    def env_reference(self, path: Path) -> EnvReference | None:
+        return ENV if path.name == "mcp.json" else None
 
     def read_config(self, artifact: Artifact) -> AgentConfig:
         name = artifact.path.name

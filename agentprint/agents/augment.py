@@ -6,7 +6,8 @@ hooks; a project's .augment/settings.json (shared) and .augment/settings.local.j
 The login is session.json in ~/.augment (named on the 2026-11-05 docs pages; the 2026-11-07 CLI
 reference names no file).
 Docs: https://docs.augmentcode.com/cli/config, https://docs.augmentcode.com/cli/hooks,
-https://docs.augmentcode.com/cli/integrations, https://docs.augmentcode.com/cli/reference,
+https://docs.augmentcode.com/cli/integrations (${VAR} in MCP entries),
+https://docs.augmentcode.com/cli/reference,
 https://docs.augmentcode.com/cli/automation/service-accounts.
 
 session.json is Augment's own key store: never secret-scanned, only checked for who can read it.
@@ -21,22 +22,21 @@ from pathlib import Path
 
 from ..models import AgentConfig, Artifact, Kind, PackageRule, Severity
 from ..structured import load
-from .base import AgentDoc, artifacts, from_home, hook_commands, read_mcp_servers
+from .base import AgentDoc, EnvReference, artifacts, from_home, hook_commands, read_mcp_servers
 
 NAME = "augment"
 _NAMES = ("settings.json", "settings.local.json")
 _SECRET_FIX = (
-    "put the new key only in ~/.augment/settings.json (never in a project's "
-    ".augment/settings.json, which is meant to be committed) and make it private with chmod 600 "
-    "~/.augment/settings.json: Augment's docs name no environment-variable reference for MCP "
-    "servers, so <VAR> cannot be read from your shell."
+    'replace the value with "${<VAR>}" (Auggie expands ${NAME} in an MCP server\'s command, args, '
+    "env, url and headers), then export <VAR> in the shell that starts Auggie."
 )
+ENV = EnvReference("mcpServers", "${{var}}", "the shell that starts Auggie")
 
 DOC = AgentDoc(
     label="Augment (Auggie)",
     reads="`~/.augment/settings.json` and project `.augment/settings*.json` (MCP, hooks)",
     keys="`~/.augment/session.json`",
-    fix="MCP keys: needs you",
+    fix='MCP `env` keys become `"${NAME}"` (headers: needs you)',
     checked="docs, 2026-11-05 and 2026-11-07",
     unverified="`session.json` (not named on the current CLI reference page)",
 )
@@ -73,6 +73,9 @@ class Augment:
 
     def pure_history(self, path: Path) -> bool:
         return False  # no Augment history is read yet
+
+    def env_reference(self, path: Path) -> EnvReference | None:
+        return ENV if path.name in _NAMES else None
 
     def read_config(self, artifact: Artifact) -> AgentConfig:
         if artifact.path.name not in _NAMES:

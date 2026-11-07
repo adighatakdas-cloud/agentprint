@@ -21,10 +21,17 @@ from pathlib import Path
 
 from ..models import AgentConfig, Artifact, Kind, PackageRule, Severity
 from ..structured import load
-from .base import AgentDoc, artifacts, from_home, hook_commands, matches_any, read_mcp_servers
+from .base import (
+    MCP_WHY,
+    AgentDoc,
+    artifacts,
+    from_home,
+    hook_commands,
+    matches_any,
+    read_mcp_servers,
+)
 
 NAME = "junie"
-MCP_WHY = "MCP server config; rarely meant for a package (keys inside are reported separately)."
 _SECRET_FIX = (
     "put the new key only in ~/.junie/mcp/mcp.json (never in a project's .junie/mcp/mcp.json) "
     "and make it private with chmod 600 ~/.junie/mcp/mcp.json: Junie's docs name no "

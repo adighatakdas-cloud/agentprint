@@ -21,7 +21,7 @@ from rich.console import Console
 from rich.text import Text
 
 from agentprint.fix import Outcome, Plan
-from agentprint.fixreport import UNDOABLE, Row, fixes, rows, server_name, skipped_rows
+from agentprint.fixreport import UNDOABLE, Row, env_field, fixes, rows, server_name, skipped_rows
 from agentprint.models import Finding
 from agentprint.report import FailOn, _short, exit_code
 from agentprint.sanitize import clean
@@ -48,7 +48,8 @@ def _what(row: Row) -> Text:
         return text
     if row.kind == "env":
         reference = first.reference or "${" + first.var + "}"
-        return Text(f"{clean(server_name(first), 60)}.env.{first.var} → {clean(reference)}")
+        where = f"{clean(server_name(first), 60)}.{env_field(first)}.{first.var}"
+        return Text(f"{where} → {clean(reference)}")
     if row.kind == "ignore":
         text = Text(f"+ {clean(first.line_text)}")
         if not os.path.lexists(first.path):

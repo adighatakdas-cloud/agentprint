@@ -26,6 +26,7 @@ from ..models import AgentConfig, Artifact, Kind, PackageRule, Severity
 from ..structured import load
 from .base import (
     AgentDoc,
+    EnvReference,
     artifacts,
     from_home,
     hook_commands,
@@ -40,6 +41,7 @@ _SECRET_FIX = (
     'replace the value with "$<VAR>" (Crush expands $NAME in its config files), then export '
     "<VAR> in the shell that starts Crush."
 )
+ENV = EnvReference("mcp", "${var}", "the shell that starts Crush")  # writes "$NAME"
 
 # History that is only a record (fix leaves the database to the human; logs are masked).
 _RECORDS = (re.compile(r"(^|/)\.crush/(crush\.db$|logs/)"),)
@@ -54,7 +56,10 @@ DOC = AgentDoc(
         "`~/.local/share/crush/crush.json` (pasted keys; `%LOCALAPPDATA%\\crush\\` on Windows); "
         "project `.crush/crush.json`"
     ),
-    fix="masks keys in logs; keys in the database and MCP keys: needs you",
+    fix=(
+        'masks keys in logs; MCP `env` keys in `crush.json` become `"$NAME"` (headers: needs '
+        "you); keys in the database and in `crushrc`: needs you"
+    ),
     checked="README, config docs and source, 2026-11-05",
 )
 
@@ -101,6 +106,9 @@ class Crush:
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)
+
+    def env_reference(self, path: Path) -> EnvReference | None:
+        return ENV if path.name in _JSON_NAMES else None
 
     def read_config(self, artifact: Artifact) -> AgentConfig:
         if artifact.path.name not in _JSON_NAMES:

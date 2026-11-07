@@ -228,6 +228,9 @@ def mcp_servers(servers: Any, secret_fix: str) -> tuple[McpServer, ...]:
 
 # --- MCP config files: one reader for every agent's format -----------------------------------
 
+# Why an agent's MCP config file is a package print (AP006); keys in it are reported separately.
+MCP_WHY = "MCP server config; rarely meant for a package (keys inside are reported separately)."
+
 # What some agents call a server's command, env block and URL (Goose: cmd, envs, uri).
 _MCP_ALIASES = {"cmd": "command", "envs": "env", "uri": "url"}
 
@@ -284,6 +287,7 @@ class EnvReference:
     template: str
     where: str
     projects: bool = False  # also each project's own servers (Claude Code ~/.claude.json)
+    env: str = "env"  # the env block's key in a server entry ("environment" in Kilo Code)
 
     def reference(self, var: str) -> str:
         return self.template.replace("{var}", var)

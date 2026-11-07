@@ -22,10 +22,9 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, HookCommand, Kind, PackageRule, Severity
 from ..structured import load
-from .base import AgentDoc, artifacts, from_home, read_mcp_servers
+from .base import MCP_WHY, AgentDoc, artifacts, from_home, read_mcp_servers
 
 NAME = "kiro"
-MCP_WHY = "MCP server config; rarely meant for a package (keys inside are reported separately)."
 _SECRET_FIX = (
     'replace the value with "${<VAR>}" and approve <VAR> when Kiro asks (it expands only '
     "variables you have approved), then export <VAR> in the shell that starts Kiro."

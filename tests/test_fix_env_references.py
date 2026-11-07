@@ -1,6 +1,7 @@
 """agentprint fix moves an inline MCP env key to an environment-variable reference only in the
-files of agents that document one: VS Code "${env:NAME}", Qwen Code and Amp "${NAME}" (Claude
-Code's "${NAME}" is in test_fix_changes.py). Every other agent's MCP key stays with the human."""
+files of agents that document one: VS Code "${env:NAME}", Qwen Code, Amp, Factory Droid and
+Augment "${NAME}", Kilo Code "{env:NAME}", Crush "$NAME" (Claude Code's "${NAME}" is in
+test_fix_changes.py). Every other agent's MCP key, and every header, stays with the human."""
 
 import json
 import stat
@@ -94,10 +95,7 @@ def test_amp_settings_env_becomes_reference_and_headers_stay(tmp_path):
         homes.claude_desktop,  # no env reference documented
         homes.cline,
         homes.kiro,  # ${VAR} only after the human approves the variable
-        homes.factory,
         homes.junie,
-        homes.augment,
-        homes.kilo,
     ],
 )
 def test_agents_without_a_documented_reference_are_left_to_the_human(tmp_path, build):
@@ -149,3 +147,97 @@ def test_env_reference_of_a_broken_agent_module_is_none(monkeypatch):
     monkeypatch.setattr(Amp, "env_reference", boom)
     assert fix.env_reference("amp", Path("settings.json")) is None
     assert fix.env_reference("no-such-agent", Path("settings.json")) is None
+
+
+def _env_change(home, project=None):
+    p, outcome = _fix(home, project)
+    changes = [c for c in p.changes if c.kind == "env"]
+    return p, outcome, changes
+
+
+@pytest.mark.parametrize(
+    ("rel", "where"),
+    [
+        (Path(".factory") / "mcp.json", "the shell that starts Droid"),
+        (Path(".augment") / "settings.json", "the shell that starts Auggie"),
+        (Path(".augment") / "settings.local.json", None),  # project-only name: not in home
+    ],
+)
+def test_factory_and_augment_env_keys_become_references(tmp_path, rel, where):
+    home = tmp_path / "home"
+    doc = {
+        "mcpServers": {
+            "gh": homes.stdio("GITHUB_TOKEN", fakes.GITHUB),
+            "api": homes.remote(fakes.OPENAI),
+        }
+    }
+    path = homes.write(home / rel, json.dumps(doc, indent=2))
+    p, outcome, changes = _env_change(home)
+    if where is None:  # ~/.augment/settings.local.json is not a file Augment keeps at home
+        assert changes == []
+        return
+    assert [c.reference for c in changes] == ["${GITHUB_TOKEN}"] and not outcome.skipped
+    after = json.loads(path.read_text())
+    assert after["mcpServers"]["gh"]["env"]["GITHUB_TOKEN"] == "${GITHUB_TOKEN}"
+    assert after["mcpServers"]["api"] == doc["mcpServers"]["api"]  # a header: the human's
+    assert any(where in m.text for m in p.manual)
+    [left] = _ap005(home)
+    assert "headers" in left.detail
+
+
+def test_augment_project_settings_too(tmp_path):
+    home, project = tmp_path / "home", tmp_path / "proj"
+    home.mkdir()
+    doc = {"mcpServers": {"gh": homes.stdio("GITHUB_TOKEN", fakes.GITHUB)}}
+    path = homes.write(project / ".augment" / "settings.local.json", json.dumps(doc))
+    _env_change(home, project)
+    assert json.loads(path.read_text())["mcpServers"]["gh"]["env"]["GITHUB_TOKEN"] == (
+        "${GITHUB_TOKEN}"
+    )
+
+
+def test_kilo_environment_key_becomes_env_reference_and_comment_stays(tmp_path):
+    home, project = tmp_path / "home", tmp_path / "proj"
+    homes.kilo(home)
+    homes.kilo_project(project)
+    path = home / ".config" / "kilo" / "kilo.jsonc"
+    before = path.read_text()
+    p, outcome, changes = _env_change(home, project)
+    [change] = changes
+    assert change.reference == "{env:GH_TOKEN}" and not outcome.skipped
+    after = path.read_text()
+    assert after == before.replace(f'"{fakes.GITHUB}"', '"{env:GH_TOKEN}"')
+    assert after.startswith("// my config\n")
+    [row] = rows(p.changes, p.findings)
+    assert describe(row) == 'environment.GH_TOKEN of MCP server "gh" set to "{env:GH_TOKEN}"'
+    assert fixview._what(row).plain == "gh.environment.GH_TOKEN → {env:GH_TOKEN}"
+    assert any("the shell that starts Kilo Code" in m.text for m in p.manual)
+    # The project's remote server keeps its header key: the human's, with Kilo's own advice.
+    [left] = _ap005(home, project)
+    assert left.location == str(project / "kilo.jsonc") and "{env:" in left.fix
+
+
+def test_kilo_old_extension_file_is_left_to_the_human(tmp_path):
+    home = tmp_path / "home"
+    settings = homes.MAC_CODE / "globalStorage" / "kilocode.kilo-code" / "settings"
+    doc = {"mcpServers": {"gh": homes.stdio("GITHUB_TOKEN", fakes.GITHUB)}}
+    path = homes.write(home / settings / "cline_mcp_settings.json", json.dumps(doc))
+    before = path.read_bytes()
+    p, _, changes = _env_change(home)
+    assert changes == [] and path.read_bytes() == before
+    assert any("kilo.jsonc" in m.text for m in p.manual if m.check_id == "AP005")
+
+
+def test_crush_json_env_key_becomes_dollar_name(tmp_path):
+    home, project = tmp_path / "home", tmp_path / "proj"
+    home.mkdir()
+    homes.crush_project(project)
+    path = project / "crush.json"
+    p, outcome, changes = _env_change(home, project)
+    assert [c.reference for c in changes] == ["$GITHUB_TOKEN"] and not outcome.skipped
+    assert json.loads(path.read_text())["mcp"]["gh"]["env"]["GITHUB_TOKEN"] == "$GITHUB_TOKEN"
+    assert any("the shell that starts Crush" in m.text for m in p.manual)
+    rc = homes.write(home / ".config" / "crush" / "crushrc", f"mcp add gh --env T={fakes.GITHUB}\n")
+    before = rc.read_bytes()
+    _env_change(home)
+    assert rc.read_bytes() == before  # crushrc is not JSON: never rewritten

@@ -23,6 +23,7 @@ from pathlib import Path
 from ..models import AgentConfig, Artifact, Kind, PackageRule, Severity
 from ..structured import load
 from .base import (
+    MCP_WHY,
     AgentDoc,
     EnvReference,
     artifacts,
@@ -33,7 +34,6 @@ from .base import (
 )
 
 NAME = "qwen-code"
-MCP_WHY = "MCP server config; rarely meant for a package (keys inside are reported separately)."
 _SECRET_FIX = (
     'replace the value with "${<VAR>}" (Qwen Code expands ${NAME} in an MCP server\'s env), '
     "then export <VAR> in the shell that starts Qwen Code."

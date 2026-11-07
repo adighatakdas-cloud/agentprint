@@ -32,7 +32,7 @@ DOC = AgentDoc(
     label="Amp",
     reads="`~/.config/amp/settings.json(c)` and project `.amp/settings.json(c)` (`amp.mcpServers`)",
     keys="`~/.local/share/amp/secrets.json`",
-    fix='MCP `env` keys become `"${NAME}"`',
+    fix='MCP `env` keys become `"${NAME}"` (headers: needs you)',
     checked="docs, 2026-11-05",
     unverified="`~/.local/share/amp/secrets.json` (third-party report)",
 )

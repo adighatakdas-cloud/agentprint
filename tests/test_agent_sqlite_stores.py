@@ -138,7 +138,7 @@ def test_kilo_reads_the_mcp_key_and_the_old_wrapper(tmp_path):
     local = {"type": "local", "command": ["npx", "-y", "x", "--token", fakes.GITHUB]}
     path = homes.write(tmp_path / "kilo.json", json.dumps({"mcpServers": {"x": local}}))
     [server] = Kilo().read_config(Artifact("kilo", Kind.SETTINGS, path)).mcp_servers
-    assert (server.name, "chmod 600" in server.secret_fix) == ("x", True)
+    assert (server.name, "{env:<VAR>}" in server.secret_fix) == ("x", True)
 
 
 def test_kilo_old_extension_mcp_file(tmp_path):

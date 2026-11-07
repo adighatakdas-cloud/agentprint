@@ -26,10 +26,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..models import AgentConfig, Artifact, Kind, PackageRule, Severity
-from .base import artifacts
+from .base import MCP_WHY, artifacts
 
 H, M, L = Severity.HIGH, Severity.MEDIUM, Severity.LOW
-MCP_WHY = "MCP server config; rarely meant for a package (keys inside are reported separately)."
 
 
 @dataclass(frozen=True)

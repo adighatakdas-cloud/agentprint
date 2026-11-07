@@ -580,7 +580,7 @@ def env_reference(agent_name: str, path: Path) -> EnvReference | None:
 
 
 def _env_slots(doc: Any, ref: EnvReference) -> Iterable[tuple[tuple[str, ...], str, str, str]]:
-    """Every string under <servers>.<server>.env.<NAME> the way the agent module reads them
+    """Every string under <servers>.<server>.<env>.<NAME> the way the agent module reads them
     (the top level, and with `ref.projects` each project's own servers, as in ~/.claude.json):
     (JSON path, server name, variable name, value)."""
     if not isinstance(doc, dict):
@@ -592,10 +592,10 @@ def _env_slots(doc: Any, ref: EnvReference) -> Iterable[tuple[tuple[str, ...], s
     for prefix, holder in holders:
         servers = holder.get(ref.servers) if isinstance(holder, dict) else None
         for server, entry in servers.items() if isinstance(servers, dict) else ():
-            env = entry.get("env") if isinstance(entry, dict) else None
+            env = entry.get(ref.env) if isinstance(entry, dict) else None
             for var, value in env.items() if isinstance(env, dict) else ():
                 if isinstance(server, str) and isinstance(value, str) and _ENV_NAME.fullmatch(var):
-                    yield (*prefix, ref.servers, server, "env", var), server, var, value
+                    yield (*prefix, ref.servers, server, ref.env, var), server, var, value
 
 
 def _plain_json_string(value: str) -> bool:
@@ -650,7 +650,7 @@ def _plan_env_file(
                 if structured.parse(new, str(path)) != _with_value(before, jpath, reference):
                     continue
                 used.add(start)
-                where = f"env.{var} of MCP server {safe_snippet(server, 60)!r}"
+                where = f"{ref.env}.{var} of MCP server {safe_snippet(server, 60)!r}"
                 changes.append(
                     Change(
                         kind="env",
@@ -666,7 +666,7 @@ def _plan_env_file(
                         reference=reference,
                     )
                 )
-                field_text = safe_snippet(f"env.{var}", 60)
+                field_text = safe_snippet(f"{ref.env}.{var}", 60)
                 detail = f"{found[0].name}: {redact(value)}{MCP_MARKER}"
                 detail += f"{safe_snippet(server, 60)!r} ({field_text})"
                 var_of[detail] = var
@@ -690,8 +690,9 @@ def _plan_env_file(
 
 def _plan_env(findings: list[Finding], pack: bool) -> tuple[list[Change], list[Manual]]:
     """AP005: env entries become references to an environment variable, in the files of agents
-    that document one (Claude Code "${NAME}", VS Code "${env:NAME}", Qwen Code, Amp); every
-    other entry (headers, args, URL, other agents) stays with the human and its advice."""
+    that document one (Claude Code, Qwen Code, Amp, Factory Droid, Augment "${NAME}", VS Code
+    "${env:NAME}", Kilo Code "{env:NAME}", Crush "$NAME"); every other entry (headers, args, URL,
+    other agents) stays with the human and its advice."""
     changes: list[Change] = []
     manual: list[Manual] = []
     by_file: dict[str, list[Finding]] = {}
