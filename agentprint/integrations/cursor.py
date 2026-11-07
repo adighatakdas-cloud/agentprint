@@ -67,15 +67,18 @@ _PUBLISHES = (
     r"|(?:np|semantic-release|release-it)(?:\s|$)"
     r"|git(?:\s+-\S+(?:\s+[^-\s]\S*)?)*\s+push\b)"
 )
-# Commands that can publish from a file the guard reads (Ruling X7): make, just and task
-# recipes, `npm version` hooks, and scripts run as ./x, `bash x`, `python x`, `uv run x`.
+# Commands that can publish from a file the guard reads (Ruling X7): every form
+# agentprint.following follows. make, just and task recipes, `npm version` hooks, and scripts
+# run as ./x, `bash x`, `python x`, `tsx x`, `deno run x`, `uv run x`, `pdm run x`...
 _RUNS_A_FILE = (
-    r"(?:(?:g?make|just|task)(?:\s|$)"
+    r"(?:(?:g?make|just|go-task|task)(?:\s|$)"
     r"|(?:npm|pnpm|yarn|bun)(?:\s+-\S+)*\s+version\b"
     r"|\S*/\S"
-    r"|(?:sh|bash|zsh|dash|ksh|python[0-9.]*|node|nodejs)(?:\s+-\S+)*\s+[^-\s]"
+    r"|(?:sh|bash|zsh|dash|ksh|fish|python[0-9.]*|node|nodejs|tsx|ts-node|bun|ruby|perl)"
+    r"(?:\s+-\S+)*\s+[^-\s]"
+    r"|deno\s+(?:run|eval)\b"
     r"|(?:source|\.)\s+\S"
-    r"|(?:uv|poetry)\s+run\s+\S)"
+    r"|(?:uv|poetry|pdm|pipenv|hatch|rye)\s+run\s+\S)"
 )
 MATCHER = rf"(?:{_COMMAND_START}{_PUBLISHES}|{_PROGRAM_START}{_RUNS_A_FILE})"
 RULE = f"""\
