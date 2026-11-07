@@ -30,6 +30,32 @@ inputs:
       `permissions: security-events: write`; private repositories also need GitHub Code Security.
     required: false
     default: "false"
+  badge-dir:
+    description: >-
+      Folder to write `badge.json` (a shields.io endpoint badge, CLEAR or BLOCK) and
+      `verdict.json` (counts only, no paths or findings) into. Empty (default) writes nothing.
+      Needs no extra permissions.
+    required: false
+    default: ""
+  attest-badge:
+    description: >-
+      "true" signs `badge.json` with a GitHub build attestation (sigstore): a workflow run in this
+      repository signed this exact file, with agentprint's verdict attached. It does not prove
+      the workflow ran agentprint unchanged. Needs `badge-dir`. The job needs
+      `permissions: id-token: write` and `attestations: write`. Skipped with a notice on private
+      repositories, and with a warning when `fail-on` is `none` (report-only runs never sign a
+      CLEAR).
+    required: false
+    default: "false"
+  publish-badge:
+    description: >-
+      "true" commits `badge.json` and `verdict.json` to the orphan branch `agentprint-badge`
+      (one commit, force-updated), only on a push to the default branch and not when `fail-on` is
+      `none` (a warning is logged instead); needs `badge-dir`. The
+      job needs `permissions: contents: write`. "dry-run" prints what would be committed and
+      pushes nothing (needs no permissions).
+    required: false
+    default: "false"
 
 outputs:
   exit-code:
@@ -38,6 +64,12 @@ outputs:
   sarif-file:
     description: Path of the SARIF report (set whenever agentprint ran without an error).
     value: ${{ steps.run.outputs.sarif-file }}
+  badge-file:
+    description: Path of badge.json (set when `badge-dir` is given and agentprint ran without an error).
+    value: ${{ steps.run.outputs.badge-file }}
+  verdict-file:
+    description: Path of verdict.json (set together with badge-file).
+    value: ${{ steps.run.outputs.verdict-file }}
 
 runs:
   using: composite
@@ -62,6 +94,7 @@ runs:
         AP_COMMAND: ${{ inputs.command }}
         AP_PATH: ${{ inputs.path }}
         AP_FAIL_ON: ${{ inputs.fail-on }}
+        AP_BADGE_DIR: ${{ inputs.badge-dir }}
         COLUMNS: "160"
       run: |
         set +e  # keep going on findings: the last step reports the exit code
@@ -76,10 +109,19 @@ runs:
             exit 0
             ;;
         esac
+        badge=()
+        if [ -n "$AP_BADGE_DIR" ]; then
+          mkdir -p "$AP_BADGE_DIR"
+          badge=(--badge "$AP_BADGE_DIR")
+        fi
         # Table for the log; this run's exit code is the result.
-        ap "${cmd[@]}" --fail-on "$AP_FAIL_ON" --format table -- "$AP_PATH"
+        ap "${cmd[@]}" --fail-on "$AP_FAIL_ON" --format table ${badge[@]+"${badge[@]}"} -- "$AP_PATH"
         code=$?
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        if [ "$code" -le 1 ] && [ -n "$AP_BADGE_DIR" ] && [ -f "$AP_BADGE_DIR/badge.json" ] && [ -f "$AP_BADGE_DIR/verdict.json" ]; then
+          echo "badge-file=$AP_BADGE_DIR/badge.json" >> "$GITHUB_OUTPUT"
+          echo "verdict-file=$AP_BADGE_DIR/verdict.json" >> "$GITHUB_OUTPUT"
+        fi
         if [ "$code" -le 1 ]; then
           sarif="$RUNNER_TEMP/agentprint-$AP_COMMAND.sarif"
           ap "${cmd[@]}" --fail-on "$AP_FAIL_ON" --format sarif -- "$AP_PATH" > "$sarif"
@@ -96,6 +138,58 @@ runs:
       with:
         sarif_file: ${{ steps.run.outputs.sarif-file }}
         category: agentprint-${{ inputs.command }}
+
+    # Sign badge.json (the verdict is the predicate): this records that a workflow in this
+    # repository signed these bytes, not that it ran agentprint unchanged. Only on a push to the
+    # default branch (same rule as publishing: a pull request never signs), only on a public
+    # repository (private ones would need GitHub Enterprise for attestations), and never for a
+    # report-only run (fail-on none), which must not publish a signed CLEAR.
+    - name: Attest the badge
+      if: inputs.attest-badge == 'true' && inputs.fail-on != 'none' && steps.run.outputs.badge-file != '' && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !github.event.repository.private
+      uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+      with:
+        subject-path: ${{ steps.run.outputs.badge-file }}
+        predicate-type: https://adighatakdas-cloud.github.io/agentprint/badge/v1
+        predicate-path: ${{ steps.run.outputs.verdict-file }}
+
+    - name: Skip signing and publishing a report-only run
+      if: (inputs.attest-badge == 'true' || inputs.publish-badge == 'true') && inputs.fail-on == 'none'
+      shell: bash
+      run: echo "::warning title=agentprint::attest-badge and publish-badge skipped, fail-on is none (report only); a report-only run never publishes a signed CLEAR"
+
+    - name: Skip attestation outside the default branch
+      if: inputs.attest-badge == 'true' && !(github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+      shell: bash
+      run: echo "::notice title=agentprint::attest-badge skipped, the badge is only signed on a push to the default branch"
+
+    - name: Skip attestation on a private repository
+      if: inputs.attest-badge == 'true' && github.event.repository.private
+      shell: bash
+      run: echo "::notice title=agentprint::attest-badge skipped, this repository is private (build attestations need a public repository)"
+
+    # Never on pull_request (a fork's PR gets no write token); only a push to the default branch.
+    - name: Publish badge to the agentprint-badge branch
+      if: inputs.publish-badge == 'true' && inputs.fail-on != 'none' && steps.run.outputs.badge-file != '' && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+      shell: bash
+      env:
+        AP_BADGE_DIR: ${{ inputs.badge-dir }}
+        AP_PUBLISH_MODE: "true"
+        AP_REPOSITORY: ${{ github.repository }}
+        AP_TOKEN: ${{ github.token }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/publish-badge.sh"
+
+    - name: Skip publishing the badge
+      if: inputs.publish-badge == 'true' && !(github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+      shell: bash
+      run: echo "::notice title=agentprint::publish-badge skipped, the badge is only published on a push to the default branch"
+
+    - name: Dry-run publish of the badge
+      if: inputs.publish-badge == 'dry-run' && steps.run.outputs.badge-file != ''
+      shell: bash
+      env:
+        AP_BADGE_DIR: ${{ inputs.badge-dir }}
+        AP_PUBLISH_MODE: dry-run
+      run: bash "$GITHUB_ACTION_PATH/scripts/publish-badge.sh"
 
     # Last, so the SARIF is uploaded even when findings fail the step.
     - name: Finish with agentprint's exit code
