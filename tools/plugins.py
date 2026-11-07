@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import tomllib
+import urllib.parse
 from pathlib import Path
 
 import agentprint
@@ -24,6 +25,7 @@ from agentprint.integrations.base import BLOCK_EXIT, INSTRUCTIONS, FileEdit, Jso
 from agentprint.integrations.cursor import RULE as CURSOR_RULE
 
 ROOT = Path(__file__).resolve().parents[1]
+TEMPLATES = Path(__file__).resolve().parent / "templates"
 PLUGIN = ROOT / "plugins" / "agentprint"  # the Claude Code plugin; other ecosystems below it
 VERSION = agentprint.__version__
 NAME = plugins.NAME
@@ -380,6 +382,21 @@ def mcp_registry() -> dict[Path, str]:
     return {ROOT / "server.json": _json(server)}
 
 
+def _fill(template: str, **values: str) -> str:
+    """A template from tools/templates/ with each {{key}} replaced."""
+    text = (TEMPLATES / template).read_text(encoding="utf-8")
+    for key, value in values.items():
+        text = text.replace("{{" + key + "}}", value)
+    if "{{" in text:
+        raise ValueError(f"{template} has a placeholder with no value")
+    return text
+
+
+def plugin_readme() -> dict[Path, str]:
+    text = _fill("plugins-readme.md", generated=GENERATED, version=VERSION, owner=OWNER, repo=REPO)
+    return {PLUGIN / "README.md": text}
+
+
 def files() -> dict[Path, str]:
     out: dict[Path, str] = {}
     for part in (
@@ -391,6 +408,36 @@ def files() -> dict[Path, str]:
         antigravity,
         hermes,
         mcp_registry,
+        plugin_readme,
     ):
         out |= part()
     return out
+
+
+# ---- the docs page's generated block ------------------------------------------------------------
+
+
+def vscode_server() -> dict:
+    return {"name": NAME, "type": "stdio", **plain_server()}
+
+
+def vscode_link() -> str:
+    """VS Code's install link: https://code.visualstudio.com/docs/agents/reference/mcp-configuration"""
+    config = json.dumps(vscode_server(), separators=(",", ":"))
+    return f"vscode:mcp/install?{urllib.parse.quote(config, safe='')}"
+
+
+def page_block() -> str:
+    """The install commands on site/src/content/docs/plugins.md (they carry the version)."""
+    return _fill(
+        "plugins-page.md",
+        version=VERSION,
+        owner=OWNER,
+        repo=REPO,
+        name=NAME,
+        mcp=" ".join(plugins.mcp_argv()),
+        mcp_command=plugins.mcp_argv()[0],
+        mcp_args=json.dumps(list(plugins.mcp_argv()[1:])),
+        vscode=json.dumps(vscode_server(), separators=(",", ":")),
+        vscode_link=vscode_link(),
+    ).rstrip("\n")

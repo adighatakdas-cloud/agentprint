@@ -43,6 +43,7 @@ export default defineConfig({
           label: "Reference",
           items: [
             { slug: "agents" },
+            { slug: "plugins" },
             { slug: "how-it-works" },
             { slug: "privacy" },
             { slug: "comparison" },

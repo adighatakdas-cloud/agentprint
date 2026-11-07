@@ -505,3 +505,15 @@ def test_readme_carries_the_registry_marker_to_pypi():
     readme = (ROOT / "README.md").read_text()
     assert readme.count(gen.MCP_MARKER) == 1
     assert gen._project()["readme"] == "README.md"  # the README is PyPI's long description
+
+
+# ---- the docs page -------------------------------------------------------------------------------
+
+
+def test_vscode_link_decodes_to_the_add_mcp_json():
+    from urllib.parse import unquote
+
+    link = gen.vscode_link()
+    assert link.startswith("vscode:mcp/install?")
+    config = json.loads(unquote(link.split("?", 1)[1]))
+    assert config == {"name": "agentprint", "type": "stdio", "command": "uvx", "args": MCP_ARGS}

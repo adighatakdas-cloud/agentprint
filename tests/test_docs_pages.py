@@ -2,6 +2,7 @@ import re
 import subprocess
 
 from agentprint import __version__
+from agentprint.plugins import REMOVE_PLUGIN
 from agentprint.secrets import find_secrets
 from tools import gen_docs
 
@@ -13,6 +14,7 @@ PAGES = [
     "ci",
     "badge",
     "agents",
+    "plugins",
     "how-it-works",
     "privacy",
     "glossary",
@@ -225,7 +227,7 @@ def test_ci_page_pins_users_copy_name_this_release():
 
 def test_pinned_versions_in_ci_and_plugin_pages_are_this_release():
     version = r"(\d+\.\d+\.\d+(?:[a-z]+\d+|\.dev\d+)?)"
-    for page in ("ci",):
+    for page in ("ci", "plugins"):
         text = (DOCS / f"{page}.md").read_text()
         pins = re.findall(r"(?:agentprint==|--branch v|--ref v)" + version, text)
         assert pins and set(pins) == {__version__}, page
@@ -242,3 +244,29 @@ def test_ci_page_has_pre_push_lefthook_and_husky():
         ".husky/pre-push",
     ):
         assert needed in text, needed
+
+
+def test_plugins_page_covers_every_ecosystem_and_says_pick_one():
+    text = (DOCS / "plugins.md").read_text()
+    assert "Use the plugin or `agentprint install`, not both" in text
+    agents = ["Claude Code", "Codex", "GitHub Copilot CLI", "Gemini CLI", "Cursor", "Antigravity"]
+    for agent in [*agents, "Hermes Agent", "VS Code"]:
+        assert f"### {agent}" in text or f"| {agent}" in text, agent
+    rows = [ln for ln in text.splitlines() if ln.startswith("| ") and ln.endswith(" |")]
+    status = [
+        ln.rsplit("|", 2)[1].strip()
+        for ln in rows
+        if "as documented" in ln or "docs-verified only" in ln
+    ]
+    assert status.count("as documented") == 2 and len(status) == 8
+    for word in ("code --add-mcp", "vscode:mcp/install?", "macOS and Linux only", "uninstall"):
+        assert word in text, word
+    for command in REMOVE_PLUGIN.values():  # the same way out status prints
+        assert command in text.replace("`", ""), command
+
+
+def test_plugins_page_is_in_the_reference_sidebar():
+    config = (gen_docs.ROOT / "site/astro.config.mjs").read_text()
+    reference = re.search(r'label: "Reference",\s*items: \[(.*?)\]', config, re.S).group(1)
+    slugs = re.findall(r'slug: "([^"]+)"', reference)
+    assert slugs[:2] == ["agents", "plugins"]
