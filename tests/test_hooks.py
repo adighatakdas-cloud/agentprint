@@ -159,6 +159,23 @@ def test_antigravity_allow_defers_to_its_own_policy(project):
     assert out == {"decision": "allow"}
 
 
+def test_antigravity_without_a_folder_could_not_check(project, monkeypatch):
+    # A plugin hook runs in the plugin's own folder, so with neither Cwd nor workspacePaths the
+    # check must not look there and say OK: a publish or push "could not be checked".
+    monkeypatch.chdir(project)  # even a leaky package here must not be what gets checked
+    data = payload("antigravity", PUBLISH, project)
+    del data["workspacePaths"], data["toolCall"]["args"]["Cwd"]
+    out = json.loads(run("antigravity", data).stdout)
+    assert out["decision"] == "allow" and "could not check" in out["reason"]
+    assert "agentprint: BLOCK" not in out["reason"]
+    strict = json.loads(
+        hook.run_hook("antigravity", json.dumps(data), {"AGENTPRINT_STRICT": "1"}).stdout
+    )
+    assert strict["decision"] == "deny" and "strict mode" in strict["reason"]
+    data["toolCall"]["args"]["CommandLine"] = "ls -la"
+    assert json.loads(run("antigravity", data).stdout) == {"decision": "allow"}
+
+
 def test_hermes_ignores_other_tools(project):
     data = payload("hermes", PUBLISH, project)
     data["tool_name"] = "read_file"

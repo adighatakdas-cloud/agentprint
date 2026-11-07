@@ -11,6 +11,8 @@ description: What agentprint install adds to each AI coding agent, what the agen
 
 Together, the hook and the check it runs are the tripwire. See [What `install` changes](/agentprint/agents/#what-install-changes) for the exact file each agent gets.
 
+Rather add agentprint through your agent's own plugin system? Most agents have an agentprint plugin with the same three things: see [Plugins and extensions](/agentprint/plugins/). Use the plugin or `install` for an agent, not both.
+
 ## What the agent reads
 
 Under a minute, start to finish:
