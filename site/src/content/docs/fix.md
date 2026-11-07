@@ -17,10 +17,10 @@ Each line of the plan starts with what it will do: `mask`, `env`, `ignore` or `l
 
 | Print | What `fix` does | Undo |
 |---|---|---|
-| [AP001](/agentprint/checks/ap001/): a key in an agent's history, transcript or paste cache | `mask`: masks the key where it is | No |
+| [AP001](/agentprint/checks/ap001/): a key in an agent's transcript, chat log, paste cache, prompt history or backup of an edited file | `mask`: masks the key where it is | No |
 | [AP002](/agentprint/checks/ap002/): a key inside a permission entry, such as a pasted command in `permissions.allow` | `mask`: masks the key where it is | No |
 | [AP005](/agentprint/checks/ap005/): a key written into a Claude Code MCP server's `env` | `env`: replaces the value with `"${NAME}"`, so Claude Code reads the key from your shell | No |
-| [AP006](/agentprint/checks/ap006/): an agent file would ship in your npm package (with `--pack`) | `ignore`: adds a line to `.npmignore` and to `.gitignore` | Yes |
+| [AP006](/agentprint/checks/ap006/): an agent file would ship in your npm package (with `--pack`) | `ignore`: adds a line naming that file to `.npmignore` and to `.gitignore` | Yes |
 | [AP007](/agentprint/checks/ap007/): a personal agent file is not in `.gitignore` | `ignore`: adds it to `.gitignore` | Yes |
 | [AP008](/agentprint/checks/ap008/): other users on this machine can read agent files | `lock`: makes exactly those files private to you | Yes |
 
@@ -28,7 +28,9 @@ Each line of the plan starts with what it will do: `mask`, `env`, `ignore` or `l
 
 A masked key keeps its first four characters, and every character after them becomes `*`. The line keeps its length, so nothing else in the file moves. In agentprint's output a key is always shown masked, as its first four characters and its length: `sk-a…(len 105)`.
 
-If your npm package has no `.npmignore` yet, `fix` starts one as a copy of `.gitignore`: once `.npmignore` exists, npm stops reading `.gitignore`.
+An `ignore` line names just the file, from the project root: `/.claude/settings.local.json`. It never names a whole folder such as `.claude/` or `.github/`, because those also hold files you commit and ship on purpose, like workflows and shared agent settings. The one exception is a folder that holds nothing but agent data, such as `.codex/sessions/`: then the line names that folder.
+
+If your npm package has no `.npmignore` yet, `fix` starts one as a copy of `.gitignore`: once `.npmignore` exists, npm stops reading `.gitignore`. If `package.json` has a `files` list that includes the agent file, `fix` adds the line to `.gitignore` only, and the `files` list is yours to change.
 
 ### What stays with you
 
@@ -38,6 +40,7 @@ If your npm package has no `.npmignore` yet, `fix` starts one as a copy of `.git
 - **Set the variable.** After `env`, set `NAME` (for example `GITHUB_TOKEN`) to the new key in the shell that starts Claude Code.
 - **Agent permissions and hooks** ([AP003](/agentprint/checks/ap003/), [AP004](/agentprint/checks/ap004/)). They change how your agent behaves, so you decide.
 - **A key your agent uses as a setting**, such as an `env` block or an `apiKey` field. Masking it would break the agent, so move it to an environment variable yourself.
+- **A key in a file your agent reads back**: a skill, a rule, a memory or a scheduled job, such as Hermes skills and cron jobs, Windsurf rules, Antigravity knowledge or Claude Code's auto memory. The key is in use there, and masking it would break what uses it. `fix` masks only history that is a record and nothing more: transcripts, chat logs, paste caches, prompt history and backups of files the agent edited.
 - **A key in a chat database** (Cursor, OpenCode). Delete that chat in the app.
 - **An MCP key in another agent's config**, or in a header, an argument or a URL.
 - **A PyPI package.** Build tools differ, so you get the exclude steps.
@@ -49,8 +52,8 @@ If your npm package has no `.npmignore` yet, `fix` starts one as a copy of `.git
 - **Plan first.** `fix` changes nothing until you answer `y`, or pass `--yes`. In an AI agent, a pipe or CI it never asks: without `--yes` it shows the plan, changes nothing and says to re-run with `--yes`.
 - **No copy of a key.** A file that held a key is never backed up. The plan, the journal and the output show masked keys only.
 - **A running agent's writes are kept.** The AI agent that runs `fix` may be writing to its own transcript at that very moment. To mask a key, agentprint reads its bytes again, checks they are still the key, and writes over exactly those bytes. The file is never replaced or cut short, so anything the agent adds meanwhile stays.
-- **It refuses if a file changed.** If a file changed between the plan and the fix, that one change is skipped and reported ("the file changed while fixing; run agentprint fix again"). The others go ahead.
-- **A journal of every change.** Each run that changes something writes `~/.agentprint/fix/<time>.json`, readable only by you: the file, the kind of change, the line, the masked key and the old file mode. Before it edits an ignore file, `fix` copies it to `~/.agentprint/fix/backups/`. Ignore files hold no keys.
+- **It refuses if a file changed.** If a file changed or was deleted between the plan and the fix, that one change is skipped and reported ("the file changed while fixing; run agentprint fix again"). The others go ahead. Its own edits don't count: when one file gets both `mask` and `env`, the `env` change checks the file as the masks left it.
+- **A journal of every change.** Each run that changes something writes `~/.agentprint/fix/<time>.json`, readable only by you: the file, the kind of change, the line, the masked key and the old file mode. A run that changed nothing leaves no journal. Before it edits an ignore file, `fix` copies it to `~/.agentprint/fix/backups/`. Ignore files hold no keys.
 
 ### Undo
 
@@ -58,7 +61,7 @@ If your npm package has no `.npmignore` yet, `fix` starts one as a copy of `.git
 agentprint fix --undo
 ```
 
-This puts back the `ignore` and `lock` changes of the last run: ignore files come back from their copies, and files get their old modes. It can't undo `mask` or `env`: agentprint never kept the key, so there is nothing to put back, and it tells you which changes those were. It leaves alone an ignore file you edited after the fix, or a mode you changed again, and says so. With no journal, it says there is nothing to undo.
+This puts back the `ignore` and `lock` changes of the last run: ignore files come back from their copies, an ignore file that `fix` created is removed, and files get their old modes. It can't undo `mask` or `env`: agentprint never kept the key, so there is nothing to put back, and it tells you which changes those were. It leaves alone an ignore file you edited after the fix, or a mode you changed again, and says so. With no journal, it says there is nothing to undo.
 
 ### One limit
 
