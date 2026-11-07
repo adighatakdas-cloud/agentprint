@@ -46,7 +46,12 @@ By default a hook never gets in your way: if agentprint hits an internal error, 
 - `agentprint install --strict` writes hooks that pass `--strict`. Run a plain `agentprint install` to go back.
 - Or set `AGENTPRINT_STRICT=1` in the environment your agent runs in, or call `agentprint guard --strict`.
 
-Strict mode is still limited to what agentprint can see: a secret assembled at run time, or one inside an arbitrary script, is not detected. And if the hook launcher itself is missing or broken, the command still runs.
+What strict mode does and does not cover:
+
+- A publish or push that agentprint cannot check is blocked. That includes a command agentprint cannot parse when it looks like a publish or push. An ordinary command it cannot parse still runs, with a note.
+- If agentprint fails to start at all (the launcher is missing, `uvx` is unavailable, or it crashes before `guard` runs), the command still runs.
+- An unknown agent name still runs.
+- It is still limited to what agentprint can see: a secret assembled at run time, or one inside an arbitrary script, is not detected.
 
 ## Good to know
 

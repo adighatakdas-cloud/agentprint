@@ -64,8 +64,15 @@ def test_internal_error_in_decide_strict_blocks(tmp_path, monkeypatch):
 
 def test_internal_error_in_detect_strict_blocks(tmp_path, monkeypatch):
     monkeypatch.setattr(guard, "detect", _boom)
-    assert not evaluate("ls", tmp_path).block
-    assert evaluate("ls", tmp_path, strict=True).block
+    for command in ("npm publish", "git push origin main"):
+        assert not evaluate(command, tmp_path).block
+        assert evaluate(command, tmp_path, strict=True).block
+
+
+def test_parser_crash_on_ordinary_command_allows_even_in_strict(tmp_path, monkeypatch):
+    monkeypatch.setattr(guard, "detect", _boom)
+    verdict = evaluate("ls", tmp_path, strict=True)
+    assert not verdict.block and "internal error" in verdict.warning
 
 
 def test_strict_leaves_clean_and_irrelevant_commands_alone(tmp_path, monkeypatch):

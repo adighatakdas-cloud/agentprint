@@ -14,6 +14,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,6 +54,24 @@ __all__ = [
 ]
 
 
+# Words that make a command look like a publish or push. Only used in strict mode, when the
+# parser itself crashes: then only a command with one of these is blocked.
+PUBLISH_WORDS = [
+    "publish",
+    "push",
+    "upload",
+    "twine",
+    "changeset",
+    "changesets",
+    "lerna",
+    "release-it",
+    "semantic-release",
+    "np",
+]
+_LOOKS_RISKY = re.compile(
+    r"(?<![\w-])(?:" + "|".join(re.escape(w) for w in PUBLISH_WORDS) + r")(?![\w-])", re.I
+)
+
 STRICT_HINT = (
     "Strict mode is on (AGENTPRINT_STRICT=1 or --strict), so a command agentprint cannot check "
     "is blocked. Fix the cause and retry, or ask the human to turn strict mode off."
@@ -78,7 +97,7 @@ def evaluate(
     try:
         risky = detect(command, cwd)
     except Exception as exc:  # noqa: BLE001 - a parser bug must never block work
-        return _failed(exc, strict)
+        return _failed(exc, strict and bool(_LOOKS_RISKY.search(command)))
     if not risky:
         return None
     try:
