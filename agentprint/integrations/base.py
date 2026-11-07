@@ -22,12 +22,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from .. import powershell
 from ..guard import Verdict
 
 MARK = "agentprint"
 HOOK_MARK = "agentprint-hook"  # every hook command agentprint installs runs this launcher
+WINDOWS_LAUNCHER = f"{HOOK_MARK}.ps1"  # the launcher's name on Windows (a PowerShell script)
 BLOCK_EXIT = 3  # guard's "block" for exit-code agents; the launcher turns it into exit 2
 Env = Mapping[str, str]
+# How every Windows hook starts the launcher: Windows PowerShell 5.1 is on every Windows 10
+# and 11, without a profile (fast, and nothing of the user's runs), never stopping to ask, and
+# with the execution policy bypassed for this one process so the launcher script may run.
+POWERSHELL = "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass"
 
 
 @dataclass(frozen=True)
@@ -37,9 +43,36 @@ class Launch:
     hook: str  # absolute path of the hook launcher script (~/.agentprint/bin/agentprint-hook)
     mcp: tuple[str, ...]  # argv that starts the MCP server
     strict: bool = False  # hooks pass --strict: block when agentprint cannot check
+    # Hooks for Windows: `hook` is then agentprint-hook.ps1, and agents that document a Windows
+    # hook field get windows_command() / powershell_command() there instead of hook_command().
+    windows: bool = False
 
     def hook_flags(self) -> tuple[str, ...]:
         return ("--strict",) if self.strict else ()
+
+    def windows_command(self, agent: str, allow: str = "") -> str:
+        """The Windows hook command, for a runner that is not PowerShell: cmd.exe /C (Codex)
+        or a plain process start. Its -Command text is ASCII with no ", $, backtick or %, so
+        cmd.exe, Windows' command-line rules and an outer PowerShell all pass it on unchanged.
+
+        If the launcher is there it runs, and its exit code (0 = go on, 2 = block) becomes
+        this command's; a launcher that is missing or cannot run (a group policy that forbids
+        scripts) answers "allow" here: exit 0 plus `allow`, the agent's own allow output."""
+        launcher = powershell.literal(self.hook)
+        args = " ".join(powershell.word(a) for a in ("--agent", agent, *self.hook_flags()))
+        allowed = f"{powershell.literal(allow.strip())}; " if allow.strip() else ""
+        script = (
+            f"if (Test-Path -LiteralPath {launcher}) {{ try {{ & {launcher} {args}; "
+            "exit (Get-Variable -Name LASTEXITCODE -ValueOnly -ErrorAction Stop) } catch { } }; "
+            f"{allowed}exit 0"
+        )
+        return f'{POWERSHELL} -Command "{script}"'
+
+    def powershell_command(self, agent: str, allow: str = "") -> str:
+        """The Windows hook command for agents that run it in PowerShell (Claude Code with
+        `"shell": "powershell"`, Copilot's `powershell` field, Cursor). PowerShell -Command
+        turns a program's exit code other than 0 or 1 into 1, so the code is passed on."""
+        return f"{self.windows_command(agent, allow)}; exit $LASTEXITCODE"
 
     def hook_command(self, agent: str, allow: str = "") -> str:
         """The command an agent's hook runs. If the launcher has gone missing (say ~/.agentprint
@@ -485,6 +518,9 @@ class Integration:
     notes: tuple[str, ...] = field(default_factory=tuple)
     # Folders whose presence means the agent is installed; default: config_dir only.
     found_by: Callable[[Path, Env], list[Path]] | None = None
+    # The agent documents how a hook runs on Windows, and its edits() write that entry when
+    # launch.windows is set. Elsewhere, Windows installs only the MCP server and the note.
+    windows_hooks: bool = False
 
     def installed(self, home: Path, env: Env) -> bool:
         if self.found_by:  # files or folders that only this agent creates

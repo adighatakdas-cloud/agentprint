@@ -23,6 +23,8 @@
   ~/.cursor/rules ... stay on the machine". agentprint writes ~/.cursor/rules/agentprint.mdc
   with `alwaysApply: true` (the documented project-rule format; not documented for the user
   folder). https://cursor.com/help/customization/rules
+- Windows: "the desktop app runs hook commands through PowerShell and pipes the JSON into the
+  command" (hooks page, checked 2026-11-07), so the Windows entry is a PowerShell command.
 """
 
 from __future__ import annotations
@@ -65,6 +67,22 @@ MATCHER = _COMMAND_START + (
     r"|(?:np|semantic-release|release-it)(?:\s|$)"
     r"|git(?:\s+-\S+(?:\s+[^-\s]\S*)?)*\s+push\b)"
 )
+# Ruling (the Windows matcher): PowerShell and cmd.exe start a tool in ways the matcher above
+# does not follow (`& "C:\Program Files\nodejs\npm.cmd" publish`, `cmd /c "npm publish"`,
+# `Set-Location C:\pkg; git push`), and a command the matcher skips is never checked at all.
+# So on Windows the hook runs for any command that has one of these words in it, in any case,
+# and the guard decides. Cost if wrong: a check (answered "allow") for commands such as
+# `Push-Location` or `git log --grep release`; a little time, never a prompt.
+WINDOWS_WORDS = ("publish", "push", "upload", "release", "deploy", "ship")
+
+
+def _any_case(word: str) -> str:
+    return "".join(f"[{c.upper()}{c.lower()}]" for c in word)
+
+
+WINDOWS_MATCHER = "|".join(
+    [*(_any_case(w) for w in WINDOWS_WORDS), r"\b" + _any_case("np") + r"\b"]
+)
 RULE = f"""\
 ---
 description: agentprint security check before publishing a package or pushing
@@ -92,11 +110,15 @@ def _drop_hook(config: dict) -> None:
 
 def edits(home: Path, env: Env, launch: Launch) -> list[Edit]:
     base = config_dir(home, env)
-    entry = {
-        "command": launch.hook_command(NAME, reply(None).stdout),
-        "timeout": 60,
-        "matcher": MATCHER,
-    }
+    allow = reply(None).stdout
+    if launch.windows:
+        entry = {
+            "command": launch.powershell_command(NAME, allow),
+            "timeout": 60,
+            "matcher": WINDOWS_MATCHER,
+        }
+    else:
+        entry = {"command": launch.hook_command(NAME, allow), "timeout": 60, "matcher": MATCHER}
     server = mcp_entry(launch, type="stdio")
     return [
         JsonEdit(
@@ -147,4 +169,5 @@ INTEGRATION = Integration(
     edits=edits,
     parse_hook=parse_hook,
     reply=reply,
+    windows_hooks=True,
 )

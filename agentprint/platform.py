@@ -14,7 +14,6 @@ from pathlib import Path, PurePath
 from typing import Any
 
 NOT_CHECKED_WINDOWS = "File permissions (AP008) are not checked on Windows yet."
-NO_HOOKS_WINDOWS = "Hooks are not installed on Windows yet; the MCP server and the note are."
 
 
 def is_windows() -> bool:

@@ -12,6 +12,11 @@
 - Instructions: ~/.codex/AGENTS.md, unless a non-empty AGENTS.override.md takes its place.
   https://learn.chatgpt.com/docs/agent-configuration/agents-md
 - CODEX_HOME moves ~/.codex. https://learn.chatgpt.com/docs/config-file/environment-variables
+- Windows: "`commandWindows` is an optional Windows-only command override" (hooks page, checked
+  2026-11-07). Codex runs it through %COMSPEC% (cmd.exe) as `/C "<command>"` with the payload on
+  stdin, and uses `command` only when `commandWindows` is absent (codex-rs/hooks
+  engine/command_runner.rs and engine/discovery.rs, read 2026-11-07). `command` is required, and
+  a file written on Windows is for Windows, so both hold the Windows command.
 """
 
 from __future__ import annotations
@@ -83,12 +88,16 @@ def _instructions_file(base: Path) -> Path:
     return base / "AGENTS.md"
 
 
+def _handler(launch: Launch) -> dict:
+    if launch.windows:
+        command = launch.windows_command(NAME)
+        return {"type": "command", "command": command, "commandWindows": command, "timeout": 60}
+    return {"type": "command", "command": launch.hook_command(NAME), "timeout": 60}
+
+
 def edits(home: Path, env: Env, launch: Launch) -> list[Edit]:
     base = config_dir(home, env)
-    entry = {
-        "matcher": "^Bash$",
-        "hooks": [{"type": "command", "command": launch.hook_command(NAME), "timeout": 60}],
-    }
+    entry = {"matcher": "^Bash$", "hooks": [_handler(launch)]}
     return [
         JsonEdit(
             base / "hooks.json",
@@ -139,4 +148,5 @@ INTEGRATION = Integration(
         "Codex runs a new hook only after you trust it: open Codex, type /hooks and trust the "
         "agentprint hook.",
     ),
+    windows_hooks=True,
 )

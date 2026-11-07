@@ -25,6 +25,9 @@ Verified for the Copilot CLI. VS Code says its "Copilot" agent runs the same run
   which Copilot CLI doesn't read. In VS Code's older "Local" agent with `chat.useClaudeHooks`
   on, both hooks can run for one command: both give the same verdict and "the most
   restrictive wins", so the agent sees the same BLOCK twice at worst. Cost: one duplicate check.
+- Windows: a hook's `powershell` field is the "Shell command for Windows" (`bash` is for Unix),
+  and the CLI's Windows shell tool is `powershell` ("Execute shell commands (Windows)"), so the
+  Windows entry has `powershell` and matches `bash|powershell` (same page, checked 2026-11-07).
 """
 
 from __future__ import annotations
@@ -52,7 +55,7 @@ from .base import (
 )
 
 NAME = "copilot"
-SHELL_TOOLS = {"bash", "Bash"}  # hooks are POSIX-only for now, so no "powershell"
+SHELL_TOOLS = {"bash", "Bash", "powershell"}  # powershell: the shell tool on Windows
 
 
 def config_dir(home: Path, env: Env) -> Path:
@@ -60,12 +63,20 @@ def config_dir(home: Path, env: Env) -> Path:
 
 
 def _hook_file(launch: Launch) -> str:
-    entry = {
-        "type": "command",
-        "bash": launch.hook_command(NAME),
-        "timeoutSec": 60,
-        "matcher": "bash",
-    }
+    if launch.windows:
+        entry = {
+            "type": "command",
+            "powershell": launch.powershell_command(NAME),
+            "timeoutSec": 60,
+            "matcher": "bash|powershell",
+        }
+    else:
+        entry = {
+            "type": "command",
+            "bash": launch.hook_command(NAME),
+            "timeoutSec": 60,
+            "matcher": "bash",
+        }
     return json.dumps({"version": 1, "hooks": {"preToolUse": [entry]}}, indent=2) + "\n"
 
 
@@ -129,4 +140,5 @@ INTEGRATION = Integration(
     edits=edits,
     parse_hook=parse_hook,
     reply=reply,
+    windows_hooks=True,
 )

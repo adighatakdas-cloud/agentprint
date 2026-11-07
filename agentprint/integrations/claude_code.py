@@ -10,6 +10,10 @@
   stdio. https://code.claude.com/docs/en/mcp
 - Instructions: ~/.claude/CLAUDE.md, loaded in every session. https://code.claude.com/docs/en/memory
 - CLAUDE_CONFIG_DIR moves ~/.claude and .claude.json. https://code.claude.com/docs/en/claude-directory
+- Windows (hooks page, checked 2026-11-07): a hook with `"shell": "powershell"` runs its command
+  in PowerShell whether or not Git Bash is installed. Without Git Bash, Claude Code registers
+  only its PowerShell tool (input `tool_input.command`, like Bash), so a shell hook matches
+  `Bash|PowerShell`; and any exit code other than 0 or 2 counts as a hook failure.
 """
 
 from __future__ import annotations
@@ -37,6 +41,7 @@ from .base import (
 )
 
 NAME = "claude-code"
+SHELL_TOOLS = ("Bash", "PowerShell")  # PowerShell: Windows, where it can be the only shell tool
 
 
 def config_dir(home: Path, env: Env) -> Path:
@@ -49,12 +54,20 @@ def _state_file(home: Path, env: Env) -> Path:
     return home / ".claude.json"
 
 
-def edits(home: Path, env: Env, launch: Launch) -> list[Edit]:
-    base = config_dir(home, env)
-    entry = {
+def _hook(launch: Launch) -> dict:
+    if launch.windows:
+        command = launch.powershell_command(NAME)
+        handler = {"type": "command", "command": command, "shell": "powershell", "timeout": 60}
+        return {"matcher": "|".join(SHELL_TOOLS), "hooks": [handler]}
+    return {
         "matcher": "Bash",
         "hooks": [{"type": "command", "command": launch.hook_command(NAME), "timeout": 60}],
     }
+
+
+def edits(home: Path, env: Env, launch: Launch) -> list[Edit]:
+    base = config_dir(home, env)
+    entry = _hook(launch)
     server = mcp_entry(launch, type="stdio")
     return [
         JsonEdit(
@@ -74,7 +87,7 @@ def edits(home: Path, env: Env, launch: Launch) -> list[Edit]:
 
 
 def parse_hook(payload: dict, env: Env) -> HookCall | None:
-    if payload.get("tool_name") != "Bash":
+    if payload.get("tool_name") not in SHELL_TOOLS:
         return None
     command = (payload.get("tool_input") or {}).get("command")
     if not isinstance(command, str):
@@ -112,4 +125,5 @@ INTEGRATION = Integration(
     edits=edits,
     parse_hook=parse_hook,
     reply=reply,
+    windows_hooks=True,
 )

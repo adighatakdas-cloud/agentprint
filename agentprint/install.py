@@ -10,8 +10,16 @@ Ruling (how agents start agentprint): hooks call a small launcher script,
 ~/.agentprint/bin/agentprint-hook, which runs `<agentprint> guard`. <agentprint> is the absolute
 path of a permanent install if one is on PATH, else `uvx agentprint==<this version>` by absolute
 path. Absolute paths survive Gemini CLI's sanitized hook environment and GUI apps that don't
-see the shell PATH. Cost if wrong: one extra file on disk. POSIX only: on Windows install adds
-just the MCP server and the note (no hooks, no launcher) until a Windows launcher exists.
+see the shell PATH. Cost if wrong: one extra file on disk.
+
+Ruling (Windows): the launcher is ~/.agentprint/bin/agentprint-hook.ps1, run by Windows
+PowerShell (`powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass`), with the same
+exit-code rules. Hooks go only into agents whose docs say how a hook runs on Windows (Claude Code's
+`shell: "powershell"`, Copilot's `powershell` field, Codex's `commandWindows`, Cursor's
+PowerShell runner: `Integration.windows_hooks`); the others get the MCP server and the note,
+and install says which is which. The hook input goes to agentprint on stdin untouched: the
+launcher never reads `$input` (PowerShell then leaves stdin alone) and agentprint inherits it.
+Cost if wrong: an agent that runs Windows hooks some other way gets no check, only the note.
 
 Launcher exit codes, from each agent's docs (rechecked 2026-11-05):
 - Claude Code: 0 = go on (stdout JSON read), 2 = block, others = non-blocking error.
@@ -46,12 +54,14 @@ from pathlib import Path
 
 import yaml
 
-from . import __version__, platform
+from . import __version__, platform, powershell
 from .integrations import ALL_INTEGRATIONS
 from .integrations.base import (
     BLOCK_EXIT,
     HOOK_MARK,
     MARK,
+    POWERSHELL,
+    WINDOWS_LAUNCHER,
     BlockEdit,
     Edit,
     FileEdit,
@@ -178,6 +188,84 @@ case "$agent" in
 esac
 exit 0
 """
+
+
+def _file_text(text: str) -> str:
+    return powershell.literal(text, powershell.IN_FILE)
+
+
+def windows_launcher_script(agentprint: list[str]) -> str:
+    """agentprint-hook.ps1: launcher_script's rules in Windows PowerShell 5.1 (and 7). ASCII
+    only, since 5.1 reads a .ps1 without a byte-order mark in the ANSI code page."""
+    allows = []
+    for name, integration in ALL_INTEGRATIONS.items():
+        allow = integration.reply(None).stdout.strip()
+        if allow:
+            allows.append(f"            {_file_text(name)} {{ $allow = {_file_text(allow)} }}")
+    fixed = subprocess.list2cmdline([*agentprint[1:], "guard"])
+    lines = [
+        f"# {HOOK_MARK}: Written by `agentprint install`; `agentprint uninstall` deletes it.",
+        "# Every agent hook agentprint installs on Windows runs this script with Windows",
+        f"# PowerShell ({POWERSHELL}).",
+        "# It starts agentprint's check before a package publish or git push, and makes sure a",
+        "# missing or broken agentprint can never block your agent: any failure lets the command",
+        "# through (exit 0, the agent's own allow). It never exits 1. The hook input on stdin goes",
+        "# to agentprint as it is (this script never reads it, so PowerShell leaves it alone).",
+        "$ErrorActionPreference = 'Stop'",
+        "$ProgressPreference = 'SilentlyContinue'  # no progress records on stderr",
+        "$agent = ''",
+        "$strict = $false",
+        "function Send-Bytes([byte[]]$bytes) {",
+        "    if ($null -ne $bytes -and $bytes.Length -gt 0) {",
+        "        $stdout = [Console]::OpenStandardOutput()",
+        "        $stdout.Write($bytes, 0, $bytes.Length)",
+        "        $stdout.Flush()",
+        "    }",
+        "}",
+        "function Exit-Allowed([string]$why) {",
+        "    try {",
+        "        [Console]::Error.WriteLine('agentprint: hook check failed (' + $why + '); ' +",
+        "            'the command was allowed')",
+        "        $allow = ''",
+        "        switch ($agent) {",
+        *allows,
+        "        }",
+        '        if ($allow) { Send-Bytes ([Text.Encoding]::UTF8.GetBytes($allow + "`n")) }',
+        "    } catch { }",
+        "    exit 0",
+        "}",
+        "trap { Exit-Allowed ('launcher error: ' + $_.Exception.GetType().Name) }",
+        "# --agent <name> and --strict, however this PowerShell passed them on (-File can turn",
+        "# --agent into a named parameter): agentprint gets them in one known form.",
+        "for ($i = 0; $i -lt $args.Count; $i++) {",
+        "    $word = [string]$args[$i]",
+        "    if ($word -match '^-+agent[:=](.+)$') { $agent = $Matches[1] }",
+        "    elseif ($word -match '^-+agent:?$' -and $i + 1 -lt $args.Count) {",
+        "        $i++",
+        "        $agent = [string]$args[$i]",
+        "    }",
+        "    elseif ($word -match '^-+strict$') { $strict = $true }",
+        "}",
+        "if ($agent -notmatch '^[A-Za-z0-9][A-Za-z0-9_-]*$') { Exit-Allowed 'no agent name' }",
+        "$env:PYTHONUTF8 = '1'",
+        "$start = New-Object System.Diagnostics.ProcessStartInfo",
+        f"$start.FileName = {_file_text(agentprint[0])}",
+        f"$start.Arguments = {_file_text(fixed)} + ' --agent ' + $agent",
+        "if ($strict) { $start.Arguments += ' --strict' }",
+        "$start.UseShellExecute = $false",
+        "$start.RedirectStandardOutput = $true  # stdin and stderr: this script's own",
+        "$start.CreateNoWindow = $true",
+        "try { $child = [System.Diagnostics.Process]::Start($start) }",
+        "catch { Exit-Allowed 'agentprint did not start' }",
+        "$buffer = New-Object System.IO.MemoryStream",
+        "$child.StandardOutput.BaseStream.CopyTo($buffer)",
+        "$child.WaitForExit()",
+        "$status = $child.ExitCode",
+        "if ($status -eq 0) { Send-Bytes $buffer.ToArray(); exit 0 }",
+        f"if ($status -eq {BLOCK_EXIT}) {{ Send-Bytes $buffer.ToArray(); exit 2 }}",
+        "Exit-Allowed ('exit ' + $status)",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 # ---- state, backups, safe writes --------------------------------------------------------------
@@ -388,11 +476,27 @@ def _would_change(path: Path, edits: list[Edit]) -> bool:
 # ---- install ----------------------------------------------------------------------------------
 
 
-def _hook_free(edits: list[Edit]) -> list[Edit]:
-    """On Windows only the MCP server and the note go in: hooks run through a /bin/sh launcher."""
-    if not platform.is_windows():
+def _hook_free(integration: Integration, edits: list[Edit]) -> list[Edit]:
+    """On Windows an agent gets a hook only if its docs say how one runs there; the others get
+    only the MCP server and the note."""
+    if not platform.is_windows() or integration.windows_hooks:
         return edits
     return [e for e in edits if not e.what.startswith("hook")]
+
+
+def windows_hooks_line(found: list[Integration]) -> str:
+    """What install puts in on Windows, agent by agent: hooks, or only the MCP server and the
+    note."""
+    hooked = [i.label for i in found if i.windows_hooks] or ["none of these agents"]
+    rest = [i.label for i in found if not i.windows_hooks]
+    line = f"Hooks on Windows: {', '.join(hooked)}."
+    if rest:
+        line += f" Only the MCP server and the note (no Windows hooks yet): {', '.join(rest)}."
+    return line
+
+
+def _launcher_path(home: Path, windows: bool) -> Path:
+    return home / STATE_DIR / "bin" / (WINDOWS_LAUNCHER if windows else HOOK_MARK)
 
 
 def _group(edits: list[Edit]) -> dict[Path, list[Edit]]:
@@ -402,12 +506,13 @@ def _group(edits: list[Edit]) -> dict[Path, list[Edit]]:
     return grouped
 
 
-def _core_edits(home: Path, agentprint: list[str]) -> list[Edit]:
+def _core_edits(home: Path, agentprint: list[str], windows: bool = False) -> list[Edit]:
+    script = windows_launcher_script(agentprint) if windows else launcher_script(agentprint)
     return [
         FileEdit(
-            home / STATE_DIR / "bin" / HOOK_MARK,
+            _launcher_path(home, windows),
             "hook launcher (lets agents run agentprint safely)",
-            launcher_script(agentprint),
+            script,
             mode=0o700,  # runnable by you only
         )
     ]
@@ -434,18 +539,20 @@ def install(
     """Arm the agents found; returns how many files changed (or would, in a dry run).
 
     apply_hint ends a dry run's count line; the menu, which asks y/N itself, passes None."""
-    windows = platform.is_windows()  # no hooks there: only the MCP server and the note go in
+    windows = platform.is_windows()  # hooks only for agents that document Windows hooks
     agentprint = resolve_agentprint()
     found = select(names, home, env)
+    hooked = [i for i in found if i.windows_hooks] if windows else found
     # Strict hooks must run an agentprint that honours --strict: an older permanent install is
     # passed over for uvx running this version, so the promise printed below holds.
-    stale = (
-        (agentprint[0], ignores_strict(agentprint)) if strict and found and not windows else None
-    )
+    stale = (agentprint[0], ignores_strict(agentprint)) if strict and hooked else None
     if stale and stale[1]:
         agentprint = pinned_uvx()
     launch = Launch(
-        hook=str(home / STATE_DIR / "bin" / HOOK_MARK), mcp=(*agentprint, "mcp"), strict=strict
+        hook=str(_launcher_path(home, windows)),
+        mcp=(*agentprint, "mcp"),
+        strict=strict,
+        windows=windows,
     )
     echo(f"agentprint install{' (dry run: nothing is written)' if dry_run else ''}")
     if not found:
@@ -453,7 +560,7 @@ def install(
         return 0
     echo("Agents found: " + ", ".join(i.label for i in found))
     echo("Agents will start agentprint with: " + " ".join(agentprint))
-    if windows:
+    if not hooked:
         pass  # no hooks here: nothing below about how hooks start agentprint applies
     elif stale and stale[1]:
         echo(
@@ -467,16 +574,16 @@ def install(
             "`uv tool install agentprint`, then install again.)"
         )
     if windows:
-        echo(platform.NO_HOOKS_WINDOWS)
-    elif strict:
+        echo(windows_hooks_line(found))
+    if strict and hooked:
         echo("Strict mode: a publish or push agentprint cannot check will be blocked.")
     state = State.load(home)
     changed = 0
-    agents = [(i.name, i.label, _hook_free(i.edits(home, env, launch))) for i in found]
+    agents = [(i.name, i.label, _hook_free(i, i.edits(home, env, launch))) for i in found]
     agent_files = [(path, group) for _, _, edits in agents for path, group in _group(edits).items()]
     # The shared launcher goes in when an agent file will use it, or when a hook installed
     # earlier already uses it and the launcher is missing or out of date.
-    core_edits = [] if windows else _core_edits(home, agentprint)
+    core_edits = _core_edits(home, agentprint, windows) if hooked else []
     needed = any(_would_change(path, group) for path, group in agent_files) or (
         any(_would_change(edit.path, [edit]) for edit in core_edits)
         and any(_uses_launcher(path) for path, _ in agent_files)
@@ -499,7 +606,7 @@ def install(
     else:
         echo(f"Done: {changed} file(s) changed. Backups: {_shown(home, home / STATE_DIR)}")
         echo("Undo everything with: agentprint uninstall")
-    for integration in () if windows else found:  # the notes are about trusting hooks
+    for integration in hooked:  # the notes are about trusting hooks
         for note in integration.notes:
             echo(f"Note for {integration.label}: {note}")
     return changed
@@ -583,13 +690,18 @@ def uninstall(
     """Disarm the agents; returns how many files changed (or would, in a dry run).
 
     apply_hint ends a dry run's count line; the menu, which asks y/N itself, passes None."""
-    launch = Launch(hook=str(home / STATE_DIR / "bin" / HOOK_MARK), mcp=("agentprint", "mcp"))
+    windows = platform.is_windows()
+    launch = Launch(
+        hook=str(_launcher_path(home, windows)), mcp=("agentprint", "mcp"), windows=windows
+    )
     chosen = list(names) if names else list(ALL_INTEGRATIONS)
     state = State.load(home)
     echo(f"agentprint uninstall{' (dry run: nothing is written)' if dry_run else ''}")
     grouped: dict[Path, list[Edit]] = {}
     for name in chosen:
-        grouped.update(_group(_hook_free(ALL_INTEGRATIONS[name].edits(home, env, launch))))
+        # Every agent's hook edits, on Windows too: reverting takes out only agentprint's own
+        # entries, including /bin/sh ones an older agentprint wrote there before this gate.
+        grouped.update(_group(ALL_INTEGRATIONS[name].edits(home, env, launch)))
     for key, entry in state.files.items():  # moved since install, e.g. AGENTS.override.md
         if Path(key) not in grouped and (entry.get("agent") in chosen or not names):
             grouped[Path(key)] = _marker_reverts(Path(key))
@@ -599,8 +711,10 @@ def uninstall(
         if entry.get("agent") != CORE and Path(key) not in grouped
     ]
     last = not others  # nothing of another agent left: the launcher and state go too
-    if last and not platform.is_windows():
+    if last:
         grouped.update(_group(_core_edits(home, ["agentprint"])))
+        if windows:  # both launchers: an older agentprint wrote the /bin/sh one on Windows too
+            grouped.update(_group(_core_edits(home, ["agentprint"], windows=True)))
     changed = 0
     exact = True
     for path, group in grouped.items():

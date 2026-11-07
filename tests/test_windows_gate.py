@@ -1,4 +1,6 @@
-"""Windows safety gate: install writes only the MCP server and the note, never a /bin/sh hook.
+"""Windows: install writes hooks (through the PowerShell launcher) only for agents whose docs
+say how a hook runs on Windows, the MCP server and the note for every agent, and never a /bin/sh
+hook or launcher.
 
 `platform.is_windows` is monkeypatched (never `os.name`, which would break pathlib), so these
 run on every OS. Fake homes under tmp_path only.
@@ -49,18 +51,55 @@ def _files(home: Path) -> dict[str, str]:
     }
 
 
-def test_install_on_windows_writes_no_launcher_and_no_hook_commands(win, home):
+HOOKS_LINE = (
+    "Hooks on Windows: Claude Code, Codex, Cursor, GitHub Copilot. Only the MCP server and the "
+    "note (no Windows hooks yet): Gemini CLI, OpenCode."
+)
+
+
+def test_install_on_windows_hooks_only_agents_with_windows_hook_docs(win, home):
     out = _run(home)
-    assert platform.NO_HOOKS_WINDOWS in out
+    assert HOOKS_LINE in out.splitlines()
     written = _files(home)
-    assert not (home / ".agentprint" / "bin").exists()
-    assert not any("agentprint-hook" in text or "/bin/sh" in text for text in written.values())
-    assert "== agentprint ==" not in out
-    assert not (home / ".claude" / "settings.json").exists()  # Claude Code's hook file
-    assert not (home / ".codex" / "hooks.json").exists()
-    assert not (home / ".cursor" / "hooks.json").exists()
-    assert not (home / ".copilot" / "hooks").exists()
+    assert not any("/bin/sh" in text for text in written.values())
+    assert not (home / ".agentprint" / "bin" / "agentprint-hook").exists()  # the POSIX one
+    launcher = home / ".agentprint" / "bin" / "agentprint-hook.ps1"
+    assert launcher.read_text() == install.windows_launcher_script(AGENTPRINT)
+    assert "== agentprint ==" in out
+    claude = json.loads((home / ".claude" / "settings.json").read_text())
+    [handler] = claude["hooks"]["PreToolUse"][0]["hooks"]
+    assert handler["shell"] == "powershell" and str(launcher) in handler["command"]
+    [codex] = json.loads((home / ".codex" / "hooks.json").read_text())["hooks"]["PreToolUse"]
+    assert str(launcher) in codex["hooks"][0]["commandWindows"]
+    [cursor] = json.loads((home / ".cursor" / "hooks.json").read_text())["hooks"][
+        "beforeShellExecution"
+    ]
+    assert cursor["command"].startswith("powershell.exe -NoProfile")
+    [copilot] = json.loads((home / ".copilot" / "hooks" / "agentprint.json").read_text())["hooks"][
+        "preToolUse"
+    ]
+    assert "bash" not in copilot and str(launcher) in copilot["powershell"]
+    assert "hooks" not in json.loads((home / ".gemini" / "settings.json").read_text())
     assert not (home / ".config" / "opencode" / "plugins").exists()
+
+
+def test_windows_hooks_line_names_each_agent_once(win, home):
+    found = install.select(None, home, {})
+    line = install.windows_hooks_line(found)
+    assert line == HOOKS_LINE
+    assert all(line.count(i.label) == 1 for i in found)
+    assert install.windows_hooks_line([ALL_INTEGRATIONS["hermes"]]) == (
+        "Hooks on Windows: none of these agents. Only the MCP server and the note (no Windows "
+        "hooks yet): Hermes Agent."
+    )
+    assert install.windows_hooks_line([ALL_INTEGRATIONS["codex"]]) == "Hooks on Windows: Codex."
+
+
+def test_windows_reinstall_changes_nothing(win, home):
+    _run(home)
+    before = _files(home)
+    assert "Nothing changed" in _run(home)
+    assert _files(home) == before
 
 
 def test_install_on_windows_still_adds_the_mcp_server_and_the_note(win, home):
@@ -73,24 +112,61 @@ def test_install_on_windows_still_adds_the_mcp_server_and_the_note(win, home):
 
 def test_dry_run_on_windows_says_the_same(win, home):
     out = _run(home, dry_run=True)
-    assert platform.NO_HOOKS_WINDOWS in out
+    assert HOOKS_LINE in out.splitlines()
+    assert "agentprint-hook.ps1" in out
     assert not (home / ".agentprint").exists()
+
+
+def _tree(home: Path) -> dict[str, bytes | None]:
+    return {
+        p.relative_to(home).as_posix(): None if p.is_dir() else p.read_bytes()
+        for p in sorted(home.rglob("*"))
+    }
 
 
 def test_status_and_uninstall_agree_on_windows(win, home):
+    before = _tree(home)
     _run(home)
-    assert any(s.armed for s in roster(home, {}))
-    out = _run(home, fn=install.uninstall)
-    assert "agentprint-hook" not in out
-    assert not (home / ".agentprint").exists()
-    assert not any("agentprint" in t for t in _files(home).values())
+    states = {s.name: s.armed for s in roster(home, {}) if s.found}
+    assert states == dict.fromkeys(states, True)  # every agent found has agentprint in it
+    _run(home, fn=install.uninstall)
+    assert _tree(home) == before  # byte for byte, folders included
     assert not any(s.armed for s in roster(home, {}))
+
+
+def test_windows_uninstall_also_removes_what_an_older_agentprint_wrote(monkeypatch, home):
+    # agentprint 0.1.0 had no Windows gate: it wrote the /bin/sh launcher and /bin/sh hooks
+    # (Gemini CLI's too) on Windows. Uninstall there takes every one of them out.
+    before = _tree(home)
+    monkeypatch.setattr(install, "resolve_agentprint", lambda: list(AGENTPRINT))
+    monkeypatch.setattr(platform, "is_windows", lambda: False)
+    _run(home)
+    assert (home / ".agentprint" / "bin" / "agentprint-hook").exists()
+    monkeypatch.setattr(platform, "is_windows", lambda: True)
+    _run(home, fn=install.uninstall)
+    assert _tree(home) == before
+
+
+def test_windows_install_replaces_an_older_bin_sh_hook(monkeypatch, home):
+    monkeypatch.setattr(install, "resolve_agentprint", lambda: list(AGENTPRINT))
+    monkeypatch.setattr(platform, "is_windows", lambda: False)
+    _run(home)
+    monkeypatch.setattr(platform, "is_windows", lambda: True)
+    _run(home)
+    hooks = [
+        (home / ".claude" / "settings.json").read_text(),
+        (home / ".codex" / "hooks.json").read_text(),
+        (home / ".cursor" / "hooks.json").read_text(),
+        (home / ".copilot" / "hooks" / "agentprint.json").read_text(),
+    ]
+    assert all("/bin/sh" not in text and "agentprint-hook.ps1" in text for text in hooks)
 
 
 def test_posix_install_does_not_print_the_windows_line(monkeypatch, home):
     monkeypatch.setattr(platform, "is_windows", lambda: False)
     monkeypatch.setattr(install, "resolve_agentprint", lambda: ["/opt/agentprint"])
-    assert platform.NO_HOOKS_WINDOWS not in _run(home, dry_run=True)
+    out = _run(home, dry_run=True)
+    assert "Windows" not in out and "agentprint-hook.ps1" not in out
 
 
 @pytest.mark.parametrize(
@@ -175,9 +251,10 @@ def test_roaming_appdata_off_windows_is_the_default(monkeypatch, tmp_path):
     assert platform.roaming_appdata(Path.home()) == Path.home() / "AppData" / "Roaming"
 
 
-def test_every_integration_has_hook_edits_the_gate_can_see(tmp_path):
+@pytest.mark.parametrize("windows", [False, True])
+def test_every_integration_has_hook_edits_the_gate_can_see(tmp_path, windows):
     # The gate drops edits whose description starts with "hook": keep that contract honest.
-    launch = install.Launch(hook=str(tmp_path / "h"), mcp=("agentprint", "mcp"))
+    launch = install.Launch(hook=str(tmp_path / "h"), mcp=("agentprint", "mcp"), windows=windows)
     for name, integration in ALL_INTEGRATIONS.items():
         whats = [e.what for e in integration.edits(tmp_path, {}, launch)]
         hooks = [w for w in whats if w.startswith("hook")]
@@ -252,10 +329,33 @@ def test_mcp_scan_tool_on_posix_has_no_note(monkeypatch, proj):
     assert "not_checked" not in call("scan_secrets", path=str(proj))
 
 
-# ---- no hook talk on Windows -----------------------------------------------------------------
+# ---- hook talk on Windows only where a hook goes in -------------------------------------------
 
 
-def test_windows_install_says_nothing_about_hooks_but_the_one_line(monkeypatch, tmp_path):
+def test_windows_install_without_hooked_agents_says_only_the_one_line(monkeypatch, tmp_path):
+    monkeypatch.setattr(platform, "is_windows", lambda: True)
+    uvx = ["uvx", f"agentprint=={install.__version__}"]
+    monkeypatch.setattr(install, "resolve_agentprint", lambda: list(uvx))
+    home = tmp_path / "home"
+    (home / ".gemini").mkdir(parents=True)
+    (home / ".gemini" / "settings.json").write_text("{}\n")
+    (home / ".hermes").mkdir()
+    (home / ".hermes" / "config.yaml").write_text("model: x\n")
+    out = _run(home, strict=True)
+    line = (
+        "Hooks on Windows: none of these agents. Only the MCP server and the note (no Windows "
+        "hooks yet): Gemini CLI, Hermes Agent."
+    )
+    assert "hooks use" not in out and "/hooks" not in out and "approve" not in out
+    assert "Strict mode" not in out and "hermes hooks" not in out
+    talk = [
+        ln for ln in out.splitlines() if "hook" in ln.lower() and not ln.lstrip().startswith("+")
+    ]
+    assert talk == [line]  # (the note's own text is a diff line, "+...")
+    assert not (home / ".agentprint" / "bin").exists()
+
+
+def test_windows_install_with_codex_keeps_its_hook_notes(monkeypatch, tmp_path):
     monkeypatch.setattr(platform, "is_windows", lambda: True)
     uvx = ["uvx", f"agentprint=={install.__version__}"]
     monkeypatch.setattr(install, "resolve_agentprint", lambda: list(uvx))
@@ -263,14 +363,16 @@ def test_windows_install_says_nothing_about_hooks_but_the_one_line(monkeypatch, 
     (home / ".codex").mkdir(parents=True)
     (home / ".hermes").mkdir()
     out = _run(home, strict=True)
-    assert platform.NO_HOOKS_WINDOWS in out
-    assert "Codex" in out and "Hermes" in out
-    assert "hooks use" not in out and "/hooks" not in out and "approve" not in out
-    assert "Strict mode" not in out and "hermes hooks" not in out
-    talk = [
-        ln for ln in out.splitlines() if "hook" in ln.lower() and not ln.lstrip().startswith("+")
-    ]
-    assert talk == [platform.NO_HOOKS_WINDOWS]  # (the note's own text is a diff line, "+...")
+    lines = out.splitlines()
+    assert (
+        "Hooks on Windows: Codex. Only the MCP server and the note (no Windows hooks yet): "
+        "Hermes Agent."
+    ) in lines
+    assert "Strict mode: a publish or push agentprint cannot check will be blocked." in lines
+    assert "hooks use uvx" in out and "/hooks" in out  # Codex's trust note
+    assert "hermes hooks" not in out and "hermes chat" not in out  # no Hermes hook, no note
+    [codex] = json.loads((home / ".codex" / "hooks.json").read_text())["hooks"]["PreToolUse"]
+    assert codex["hooks"][0]["commandWindows"].count("--strict") == 1
 
 
 def test_posix_install_keeps_its_hook_notes(monkeypatch, tmp_path):
