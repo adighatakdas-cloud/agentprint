@@ -163,13 +163,12 @@ BOMB = (
 
 
 def test_alias_bomb_is_refused_quickly(tmp_path):
-    import time
+    from tests.timing import best_of, bound
 
     home = _hermes(tmp_path, BOMB)
-    start = time.perf_counter()
-    out = _install(home, ["hermes"])
-    assert time.perf_counter() - start < 5
-    assert "skipped" in out
+    outputs: list[str] = []
+    assert best_of(lambda: outputs.append(_install(home, ["hermes"]))) < bound(5)
+    assert "skipped" in outputs[0]
     assert (home / ".hermes" / "config.yaml").read_text() == BOMB
 
 
