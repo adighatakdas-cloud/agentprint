@@ -83,8 +83,9 @@ def test_baseline_turns_todays_findings_into_known(project):
 
     agent = scan(project, "--format", "agent")
     assert agent.exit_code == 0
-    first, known = agent.output.strip().splitlines()
+    first, known, *notes = agent.output.strip().splitlines()
     assert first == "agentprint: OK"
+    assert all(note.startswith("not_checked: ") for note in notes)  # Windows: the AP008 note
     assert known.startswith("known: 2 accepted by this project, not counted")
     assert 'AP002 in the baseline "accepted 2026-11-07"' in known
 
