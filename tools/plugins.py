@@ -184,12 +184,31 @@ def copilot() -> dict[Path, str]:
     }
 
 
+def gemini() -> dict[Path, str]:
+    """https://geminicli.com/docs/extensions/reference/ : the manifest and hooks/ must sit at
+    the root of the repository (the extension's root)."""
+    context = PLUGIN / "gemini" / "GEMINI.md"
+    manifest = {
+        "name": NAME,
+        "version": VERSION,
+        "description": DESCRIPTION,
+        "contextFileName": context.relative_to(ROOT).as_posix(),
+        "mcpServers": {NAME: mcp_server("gemini")},
+    }
+    return {
+        ROOT / "gemini-extension.json": _json(manifest),
+        ROOT / "hooks" / "hooks.json": install_text("gemini", "hook"),
+        context: f"<!-- {GENERATED} -->\n\n{INSTRUCTIONS}",
+    }
+
+
 def files() -> dict[Path, str]:
     out: dict[Path, str] = {}
     for part in (
         claude_code,
         codex,
         copilot,
+        gemini,
     ):
         out |= part()
     return out

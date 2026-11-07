@@ -39,6 +39,7 @@ HOOK_FILES = {
     "claude-code": PLUGIN / "hooks" / "hooks.json",
     "codex": PLUGIN / "codex" / "hooks" / "hooks.json",
     "copilot": PLUGIN / "copilot" / "hooks.json",
+    "gemini": ROOT / "hooks" / "hooks.json",
 }
 
 
@@ -345,3 +346,16 @@ def test_copilot_hook_file_is_the_one_install_writes():
 def test_copilot_mcp_server_is_local_with_all_tools():
     server = _load(PLUGIN / "copilot" / ".mcp.json")["mcpServers"]["agentprint"]
     assert server["type"] == "local" and server["tools"] == ["*"]
+
+
+# ---- Gemini CLI ----------------------------------------------------------------------------------
+
+
+def test_gemini_extension_sits_at_the_repository_root():
+    manifest = _load(ROOT / "gemini-extension.json")
+    assert manifest["name"] == "agentprint" and manifest["version"] == __version__
+    assert (ROOT / manifest["contextFileName"]).read_text().endswith(INSTRUCTIONS)
+    assert set(manifest["mcpServers"]["agentprint"]) == {"command", "args"}  # no `type`
+    [entry] = _load(ROOT / "hooks" / "hooks.json")["hooks"]["BeforeTool"]
+    assert entry["matcher"] == "run_shell_command"
+    assert entry["hooks"][0]["timeout"] == 60000  # milliseconds
