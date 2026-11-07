@@ -293,12 +293,16 @@ def test_loop_goes_block_then_fix_then_allowed(tmp_path):
     _no_full_key(out + result.stderr)
     banner = out.index("simulated agent")
     block = out.index("agentprint: BLOCK")
-    fix = out.index("agent runs: agentprint fix --yes --format agent")
+    fix = out.index("agent runs (in my-app): agentprint fix --pack --yes --format agent")
     fixed = out.index("agentprint fix: CLEAR")
+    home_fix = out.index("agentprint fix --yes --format agent --home fake-home my-app")
     retry = out.index("agent runs again: npm publish")
     allowed = out.index("CLEAR: allowed")
-    assert banner < block < fix < fixed < retry < allowed
+    assert banner < block < fix < fixed < home_fix < retry < allowed
     assert "sk-p…(len 56)" in out  # keys appear only as redacted stubs
     assert "Rotate" in out.split("CLEAR: allowed")[0]
-    assert (root / "my-app" / ".npmignore").read_text() == ".claude/\n"
+    # only real agentprint commands changed the world: fix --pack wrote the ignore lines
+    assert "/.claude/settings.local.json" in (root / "my-app" / ".npmignore").read_text()
+    assert "FAKEFAKE" not in (root / "my-app" / ".claude" / "settings.local.json").read_text()
+    assert "wrote .npmignore" not in out
     assert "FAKEFAKE" not in (root / "fake-home" / ".claude" / "history.jsonl").read_text()

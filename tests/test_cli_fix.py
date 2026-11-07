@@ -351,7 +351,8 @@ def test_output_never_contains_a_key(world, fmt, monkeypatch):
 
 
 def test_brief_mentions_fix():
-    assert "agentprint fix --yes --format agent" in INSTRUCTIONS
+    assert "agentprint fix --pack --yes --format agent" in INSTRUCTIONS  # after a blocked publish
+    assert "agentprint fix --yes --format agent" in INSTRUCTIONS  # any other BLOCK
 
 
 # ---- AP008: the check's own file list reaches the plan through the CLI -------------------------

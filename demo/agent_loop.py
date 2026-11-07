@@ -6,8 +6,8 @@ The agent is simulated: its "decisions" are fixed lines in this file. Everything
 prints is real. The script runs the installed `agentprint` (override with AGENTPRINT_CMD):
 
 1. the agent wants to run `npm publish`; the pre-tool hook calls `agentprint guard`, which says no;
-2. the agent runs `agentprint fix --yes --format agent`, then does the one fix step left itself
-   (keep `.claude/` out of the package: that is an edit by the agent, not something `fix` makes);
+2. the agent runs `agentprint fix --pack --yes --format agent` in the package folder (ignore
+   lines, key masked), then `agentprint fix --yes --format agent` for the machine's agent files;
 3. it retries the publish; the hook lets it through;
 4. one line says what is left for the human.
 
@@ -27,7 +27,8 @@ from pathlib import Path
 
 BANNER = "simulated agent · real agentprint output"
 COMMAND = "npm publish"
-FIX = "agentprint fix --yes --format agent"
+FIX_PACK = "agentprint fix --pack --yes --format agent"
+FIX = "agentprint fix --yes --format agent --home fake-home my-app"
 WIDTH = 100
 SPEED = float(os.environ.get("AGENT_LOOP_SPEED", "1"))  # tests set 0: no pauses, no screen clears
 
@@ -79,12 +80,22 @@ def guard(project: Path, cwd: Path) -> str | None:
     return out["permissionDecisionReason"] if out["permissionDecision"] == "deny" else None
 
 
+def run_fix(shown: str, args: list[str], where: Path) -> None:
+    """The agent runs a real `agentprint fix` in the package folder and we show its answer."""
+    say(f"agent runs (in {where.name}): {shown}")
+    pause(1.5)
+    fixed = agentprint(*args, cwd=where)
+    if fixed.returncode != 0:
+        raise SystemExit(f"{shown} failed: {fixed.stdout}{fixed.stderr}")
+    wrapped(fixed.stdout.split("Tell the human")[0].rstrip())
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 1:
         print("usage: python demo/agent_loop.py <demo world folder>", file=sys.stderr)
         return 2
     world = Path(argv[0]).resolve()
-    project, home = world / "my-app", world / "fake-home"
+    project = world / "my-app"
     if not (world / ".agentprint-demo").is_file():
         raise SystemExit(f"{world} is not a demo world made by demo/build_demo.py")
 
@@ -100,24 +111,15 @@ def main(argv: list[str]) -> int:
     wrapped(reason)
     pause(9)
 
-    screen("3. The agent fixes it")
-    say(f"agent runs: {FIX}")
-    pause(1.5)
-    fixed = agentprint(
-        "fix", "--yes", "--format", "agent", "--home", str(home), str(project), cwd=world
-    )
-    if fixed.returncode != 0:
-        raise SystemExit(f"agentprint fix failed: {fixed.stderr}")
-    wrapped(fixed.stdout.split("Tell the human")[0].rstrip())
-    pause(7)
-    say()
-    say("agent does the last fix step itself: keep .claude/ out of the package")
-    (project / ".npmignore").write_text(".claude/\n", encoding="utf-8")
-    (project / ".gitignore").write_text(".claude/settings.local.json\n", encoding="utf-8")
-    say("  wrote .npmignore (.claude/) and .gitignore (.claude/settings.local.json)")
-    pause(4)
+    screen("3. The agent fixes the package")
+    run_fix(FIX_PACK, ["fix", "--pack", "--yes", "--format", "agent"], project)
+    pause(6)
 
-    screen("4. The agent retries")
+    screen("4. The agent tidies the machine")
+    run_fix(FIX, ["fix", "--yes", "--format", "agent", "--home", "fake-home", "my-app"], world)
+    pause(7)
+
+    screen("5. The agent retries")
     say(f"agent runs again: {COMMAND}")
     pause(1.5)
     say("hook: agentprint guard checks again ...")
