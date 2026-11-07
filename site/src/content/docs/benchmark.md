@@ -7,13 +7,13 @@ description: How many fake keys agentprint, gitleaks and trufflehog find in AI-a
 
 A public, repeatable test of how well agentprint finds keys in the files AI coding agents write, next to two well-known scanners. The corpus is synthetic and the labels are ours, so read it as a regression check you can rerun, not as a ranking.
 
-**Run of 2026-11-07.** Corpus: 147 cases, 84 with one fake key and 63 with look-alikes only. Tools: agentprint 0.1.0, gitleaks 8.30.1, trufflehog 3.99.8. All three tools were included in this run.
+**Run of 2026-11-07.** Corpus: 147 cases, 84 with one fake key and 63 with look-alikes only. Tools: agentprint 0.1.1, gitleaks 8.30.1, trufflehog 3.99.8. All three tools were included in this run.
 
 ## Overall
 
 | Tool | Version | Recall | Recall, plain keys | Recall, hidden keys | Precision | Keys found | False positives | Recall, any hit in file |
 |---|---|---|---|---|---|---|---|---|
-| agentprint | 0.1.0 | 73% | 100% (42 of 42) | 45% (19 of 42) | 90% | 61 of 84 | 7 of 63 | 77% |
+| agentprint | 0.1.1 | 95% | 100% (42 of 42) | 90% (38 of 42) | 92% | 80 of 84 | 7 of 63 | 96% |
 | gitleaks | 8.30.1 | 55% | 88% (37 of 42) | 21% (9 of 42) | 77% | 46 of 84 | 14 of 63 | 55% |
 | trufflehog | 3.99.8 | 55% | 86% (36 of 42) | 24% (10 of 42) | 100% | 46 of 84 | 0 of 63 | 55% |
 
@@ -33,12 +33,12 @@ Plain rows are keys in the form an agent writes them (a history line, an allowli
 | plain, in codex toml | 7 | 7 of 7 | 6 of 7 | 6 of 7 |
 | plain, in cursor mcp | 7 | 7 of 7 | 7 of 7 | 6 of 7 |
 | plain, in hermes yaml | 7 | 7 of 7 | 6 of 7 | 6 of 7 |
-| hidden: base64 | 7 | 0 of 7 | 6 of 7 | 6 of 7 |
-| hidden: line continuation | 7 | 5 of 7 | 1 of 7 | 2 of 7 |
-| hidden: split concat | 7 | 4 of 7 | 1 of 7 | 1 of 7 |
+| hidden: base64 | 7 | 6 of 7 | 6 of 7 | 6 of 7 |
+| hidden: line continuation | 7 | 7 of 7 | 1 of 7 | 2 of 7 |
+| hidden: split concat | 7 | 7 of 7 | 1 of 7 | 1 of 7 |
 | hidden: split string | 7 | 4 of 7 | 0 of 7 | 0 of 7 |
-| hidden: yaml folded | 7 | 3 of 7 | 0 of 7 | 0 of 7 |
-| hidden: zero width | 7 | 3 of 7 | 1 of 7 | 1 of 7 |
+| hidden: yaml folded | 7 | 7 of 7 | 0 of 7 | 0 of 7 |
+| hidden: zero width | 7 | 7 of 7 | 1 of 7 | 1 of 7 |
 
 ## Look-alikes the tool should leave alone
 
