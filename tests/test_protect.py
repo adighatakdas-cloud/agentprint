@@ -467,6 +467,7 @@ def test_undo_leaves_a_package_json_changed_since(package, home):
     code, text = undo(package, home)
     assert code == 1 and "changed since" in text and "prepublishOnly" in text
     assert path.read_bytes() == edited
+    assert not (home / ".agentprint" / "protect.json").exists()  # no copy of it kept
 
 
 def test_a_package_json_it_cannot_edit_is_left_with_the_snippet(package, home):

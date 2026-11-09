@@ -756,6 +756,7 @@ def _undo_npm(package: Path, entries: dict[str, dict], echo: Echo) -> int:
     if _sha(current) != entry.get("sha256"):
         echo("npm: package.json was changed since protect edited it, so it was left as is.")
         echo("  " + _by_hand_npm())
+        entries.pop(key)  # the job is yours now: agentprint keeps no copy of the file
         return 1
     atomic_write(package, entry["before"])  # the original bytes, formatting and line ends
     entries.pop(key)
