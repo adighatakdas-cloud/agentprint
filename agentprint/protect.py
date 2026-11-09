@@ -4,13 +4,22 @@ The agent hook (`agentprint install`) reads the command an agent is about to run
 can always be dodged: `eval "$CMD"`, or a push built at run time inside `python -c`. `protect`
 adds a second layer at the tools' own boundary, which fires however the command was started:
 
-- git: a pre-push hook in the repository runs `agentprint push-check`, which reads git's ref
-  lines on stdin and runs the same push check `guard` runs for `git push`. A pre-push hook that
-  was already there is kept byte for byte as `pre-push.agentprint-chained` and runs first, with
-  the same arguments and stdin; either one failing stops the push.
+- git: a pre-push hook in the repository runs `agentprint push-check --pre-push --remote "$1"`.
+  push-check reads git's ref lines on stdin and checks what the push uploads from git's own
+  objects (`gitcheck.check_pushed`): the tree of each pushed ref, plus keys in the commits
+  that remote does not have yet. Empty stdin is an up-to-date push and goes quietly. A
+  finding always blocks; what could not be checked is a note, never an OK (Ruling X19). A
+  pre-push hook that was already there is kept byte for byte as `pre-push.agentprint-chained`
+  and runs first, with the same arguments and stdin; either one failing stops the push. A hook
+  that would break when renamed (a hook manager's, or one that reads its own name) is left
+  alone and the lines to add to it are printed instead.
 - npm: package.json gets (or chains onto) `scripts.prepublishOnly`, which runs
-  `npx --yes agentprint-cli@<version> pack --fail-on high` before `npm publish`. `pack` lists
-  the package with `npm pack --dry-run --ignore-scripts`, so it never runs itself again.
+  `npx --yes agentprint-cli@<version> pack --fail-on high --if-unavailable allow` (without the
+  last flag under --strict) before `npm publish`. `pack` lists the package with
+  `npm pack --dry-run --ignore-scripts`, so it never runs itself again.
+
+package.json and hook manager files are shared (teammates, CI), so what protect puts there
+fails open when agentprint itself can't run there, unless strict; a finding always blocks.
 
 PyPI has no such boundary: twine and `uv publish` run no publish hook, so only the agent hook
 and `agentprint pack` cover Python publishes.
@@ -21,9 +30,10 @@ or, when a file has changed since, leaves it alone and says what to remove by ha
 
 Ruling (where the hook goes): `git rev-parse --git-path hooks`, which follows worktrees and
 core.hooksPath. A core.hooksPath inside the work tree belongs to a hook manager (husky,
-lefthook) or a tracked folder, so nothing is written there: the line to add is printed
-instead. One outside the repository is written to only when it is a folder this user owns
-(POSIX); otherwise, and always on Windows, the line is printed. Cost if wrong: one manual line.
+lefthook) or a tracked folder, so nothing is written there: the lines to add are printed
+instead. One outside the repository serves every repository that names it: written to only
+with `--global`, and only when it is a folder this user owns (POSIX); otherwise, and always on
+Windows, the lines are printed. Cost if wrong: one manual step.
 """
 
 from __future__ import annotations

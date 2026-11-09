@@ -299,6 +299,12 @@ def test_inside_your_agent_explains_the_protect_layer():
         "teammate",
         "$0",
         "git reset --soft",
+        "Git LFS",
+        "--recurse-submodules",
+        "could not check all of this push",
+        "one ref",
+        "not yet tested",
+        "exits 3",
     ):
         assert needed in section, needed
     readme = (gen_docs.ROOT / "README.md").read_text().split("## Inside your AI agent")[1]
