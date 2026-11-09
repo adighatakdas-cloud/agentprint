@@ -100,13 +100,15 @@ class FactoryDroid:
         yield from artifacts(NAME, Kind.SETTINGS, base / "settings.local.json", personal=True)
 
     def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
-        # Custom droids (~/.factory/droids/, .factory/droids/) and custom slash commands
-        # (~/.factory/commands/, .factory/commands/): docs.factory.com/cli/configuration/
-        # {custom-droids,custom-slash-commands}, read 2026-11-07. Hooks are config (read above).
+        # Custom droids (~/.factory/droids/, .factory/droids/), custom slash commands
+        # (~/.factory/commands/, .factory/commands/) and skills (~/.factory/skills/,
+        # .factory/skills/): docs.factory.com/cli/configuration/{custom-droids,
+        # custom-slash-commands,skills}, read 2026-11-07 and 2026-11-09. Hooks are config.
         paths: list[Path] = []
         for base in (home, project):
             if base is not None:
-                paths += children(base / ".factory" / "droids", base / ".factory" / "commands")
+                factory = base / ".factory"
+                paths += children(factory / "droids", factory / "commands", factory / "skills")
         return paths
 
     def pure_history(self, path: Path) -> bool:

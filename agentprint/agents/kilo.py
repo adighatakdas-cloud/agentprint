@@ -121,11 +121,15 @@ class Kilo:
 
     def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
         # Rule files in .kilo/rules/ and the legacy .kilocode/rules/, still read
-        # (https://kilo.ai/docs/customize/custom-rules, read 2026-11-07). Global rules are
-        # whatever files the config's "instructions" key names: not read.
-        if project is None:
-            return []
-        return children(project / ".kilo" / "rules", project / ".kilocode" / "rules")
+        # (https://kilo.ai/docs/customize/custom-rules, read 2026-11-07), and global rules in
+        # ~/.kilo/rules/*.md (https://kilo.ai/docs/getting-started/migrating, read 2026-11-09).
+        # Files the config's "instructions" key names elsewhere are not read.
+        paths: list[Path] = []
+        if home is not None:
+            paths += children(home / ".kilo" / "rules")
+        if project is not None:
+            paths += children(project / ".kilo" / "rules", project / ".kilocode" / "rules")
+        return paths
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)

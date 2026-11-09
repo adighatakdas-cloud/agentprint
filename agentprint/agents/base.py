@@ -418,9 +418,11 @@ def app_dirs(home: Path, *name: str) -> list[Path]:
 
 # Files at a plugin's or extension's root that declare MCP servers under "mcpServers": Claude
 # Code and Copilot CLI (.mcp.json, plugin.json), Agent Plugins, Codex and Cursor (mcp.json),
-# Gemini CLI (gemini-extension.json), Antigravity (mcp_config.json).
+# Gemini CLI (gemini-extension.json), Qwen Code (qwen-extension.json), Antigravity
+# (mcp_config.json).
 PLUGIN_MCP_FILES = frozenset(
     {".mcp.json", "mcp.json", "mcp_config.json", "gemini-extension.json", "plugin.json"}
+    | {"qwen-extension.json"}
     | {".claude-plugin/plugin.json", ".github/plugin/plugin.json", ".plugin/plugin.json"}
     | {".cursor-plugin/plugin.json", ".codex-plugin/plugin.json"}
 )

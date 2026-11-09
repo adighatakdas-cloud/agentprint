@@ -117,7 +117,8 @@ class Continue:
 
     def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
         # Rules in a project's .continue/rules/ (https://docs.continue.dev/customize/deep-dives/
-        # rules, read 2026-11-07; the page names no global folder).
+        # rules and .../customize/rules, read 2026-11-07 and 2026-11-09; neither names a
+        # global rules folder, so ~/.continue/rules is not read).
         if project is None:
             return []
         return children(project / ".continue" / "rules")

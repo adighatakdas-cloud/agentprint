@@ -186,3 +186,12 @@ def test_only_extension_files_carry_plugin_mcp_servers(tmp_path):
     assert extension_mcp_servers(other) == ()
     [server] = extension_mcp_servers(ExtensionArtifact("a", Kind.EXTENSION, f, root=f.parent))
     assert server.argv == ("x",)
+
+
+def test_qwen_extension_manifest_mcp_servers_are_read(tmp_path):
+    home = tmp_path / "home"
+    manifest = {"name": "x", "mcpServers": {"x": {"command": "uvx", "args": ["x-mcp"]}}}
+    path = home / ".qwen" / "extensions" / "x" / "qwen-extension.json"
+    ext.write(path, json.dumps(manifest, indent=2))
+    [finding] = _ap011(home, None)
+    assert (finding.location, finding.agent) == (str(path), "qwen-code")
