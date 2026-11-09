@@ -7,7 +7,12 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { command, findExecutable, pythonVersion } = require('../bin/agentprint.js');
+const {
+  allowsUnavailable,
+  command,
+  findExecutable,
+  pythonVersion,
+} = require('../bin/agentprint.js');
 const pkg = require('../package.json');
 
 const BIN = path.join(__dirname, '..', 'bin', 'agentprint.js');
@@ -143,4 +148,35 @@ test('command() returns null when nothing is installed', () => {
     file: '/bin/uvx',
     args: ['agentprint==1.0.0', 'scan'],
   });
+});
+
+test('--if-unavailable allow lets the publish go when agentprint cannot run', unixOnly, () => {
+  const allow = ['pack', '--fail-on', 'high', '--if-unavailable', 'allow'];
+  const missing = run(fakeDir(), allow);
+  assert.equal(missing.status, 0);
+  assert.match(missing.stderr, /^agentprint: could not run: uv or pipx is not installed; the publish goes on/);
+  const dir = fakeDir('uvx');
+  assert.equal(run(dir, allow, { FAKE_EXIT: '2' }).status, 0); // uv or agentprint failed
+  assert.equal(run(dir, allow, { FAKE_EXIT: '1' }).status, 1); // a leak still blocks
+  assert.equal(run(dir, allow, { FAKE_EXIT: '0' }).status, 0);
+  assert.equal(run(fakeDir(), ['pack']).status, 2); // without the flag: fail closed, as before
+  assert.equal(run(dir, ['pack'], { FAKE_EXIT: '2' }).status, 2);
+});
+
+test('the flag is read in both spellings and passed on to agentprint', unixOnly, () => {
+  assert.equal(allowsUnavailable(['pack', '--if-unavailable=allow']), true);
+  assert.equal(allowsUnavailable(['pack', '--if-unavailable', 'block']), false);
+  assert.equal(allowsUnavailable(['pack']), false);
+  const result = run(fakeDir('uvx'), ['pack', '--if-unavailable', 'allow']);
+  assert.deepEqual(result.stdout.trim().split('\n').slice(2), ['pack', '--if-unavailable', 'allow']);
+});
+
+test('uvx or pipx inside node_modules is never used', unixOnly, () => {
+  const root = fakeDir();
+  const bin = path.join(root, 'node_modules', '.bin');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'uvx'), FAKE, { mode: 0o755 });
+  assert.equal(findExecutable('uvx', { PATH: bin }), null);
+  const real = fakeDir('uvx');
+  assert.equal(findExecutable('uvx', { PATH: [bin, real].join(path.delimiter) }), path.join(real, 'uvx'));
 });

@@ -28,7 +28,7 @@ from .checks import ap010_risky_extension as ap010
 from .checks.ap004_network_hook import ASK_FIRST as HOOK_ASK_FIRST
 from .checks.ap005_mcp_inline_secret import _MARKER as MCP_MARKER
 from .checks.ap005_mcp_inline_secret import ASK_FIRST as MCP_ASK_FIRST
-from .models import Finding, Severity
+from .models import IN_PUSHED_COMMIT, Finding, Severity
 from .sanitize import clean, quote, safe_step
 from .secrets import HIDDEN_MARKER, RULES, hidden_how
 
@@ -176,7 +176,7 @@ def rotate_text(finding: Finding, *, person: bool = False) -> str:
     """Rotate this finding's key, and where. For an AI agent it says the agent cannot do this;
     for a person (`person`) it is simply their step."""
     name, _, shown = finding.detail.partition(": ")
-    shown = shown.partition(HIDDEN_MARKER)[0]
+    shown = shown.partition(IN_PUSHED_COMMIT)[0].partition(HIDDEN_MARKER)[0]
     rule_id = _RULE_BY_NAME.get(name)
     url = ROTATE_AT.get(rule_id or "")
     key = f"the {clean(name)} that starts {quote(shown)}"
@@ -203,6 +203,26 @@ def _hidden_key(finding: Finding) -> str | None:
 
 def _rotate(finding: Finding, person: bool = False) -> list[str]:
     return [rotate_text(finding, person=person)]
+
+
+def _pushed_commit(finding: Finding) -> str | None:
+    """The commit a key was found in when only an older version of the file being pushed holds
+    it (a short hex id, so safe in a step); None for a key in the newest version."""
+    _, marker, rest = finding.detail.rpartition(IN_PUSHED_COMMIT)
+    commit = rest.rstrip(")")
+    return commit if marker and commit.isalnum() else None
+
+
+def _in_history(finding: Finding, commit: str, person: bool) -> Advice:
+    """A key that is on its way out in a commit, though the newest version no longer has it:
+    committing a fix can't help, the commit itself has to go (or the key be rotated)."""
+    step = (
+        f"The key is in commit {commit}, an older version of {_where(finding)} that this push "
+        "would upload. Committing a fix does not take it out: rewrite the commits that are not "
+        "pushed yet so none of them holds the key (for example `git reset --soft` to the last "
+        "commit the remote has, then commit again without it), then push again."
+    )
+    return Advice([_no_leak(step, person)], _rotate(finding, person))
 
 
 def _no_leak(step: str, person: bool) -> str:
@@ -249,6 +269,8 @@ def _settings_secret(finding: Finding, moment: Moment, person: bool = False) -> 
             ),
             "Also keep that file out of the package (see the matching AP006 finding).",
         ]
+    elif moment is Moment.push and (commit := _pushed_commit(finding)):
+        return _in_history(finding, commit, person)
     elif moment is Moment.push:
         delete = (
             f"{hidden}, load the key from an environment variable instead"
@@ -291,6 +313,8 @@ def _mcp_inline_secret(finding: Finding, moment: Moment, person: bool = False) -
     # It starts by telling the agent to ask the human to rotate; a person gets rotating as a
     # step of its own, after it.
     key_part = finding.detail.partition(MCP_MARKER)[0]
+    if moment is Moment.push and (commit := _pushed_commit(finding)):
+        return _in_history(replace(finding, detail=key_part), commit, person)
     step = finding.fix
     if person and step.startswith(MCP_ASK_FIRST):
         rest = step.removeprefix(MCP_ASK_FIRST)
