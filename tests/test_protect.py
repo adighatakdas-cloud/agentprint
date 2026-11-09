@@ -105,6 +105,13 @@ def test_hook_script_is_lf_only_posix_sh_on_every_os(monkeypatch):
     assert "strict=1" in windows
 
 
+def test_hook_temporary_files_come_from_mktemp_only():
+    """A fixed name in a shared /tmp (or one derived from a private one) can be planted."""
+    text = hook_script(["/opt/bin/agentprint"], strict=False)
+    assert "TMPDIR" not in text and ".late" not in text and "$$" not in text
+    assert "tmp=$(mktemp 2> /dev/null) && mark=$(mktemp 2> /dev/null)" in text
+
+
 @pytest.mark.posix_only
 @pytest.mark.skipif(shutil.which("sh") is None, reason="no sh")
 def test_hook_script_is_valid_sh():

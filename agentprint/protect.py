@@ -132,27 +132,33 @@ chained="$(dirname "$0")/{CHAINED}"
 if [ -x "$chained" ]; then
   feed | "$chained" "$@" || exit $?
 fi
-tmp=$(mktemp 2>/dev/null) || tmp="${{TMPDIR:-/tmp}}/agentprint-push.$$"
-feed | {command} push-check{flag} > "$tmp" &
-pid=$!
-(
-  i=0
-  while [ "$i" -lt "$limit" ]; do
-    sleep 1
-    kill -0 "$pid" 2>/dev/null || exit 0
-    i=$((i + 1))
-  done
-  : > "$tmp.late"
-  kill "$pid"
-) > /dev/null 2>&1 &
-watch=$!
-wait "$pid"
-status=$?
-kill "$watch" 2> /dev/null
-out=$(cat "$tmp" 2> /dev/null)
 late=0
-[ ! -e "$tmp.late" ] || late=1
-rm -f "$tmp" "$tmp.late"
+if tmp=$(mktemp 2> /dev/null) && mark=$(mktemp 2> /dev/null); then
+  feed | {command} push-check{flag} > "$tmp" &
+  pid=$!
+  (
+    i=0
+    while [ "$i" -lt "$limit" ]; do
+      sleep 1
+      kill -0 "$pid" 2> /dev/null || exit 0
+      i=$((i + 1))
+    done
+    echo late > "$mark"
+    kill "$pid"
+  ) > /dev/null 2>&1 &
+  watch=$!
+  wait "$pid"
+  status=$?
+  kill "$watch" 2> /dev/null
+  wait "$watch" 2> /dev/null
+  out=$(cat "$tmp")
+  [ ! -s "$mark" ] || late=1
+  rm -f "$tmp" "$mark"
+else  # no private temporary file: run without the time limit
+  [ -z "${{tmp:-}}" ] || rm -f "$tmp"
+  out=$(feed | {command} push-check{flag})
+  status=$?
+fi
 case "$status:$out" in
   0:|"0:{OK}") ;;
   *) printf '%s\\n' "$out" >&2 ;;

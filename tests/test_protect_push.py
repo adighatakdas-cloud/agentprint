@@ -325,3 +325,22 @@ def test_a_check_that_hangs_is_given_up_on(world, strict):
         assert done.returncode != 0 and remote_head(remote) is None
     else:
         assert done.returncode == 0 and remote_head(remote) is not None
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="no bash")
+def test_a_clean_push_prints_nothing_under_bash_either(world):
+    """bash (macOS's /bin/sh, Git for Windows' sh) reports a killed background job unless the
+    hook waits for it: the time-limit watchdog must be reaped, or every push prints noise."""
+    repo, remote, home = world
+    install(repo, home)
+    head = git(repo, "rev-parse", "HEAD").stdout.strip()
+    done = subprocess.run(
+        [shutil.which("bash") or "bash", ".git/hooks/pre-push", "origin", str(remote)],
+        cwd=repo,
+        input=f"refs/heads/main {head} refs/heads/main {'0' * 40}\n",
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 0
+    assert done.stderr == ""
