@@ -420,7 +420,7 @@ def test_undo_restores_package_json_byte_for_byte(package, home):
     path = package / "package.json"
     path.write_text(original, newline="")
     assert run(package, home)[0] == 0
-    assert path.read_text(newline="") != original
+    assert path.read_bytes() != original.encode()
     code, text = undo(package, home)
     assert code == 0 and "back exactly" in text
     assert path.read_bytes() == original.encode()
