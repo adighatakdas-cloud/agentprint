@@ -37,7 +37,7 @@ not fully checked (low), never passed silently.
 from __future__ import annotations
 
 import re
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from itertools import chain
@@ -53,7 +53,7 @@ NOT_CHECKED = "not fully checked"
 
 WINDOW = 512  # characters one try of a shape reads, from its anchor
 MAX_TRIES = 16  # tries per shape per command or sentence
-MAX_LINE = 8192  # a longer command or sentence is not read for shapes (minified code)
+MAX_LINE = 8192  # a longer command or sentence is read in windows of this size
 MAX_PARAGRAPH = 256  # lines of prose read as one paragraph; a longer one is read in parts
 # The per-file budget, linear in the file's length: a fixed part plus a share per character.
 BASE_TRIES, TRIES_PER_CHAR = 8192, 1 / 8
@@ -68,6 +68,7 @@ class Tries:
 
     left: int = BASE_TRIES
     chars: int = BASE_CHARS
+    dropped: bool = False  # something that holds a shape's word was left unread
 
     @classmethod
     def for_text(cls, size: int) -> Tries:
@@ -94,6 +95,7 @@ class _Shape:
     words: frozenset[str]  # one of these is in the lowercased text wherever the shape is
     anchor: re.Pattern[str]  # where the shape can start
     pattern: re.Pattern[str]  # the shape, matched at an anchor within WINDOW characters
+    prose_pattern: re.Pattern[str] | None = None  # the shape in a sentence, when it differs
 
     def present(self, low: str) -> bool:
         """True when one of the shape's words is in `low` (the block, lowercased)."""
@@ -106,16 +108,21 @@ class _Shape:
     ) -> Iterator[re.Match[str]]:
         """Each match, in order. `low` is the block lowercased: a shape none of whose words is
         in it is not looked for."""
-        if tries.spent or not self.present(low):
+        if not self.present(low):
+            return
+        if tries.spent:
+            tries.dropped = True
             return
         tries.chars -= len(block) - after  # what the anchor search reads
         for n, anchor in enumerate(self.anchor.finditer(block, after)):
             if n >= MAX_TRIES or tries.left <= 0:
+                tries.dropped = True  # more places to try than one block may take
                 return
             tries.left -= 1
             start = anchor.start()
             tries.chars -= min(WINDOW, len(block) - start)  # the most one try can read
-            match = self.pattern.match(block, start, start + WINDOW)
+            pattern = self.prose_pattern if prose and self.prose_pattern else self.pattern
+            match = pattern.match(block, start, start + WINDOW)
             if match is not None and not (prose and "`" in match.group()):
                 yield match
 
@@ -123,9 +130,12 @@ class _Shape:
 ALL_WORDS: set[str] = set()  # every shape's words, filled in as shapes are made
 
 
-def _shape(words: tuple[str, ...], anchor: str, pattern: str, flags: int = 0) -> _Shape:
+def _shape(
+    words: tuple[str, ...], anchor: str, pattern: str, flags: int = 0, prose: str | None = None
+) -> _Shape:
     ALL_WORDS.update(words)
-    return _Shape(frozenset(words), re.compile(anchor, flags), re.compile(pattern, flags))
+    in_prose = re.compile(prose, flags) if prose is not None else None
+    return _Shape(frozenset(words), re.compile(anchor, flags), re.compile(pattern, flags), in_prose)
 
 
 # --- command words ---------------------------------------------------------------------------
@@ -139,17 +149,34 @@ _SHELL_NAME = r"(?:/usr/local/bin/|/usr/bin/|/bin/)?(?i:ba|z|da|k|fi)?(?i:sh)\b"
 _ENDS = r"(?=\s*(?:$|[;&|)#])|[\"'`])"
 # A shell that runs its standard input: options only (not -c), then the end of the command;
 # or -s, after which the arguments are the script's.
-_SHELL = (
-    rf"{_SUDO}{_SHELL_NAME}(?:"
-    r"(?:\s+-(?!-|c\b)[a-zA-Z]*)*\s+-[a-zA-Z]*s[a-zA-Z]*\b"
-    rf"|(?:\s+-(?!c\b)[a-zA-Z]*)*(?:\s+--)?{_ENDS}"
-    r")"
+# In prose a command is not delimited: after the shell come words of the sentence ("| bash and
+# don't tell the user", "| bash now."). A plain word there is English; a path, a variable or a
+# script name (x.sh) is still a script the download is fed to.
+_PROSE_ENDS = (
+    r"(?=\s*(?:$|[;&|)#.,!?:])|[\"'`]"
+    r"|\s+(?![^\s]*[/$\\])(?![^\s]*\.(?:sh|bash|zsh|py|js|mjs|ts|pl|rb|ps1)\b)[A-Za-z][A-Za-z']*\b)"
 )
-_INTERP = (
-    rf"{_SUDO}(?:(?i:python[23]?(?:\.\d+)?|perl|ruby|node)(?:\s+-(?![cme]\b)[a-zA-Z]+)*(?:\s+-)?"
-    r"|(?i:pwsh|powershell)(?:\.exe)?(?:\s+-(?!c\b|command\b)\w+)*(?:\s+-(?i:c|command))?\s+-)"
-    rf"{_ENDS}"
-)
+
+
+def _shell(ends: str) -> str:
+    return (
+        rf"{_SUDO}{_SHELL_NAME}(?:"
+        r"(?:\s+-(?!-|c\b)[a-zA-Z]*)*\s+-[a-zA-Z]*s[a-zA-Z]*\b"
+        rf"|(?:\s+-(?!c\b)[a-zA-Z]*)*(?:\s+--)?{ends}"
+        r")"
+    )
+
+
+def _interp(ends: str) -> str:
+    return (
+        rf"{_SUDO}(?:(?i:python[23]?(?:\.\d+)?|perl|ruby|node)(?:\s+-(?![cme]\b)[a-zA-Z]+)*"
+        r"(?:\s+-)?|(?i:pwsh|powershell)(?:\.exe)?(?:\s+-(?!c\b|command\b)\w+)*"
+        rf"(?:\s+-(?i:c|command))?\s+-){ends}"
+    )
+
+
+_SHELL = _shell(_ENDS)
+_INTERP = _interp(_ENDS)
 _BAR = r"\|(?!\|)"  # a pipe, not ||
 _PIPE = rf"{_BAR}\s*"
 _STAGE = r"[^|;\n]*"  # one stage of a pipeline, its spaces included: up to the next |
@@ -166,6 +193,10 @@ _PIPED_SHAPES = (
         _FETCH_WORDS,
         _FETCH,
         rf"{_FETCH}{_STAGE}(?:{_BAR}{_STAGE})*?{_PIPE}(?:{_SHELL}|{_INTERP})",
+        prose=(
+            rf"{_FETCH}{_STAGE}(?:{_BAR}{_STAGE})*?{_PIPE}"
+            rf"(?:{_shell(_PROSE_ENDS)}|{_interp(_PROSE_ENDS)})"
+        ),
     ),
     _shape(
         _FETCH_WORDS,
@@ -408,6 +439,7 @@ _ENCODED_SHAPES = (
         _PIPE_SHELL_WORDS,
         r"(?<![\w-])base64\s+(?:-d|--decode|-D)\b",
         rf"base64\s+(?:-d|--decode|-D)\b[^|\n]*{_PIPE}{_SHELL}",
+        prose=rf"base64\s+(?:-d|--decode|-D)\b[^|\n]*{_PIPE}{_shell(_PROSE_ENDS)}",
     ),
     _shape(
         ("powershell", "pwsh"),
@@ -461,6 +493,8 @@ class Hit(NamedTuple):
     match: re.Match[str]
     credential: str | None
     concealed: bool = False
+    text: str = ""  # the command or sentence (or the window of a long line) `match` is in
+    breaks: tuple[int, ...] = ()  # where `text` had line breaks
 
 
 def _first(
@@ -510,18 +544,59 @@ def shape_hits(
     piped: bool,
     tries: Tries,
     assigned: dict[str, str] | None = None,
+    breaks: tuple[int, ...] = (),
 ) -> list[Hit]:
     """Each risky shape in one command or sentence. `assigned` holds variables set from a
-    credential on earlier lines (commands only); this block's assignments are added to it."""
+    credential on earlier lines (commands only); this block's assignments are added to it.
+    `breaks` are where the block had line breaks (for redacting what is shown). A block longer
+    than MAX_LINE (minified code) is read in overlapping windows of MAX_LINE characters."""
     assigned = {} if assigned is None else assigned
-    if tries.spent or len(block) > MAX_LINE:
-        return []
+    if len(block) > MAX_LINE:
+        return _windows(block, prose, piped, tries, assigned, breaks)
     low = Low(block)
     if low.words.isdisjoint(TRIGGER) and not (assigned and "$" in block):
         if not prose and "=" in block:
             _assign(block, assigned)
         return []
+    if tries.spent:
+        tries.dropped = True
+        return []
     tries.chars -= BLOCK_COST
+    hits = [
+        hit._replace(text=block, breaks=breaks)
+        for hit in _block_hits(block, low, prose, piped, tries, assigned)
+    ]
+    if not prose and "=" in block:
+        _assign(block, assigned)
+    if hits and prose and concealed(block):
+        hits = [hit._replace(concealed=True) for hit in hits]
+    return hits
+
+
+def _windows(
+    block: str,
+    prose: bool,
+    piped: bool,
+    tries: Tries,
+    assigned: dict[str, str],
+    breaks: tuple[int, ...],
+) -> list[Hit]:
+    """A long line read in windows of MAX_LINE characters that overlap by WINDOW, so a shape
+    that crosses a window's end is whole in the next one; each rule's first hit is kept."""
+    hits: dict[str, Hit] = {}
+    for start in range(0, len(block), MAX_LINE - WINDOW):
+        part = block[start : start + MAX_LINE]
+        inside = tuple(b - start for b in breaks if start <= b <= start + len(part))
+        for hit in shape_hits(part, prose, piped, tries, assigned, inside):
+            hits.setdefault(hit.rule, hit)
+        if start + MAX_LINE >= len(block):
+            break
+    return list(hits.values())
+
+
+def _block_hits(
+    block: str, low: Low, prose: bool, piped: bool, tries: Tries, assigned: dict[str, str]
+) -> list[Hit]:
     hits: list[Hit] = []
     for shape in _SELF_SENDERS:
         if not shape.present(low):
@@ -556,10 +631,6 @@ def shape_hits(
     match = _first(_ENCODED_SHAPES, block, low, prose, tries)
     if match is not None:
         hits.append(Hit(ENCODED, match, None))
-    if not prose and "=" in block:
-        _assign(block, assigned)
-    if hits and prose and concealed(block):
-        hits = [hit._replace(concealed=True) for hit in hits]
     return hits
 
 
@@ -572,16 +643,68 @@ def _assign(block: str, assigned: dict[str, str]) -> None:
             assigned[match.group(1)] = named
 
 
-def snippet(block: str, match: re.Match[str]) -> str:
-    """The matched command with a little before it, keys redacted in the whole block before it
-    is cut, so a key that ends just before the command never shows its tail."""
-    head = mask_keys(block[: match.start()])
-    tail = mask_keys(block[match.start() : match.start() + 1200])
-    return safe_snippet(head[-20:] + tail, 100)
+# A run of characters a key can be made of (with the dots and colons some keys hold). One that
+# touches a line break or an edge of what is shown may be half a key split over two lines,
+# which no key pattern knows: it is masked (hard rule 2: masking too much of a display snippet
+# is fine, showing a piece of a key is not).
+_KEY_RUN = re.compile(r"[A-Za-z0-9_\-+/=:.]{5,}")  # 5: a piece no longer than a stub
+_LEADING_RUN = re.compile(r"[A-Za-z0-9_\-+/=:.]+")
 
 
-def detail(hit: Hit, block: str) -> str:
-    text = snippet(block, hit.match)
+def _fragments(text: str, breaks: Iterable[int]) -> list[tuple[int, int]]:
+    """The spans of key-character runs that touch a line break (`breaks`) or an end of `text`."""
+    points = sorted({0, len(text), *breaks})
+    spans = []
+    for match in _KEY_RUN.finditer(text):
+        # A break is the joint itself, or the space a line break became just before the run.
+        i = bisect_left(points, match.start() - 1)
+        if i < len(points) and points[i] <= match.end():
+            spans.append(match.span())
+    return spans
+
+
+def _masked(text: str, spans: Iterable[tuple[int, int]], offset: int = 0) -> str:
+    """`text` (which starts at `offset` of the text the spans are in) with the spans masked."""
+    out: list[str] = []
+    last = 0
+    for start, end in spans:
+        start, end = max(start - offset, 0), min(end - offset, len(text))
+        if start < end and start >= last:
+            scheme = text.find("://", start, end)
+            if scheme >= 0:  # a web address: its host stays readable, the rest is masked
+                host = text.find("/", scheme + 3, end)
+                start = end if host < 0 else host
+            if start < end:
+                out += [text[last:start], f"\u2026(len {end - start})"]
+                last = end
+    return "".join([*out, text[last:]])
+
+
+def mask_fragments(text: str, breaks: Iterable[int] = ()) -> str:
+    """`text` with every run of five or more key characters that touches a line break or either
+    end of it replaced by its length."""
+    return _masked(text, _fragments(text, list(breaks)))
+
+
+def snippet(block: str, match: re.Match[str], breaks: tuple[int, ...] = ()) -> str:
+    """The matched command with a little before it. Every key in the block is masked before it
+    is cut, and so is any run that may be a piece of a key split over two lines, so no piece of
+    a key next to the command is ever shown."""
+    start = match.start()
+    end = min(len(block), start + 1200)
+    spans = _fragments(block[:end], [b for b in breaks if b <= end])
+    head = mask_keys(_masked(block[:start], spans))
+    tail = mask_keys(_masked(block[start:end], spans, start))
+    cut = head[-20:]
+    if len(head) > 20:  # the cut may fall inside a run: what is left of it is not shown
+        lead = _LEADING_RUN.match(cut)
+        if lead is not None:
+            cut = "\u2026" + cut[lead.end() :]
+    return safe_snippet(cut + tail, 100)
+
+
+def detail(hit: Hit, block: str = "") -> str:
+    text = snippet(hit.text or block, hit.match, hit.breaks)
     if hit.rule == EXFILTRATION:
         program = re.match(r"[\w.$/-]+", hit.match.group())
         how = safe_snippet(program.group() if program else "a request", 20)
@@ -599,12 +722,22 @@ def shapes(
 ) -> list[tuple[str, str]]:
     """(rule, detail) for each risky shape in one command or sentence."""
     tries = Tries() if tries is None else tries
-    return [(hit.rule, detail(hit, block)) for hit in shape_hits(block, prose, piped, tries)]
+    return [(hit.rule, detail(hit)) for hit in shape_hits(block, prose, piped, tries)]
 
 
-def encoded_commands(text: str, budget: Budget, tries: Tries) -> Iterator[tuple[int, str]]:
+def show_decoded(decoded: str) -> str:
+    """A decoded command made safe to show: keys masked, and halves of keys split over lines."""
+    breaks = [m.start() for m in re.finditer("\n", decoded)]
+    return safe_snippet(mask_keys(mask_fragments(decoded, breaks)), 80)
+
+
+def encoded_commands(
+    text: str, budget: Budget, tries: Tries, dropped: list[int] | None = None
+) -> Iterator[tuple[int, str]]:
     """(index, decoded) for each base64 blob in `text` that decodes to a shell command; short
-    tokens (MIN_SHORT_BLOB to 39 characters) only when they decode to one exactly."""
+    tokens (MIN_SHORT_BLOB to 39 characters) only when they decode to one. Where a budget ran
+    out with tokens left unread, the first such token's index is added to `dropped`."""
+    dropped = [] if dropped is None else dropped
     for start, _end, decoded in base64_texts(text, budget):
         head = decoded[:4096]
         printable = sum(ch.isprintable() or ch in "\n\t\r" for ch in head)
@@ -613,10 +746,14 @@ def encoded_commands(text: str, budget: Budget, tries: Tries) -> Iterator[tuple[
         flat = head.replace("\n", " ")
         if _DECODED_COMMAND.match(head) or shape_hits(flat, False, True, tries):
             yield start, head
+    if budget.dropped_at >= 0:
+        dropped.append(budget.dropped_at)
     short = Budget(blobs=256 + len(text) // 64)
     for start, _end, decoded in base64_texts(text, short, MIN_SHORT_BLOB, 40):
         if decoded.isascii() and decoded.isprintable() and _DECODED_COMMAND.match(decoded):
             yield start, decoded
+    if short.dropped_at >= 0:
+        dropped.append(short.dropped_at)
 
 
 # --- blocks: one command or one sentence at a time -------------------------------------------
@@ -627,6 +764,7 @@ class Block(NamedTuple):
     text: str
     prose: bool
     install: bool = False  # a code block under an Install / Setup heading (ruling X17)
+    breaks: tuple[int, ...] = ()  # where the text had line breaks (joined lines)
 
 
 _FENCE = re.compile(r"^\s{0,3}(?:```|~~~)")
@@ -643,7 +781,8 @@ _SENTENCE_END = re.compile(r"(?<=[.!?])[ \t]+(?=[A-Z\"'(\[*_`])|[ \t]*\n(?=[A-Z\
 
 
 def _commands(lines: list[tuple[int, str]], install: bool = False) -> Iterator[Block]:
-    """Logical lines: a line ending in a backslash continues on the next."""
+    """Logical lines: a line ending in a backslash continues on the next, joined as a shell
+    joins it (the backslash and the line break go, nothing else)."""
     pending: list[str] = []
     first = 0
     for number, line in lines:
@@ -653,10 +792,19 @@ def _commands(lines: list[tuple[int, str]], install: bool = False) -> Iterator[B
             pending.append(line.rstrip()[:-1])
             continue
         pending.append(line)
-        yield Block(first, " ".join(pending), False, install)
+        yield _joined(first, pending, install)
         pending = []
     if pending:
-        yield Block(first, " ".join(pending), False, install)
+        yield _joined(first, pending, install)
+
+
+def _joined(first: int, pieces: list[str], install: bool) -> Block:
+    breaks: list[int] = []
+    size = 0
+    for piece in pieces[:-1]:
+        size += len(piece)
+        breaks.append(size)
+    return Block(first, "".join(pieces), False, install, tuple(breaks))
 
 
 def _sentences(paragraph: list[tuple[int, str]]) -> Iterator[Block]:
@@ -680,7 +828,8 @@ def _sentences(paragraph: list[tuple[int, str]]) -> Iterator[Block]:
         if sentence:
             first = bisect_right(offsets, at) - 1
             if len(sentence) <= MAX_LINE:
-                yield Block(numbers[first], sentence.replace("\n", " "), True)
+                breaks = tuple(m.start() for m in re.finditer("\n", sentence))
+                yield Block(numbers[first], sentence.replace("\n", " "), True, False, breaks)
             else:
                 last = bisect_right(offsets, max(at, end - 1)) - 1
                 for i in range(first, last + 1):

@@ -32,7 +32,7 @@ from ..agents.base import ExtensionArtifact
 from ..models import Artifact, Finding, HookCommand, Kind, Severity
 from ..secrets import Budget
 from ..structured import find_line, parse
-from .base import agent_configs, safe_snippet
+from .base import agent_configs
 from .hidden import hidden_characters, strip
 from .shapes import (
     ENCODED,
@@ -48,6 +48,7 @@ from .shapes import (
     encoded_commands,
     shape_hits,
     shapes,
+    show_decoded,
 )
 from .shapes import (
     concealed as concealed_text,
@@ -137,16 +138,23 @@ def _wanted(artifact: Artifact) -> bool:
     return path.suffix.lower() not in _NOT_TEXT and not docs_only(artifact)
 
 
-def _read(path: Path) -> str | None:
+def _read_file(path: Path) -> tuple[str, bool] | None:
+    """(text, cut): the file's first MAX_BYTES as text, and whether there was more. None for a
+    binary or unreadable file."""
     try:
-        if path.stat().st_size > MAX_BYTES:
-            return None
-        data = path.read_bytes()
+        with path.open("rb") as fh:
+            data = fh.read(MAX_BYTES + 1)
     except OSError:
         return None
     if b"\x00" in data[:8192]:
         return None  # binary
-    return data.decode("utf-8", errors="replace")
+    cut = len(data) > MAX_BYTES
+    return data[:MAX_BYTES].decode("utf-8", errors="replace"), cut
+
+
+def _read(path: Path) -> str | None:
+    read = _read_file(path)
+    return None if read is None else read[0]
 
 
 _STRUCTURED = frozenset({".json", ".jsonc", ".toml", ".yaml", ".yml"})
@@ -157,34 +165,44 @@ _PROSE_KEYS = frozenset(
     | {"system_prompt", "systemprompt", "body", "text", "message", "template", "guidelines"}
     | {"context", "goal", "task", "persona", "role", "notes", "usage", "when_to_use"}
 )
-MAX_VALUES = 5000  # string values read from one structured file
+MAX_VALUES = 5000  # string values read from one structured file, plus one per 32 characters
 
 
-def _values(data: object, key: str = "", depth: int = 0) -> Iterator[tuple[str, str]]:
+MAX_DEPTH = 32  # nesting read in one structured file
+
+
+def _values(
+    data: object, cut: list[int], key: str = "", depth: int = 0
+) -> Iterator[tuple[str, str]]:
     """(key, text) for each string in parsed config; a list of strings under a command key is
-    one command line (argv)."""
-    if depth > 32:
+    one command line (argv). Anything nested deeper than MAX_DEPTH is noted in `cut`."""
+    if depth > MAX_DEPTH:
+        cut.append(depth)
         return
     if isinstance(data, dict):
         for name, value in data.items():
-            yield from _values(value, str(name), depth + 1)
+            yield from _values(value, cut, str(name), depth + 1)
     elif isinstance(data, list):
         if data and all(isinstance(x, str) for x in data) and key.lower() not in _PROSE_KEYS:
             yield key, " ".join(data)
         else:
             for value in data:
-                yield from _values(value, key, depth + 1)
+                yield from _values(value, cut, key, depth + 1)
     elif isinstance(data, str):
         yield key, data
 
 
-def structured_blocks(text: str, data: object) -> Iterator[Block]:
+def structured_blocks(text: str, data: object, cut: list[int] | None = None) -> Iterator[Block]:
     """The string values of a parsed TOML, YAML or JSON file as blocks: prose under the keys
     that hold instructions, commands under the rest. Lines are found in the file lazily, only
-    for a block that holds a shape's word."""
+    for a block that holds a shape's word. Values left unread (past MAX_VALUES, or nested past
+    MAX_DEPTH) are noted in `cut`."""
+    cut = [] if cut is None else cut
     cursor = 0
-    for n, (key, value) in enumerate(_values(data)):
-        if n >= MAX_VALUES:
+    limit = MAX_VALUES + len(text) // 32
+    for n, (key, value) in enumerate(_values(data, cut)):
+        if n >= limit:
+            cut.append(n)
             return
         low = value.lower()
         if not any(word in low for word in TRIGGER):
@@ -198,7 +216,7 @@ def structured_blocks(text: str, data: object) -> Iterator[Block]:
         skip = value[: value.find(first)].count("\n") if first in value else 0
         prose = key.lower() in _PROSE_KEYS
         for block in blocks(value, prose):
-            yield block._replace(line=base + block.line - 1 - skip)
+            yield block._replace(line=max(1, base + block.line - 1 - skip))
 
 
 def _mode(path: Path, text: str) -> tuple[bool, object]:
@@ -326,10 +344,11 @@ def _finding(artifact: Artifact, hit: _Hit, kind: str, count: int) -> Finding:
 
 
 def _severity(rule: str, block: Block, concealed: bool) -> Severity:
+    if rule == PIPED and block.install:
+        # Ruling X17: honest install docs are low; one that hides itself from the user is not.
+        return Severity.MEDIUM if concealed else Severity.LOW
     if rule == PIPED and concealed:
         return Severity.HIGH
-    if rule == PIPED and block.install:
-        return Severity.LOW
     return _SEVERITY[rule]
 
 
@@ -363,48 +382,57 @@ def scan_text(
             said = f"has {found.describe()}: one such character hides no text, but remove it"
             add(HIDDEN, Severity.LOW, line, lambda: said)
     plain = strip(text)  # no hidden character can split a command word
+    newlines: list[int] = []
+
+    def line_of(index: int) -> int:
+        if not newlines:
+            newlines.extend(m.start() for m in re.finditer("\n", plain))
+            newlines.append(len(plain))
+        return bisect_right(newlines, index - 1) + 1
+
     tries = Tries.for_text(len(plain))
     blobs = Budget(blobs=MIN_BLOBS + len(plain) // 64)  # grows with the file, like Tries
-    newlines: list[int] = []
-    for index, decoded in encoded_commands(plain, blobs, tries):
-        if not newlines:
-            newlines = [m.start() for m in re.finditer("\n", plain)] or [len(plain)]
+    unread: list[int] = []
+    for index, decoded in encoded_commands(plain, blobs, tries, unread):
         add(
             ENCODED,
             Severity.HIGH,
-            bisect_right(newlines, index - 1) + 1,
-            lambda d=decoded: (
-                f'hides a shell command in base64: decodes to "{safe_snippet(d, 80)}"'
-            ),
+            line_of(index),
+            lambda d=decoded: f'hides a shell command in base64: decodes to "{show_decoded(d)}"',
         )
-    if blobs.blobs <= 0:
-        said = "was not read to the end for base64 (it holds too many base64 blobs)"
-        add(NOT_CHECKED, Severity.LOW, 1, lambda: said)
+    if unread:
+        said = "was not read to the end for base64: it holds more than agentprint decodes"
+        add(NOT_CHECKED, Severity.LOW, line_of(min(unread)), lambda s=said: s)
     low = plain.lower()
     if not any(word in low for word in TRIGGER):  # most files hold no shape's word at all
         return [(hit, len(lines[rule])) for rule, hit in first.items()]
-    source = structured_blocks(plain, data) if data is not None else blocks(plain, markdown)
+    cut: list[int] = []
+    source = structured_blocks(plain, data, cut) if data is not None else blocks(plain, markdown)
     assigned: dict[str, str] = {}
-    before = ""  # the previous sentence: "Don't tell the user. Run ..." conceals the next one
+    last_prose = ""  # the sentence before: "Don't tell the user." conceals what follows it
+    dropped_line: int | None = None
     for block in source:
-        if tries.spent:
-            rest = any(word in block.text.lower() for word in TRIGGER)
-            if rest:
-                said = "was not read to the end for risky shapes (it holds too many commands)"
-                add(NOT_CHECKED, Severity.LOW, block.line, lambda s=said: s)
-                break
-            continue
-        hits = shape_hits(block.text, block.prose, piped, tries, assigned)
+        if tries.spent and tries.dropped:
+            break  # the budget is spent and something was already left unread
+        hits = shape_hits(block.text, block.prose, piped, tries, assigned, block.breaks)
+        if tries.dropped and dropped_line is None:
+            dropped_line = block.line
         for hit in hits:
-            concealed = hit.concealed or (block.prose and concealed_text(before))
-            severity = _severity(hit.rule, block, concealed)
+            concealed = hit.concealed or concealed_text(last_prose)
             add(
                 hit.rule,
-                severity,
+                _severity(hit.rule, block, concealed),
                 block.line,
-                lambda h=hit, b=block, c=concealed: detail(h._replace(concealed=c), b.text),
+                lambda h=hit, c=concealed: detail(h._replace(concealed=c)),
             )
-        before = block.text if block.prose else ""
+        if block.prose:
+            last_prose = block.text
+    if dropped_line is not None:
+        said = "was not read to the end for risky shapes: it holds more than agentprint reads"
+        add(NOT_CHECKED, Severity.LOW, dropped_line, lambda s=said: s)
+    if cut:
+        said = "was not read to the end: it holds more values than agentprint reads"
+        add(NOT_CHECKED, Severity.LOW, 1, lambda s=said: s)
     return [(hit, len(lines[rule])) for rule, hit in first.items()]
 
 
@@ -424,13 +452,20 @@ class RiskyExtension:
                 continue
             if not _wanted(artifact):
                 continue
-            text = _read(artifact.path)
-            if text is None:
+            read = _read_file(artifact.path)
+            if read is None:
                 continue
+            text, too_long = read
             kind = what(artifact)
-            markdown, data = _mode(artifact.path, text)
-            for hit, count in scan_text(text, markdown, data=data):
-                findings.append(_finding(artifact, hit, kind, count))
+            if too_long:  # cut mid-file: read line by line, not parsed
+                markdown, data = _markdown(artifact.path, text), None
+            else:
+                markdown, data = _mode(artifact.path, text)
+            hits = scan_text(text, markdown, data=data)
+            if too_long and all(hit.rule != NOT_CHECKED for hit, _ in hits):
+                said = "was read only to 2 MiB: the rest of it was not checked"
+                hits.append((_Hit(NOT_CHECKED, Severity.LOW, None, said), 1))
+            findings += [_finding(artifact, hit, kind, count) for hit, count in hits]
         for artifact, config in agent_configs(artifacts):
             findings += self._hooks(artifact, config.hooks)
         return findings
