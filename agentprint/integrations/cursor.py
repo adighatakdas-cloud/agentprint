@@ -55,8 +55,9 @@ NAME = "cursor"
 # only syntax shared with Python's `re`, which the tests use). The tool must sit where a
 # command starts, so `git stash push`, `echo npm publish` and quoted text don't fire the hook.
 _PROGRAM_START = (
-    r"(?:^|[;&|({!`\n]|\$\(|\b(?:do|then|else|xargs|sudo|env|exec|eval|nohup|time|npx|pnpx|"
-    r"bunx|uvx|corepack)\s|\btimeout\s+\S+\s|\bpython[0-9.]*\s+-m\s)\s*(?:\w+=\S*\s+)*"
+    r"(?:^|[;&|({!`\n]|\$\(|\b(?:do|then|else|elif|if|while|until|xargs|sudo|doas|env|exec|eval|"
+    r"nohup|nice|time|command|caffeinate|stdbuf|npx|pnpx|bunx|uvx|corepack)\s|\btimeout\s+\S+\s|"
+    r"\bpython[0-9.]*\s+-m\s)\s*(?:-\S+\s+(?:[0-9]+\s+)?)*(?:\w+=\S*\s+)*"
 )
 _COMMAND_START = _PROGRAM_START + r"(?:\S*/)?"
 _PUBLISHES = (
@@ -72,9 +73,10 @@ _PUBLISHES = (
 # run as ./x, `bash x`, `python x`, `tsx x`, `deno run x`, `uv run x`, `pdm run x`...
 _RUNS_A_FILE = (
     r"(?:(?:g?make|just|go-task|task)(?:\s|$)"
-    r"|(?:npm|pnpm|yarn|bun)(?:\s+-\S+)*\s+version\b"
+    r"|(?:npm|pnpm|yarn|bun)(?:\s+-\S+(?:\s+[^-\s]\S*)?)*\s+version\b"
     r"|\S*/\S"
-    r"|(?:sh|bash|zsh|dash|ksh|fish|python[0-9.]*|node|nodejs|tsx|ts-node|bun|ruby|perl)"
+    r"|(?:sh|bash|zsh|dash|ksh|fish|python[0-9.]*|pypy[0-9.]*|node|nodejs|tsx|ts-node|bun|ruby|"
+    r"perl|php)"
     r"(?:\s+-\S+)*\s+[^-\s]"
     r"|deno\s+(?:run|eval)\b"
     r"|(?:source|\.)\s+\S"

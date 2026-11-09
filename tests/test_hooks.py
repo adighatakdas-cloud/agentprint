@@ -268,6 +268,18 @@ CURSOR_MATCHES = [
     "go-task release",
     "fish release.fish",
     "env make release",
+    "npm --prefix pkg version patch",
+    "pnpm -C pkg version minor",
+    "sudo ./release.sh",
+    "sudo -E ./release.sh",
+    "doas ./release.sh",
+    "nice -n 10 ./release.sh",
+    "command ./release.sh",
+    "caffeinate -i ./release.sh",
+    "stdbuf -oL ./release.sh",
+    "if ./check.sh; then echo ok; fi",
+    "pypy3 scripts/release.py",
+    "php -r 'shell_exec(1);'",
 ]
 CURSOR_SKIPS = [
     "git stash push",
