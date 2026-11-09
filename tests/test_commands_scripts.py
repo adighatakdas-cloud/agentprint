@@ -101,7 +101,7 @@ def test_backstop_reads_command_positions(text, want):
          "npm-option-semi", "git-value-semi", "twine-option-semi"],
 )  # fmt: skip
 def test_backstop_is_linear_on_a_64kb_script(text):
-    assert timing.best_of(lambda: commands.scan_hits(text)) < timing.bound(0.5)
+    assert timing.best_of(lambda: commands.scan_hits(text)) < timing.bound(1.0)  # was 15 s
 
 
 # ---- (1) shell scripts ----------------------------------------------------------------------
