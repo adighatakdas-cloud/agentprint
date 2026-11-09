@@ -510,6 +510,7 @@ class Budget:
 
     blobs: int = field(default_factory=lambda: MAX_BLOBS)
     strings: int = field(default_factory=lambda: MAX_STRINGS)
+    dropped_at: int = -1  # base64_texts: where a token was left undecoded (budget spent)
 
 
 Join = tuple[int, int, str]  # text[start:end] is dropped from the view; the trick's name
@@ -887,11 +888,12 @@ def base64_texts(
     characters of base64 (AP010 reads the same blobs)."""
     mask = text.encode("ascii", "replace").translate(_BASE64_MASK)
     for start, end in _base64_tokens(text, mask, shortest, longest):
-        if budget.blobs <= 0:
-            return
         head = text[start : min(end, start + MAX_BLOB_CHARS + 2)]
         if not _plausible(head):
             continue
+        if budget.blobs <= 0:
+            budget.dropped_at = start
+            return
         budget.blobs -= 1
         decoded = _decode(head)
         if decoded is not None:
