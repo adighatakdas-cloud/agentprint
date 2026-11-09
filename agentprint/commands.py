@@ -256,6 +256,8 @@ MAX_CALLS = 256  # function calls followed per command line
 MAX_CALL_DEPTH = 16  # functions calling functions
 MAX_EVIDENCE = 4096  # characters of assignments kept per variable, to look for a publish word
 MAX_XARGS = 16  # lines of input an `xargs -I` runs a command for, when it is known
+MAX_COMMANDS = 8000  # simple commands read per command line; past it, only scanned
+MAX_FILLED_TOTAL = 256 * 1024  # characters filling in may add per command line
 
 _UNFOLLOWED = "it is written in a way agentprint could not follow exactly"
 _RUNTIME = "it runs `{what}`, known only when it runs, and what it is set from names `{verb}`"
@@ -328,6 +330,7 @@ class _Ctx:
     label: str = ""  # what an unknown command is reported as ("eval")
     calls: int = 0
     locals: set = field(default_factory=set)
+    mark: int = 0  # where the found list stood when the command being memoised started
 
 
 @dataclass(slots=True)
@@ -349,6 +352,7 @@ def detect(command: str, cwd: Path, _depth: int = 0) -> list[Risky]:
         try:
             found, _ = _read(command, _Where(cwd), _depth)
             found += _reach_dynamic(reading)
+            found += _overflow(reading)
             found += _backstops(reading)
             return _unique(found)
         finally:
@@ -399,9 +403,13 @@ def _parse_text(text: str, cwd: Path, sourced: bool = False) -> _Text:
     """`text` parsed once per command line: read again (an `eval` in a loop, a script run twice),
     it is the same tree, so what the reader marks on it adds up for the backstop."""
     reading = following._READING.get()
+    key = (text, cwd, sourced)
+    if reading is not None and key in reading.parsed_texts:
+        return reading.parsed_texts[key]
     record = _Text(text, shell.parse(shell.lex(text).tokens), cwd, sourced)
     if reading is not None:
         reading.texts.append(record)
+        reading.parsed_texts[key] = record
     return record
 
 
@@ -686,6 +694,51 @@ def _assignment_name(word: Word) -> re.Match[str] | None:
 
 
 def _simple(cmd: Simple, where: _Where, ctx: _Ctx, stdin: _Value | None) -> tuple[_Where, _Value]:
+    reading = following._READING.get()
+    key = None
+    if reading is not None:
+        key = _memo_key(cmd, where, ctx, stdin, reading)
+        hit = reading.memo.get(key) if key is not None else None
+        if hit is not None and hit[0] is where:  # the same command, in the same state
+            _, after, out, found, actions = hit
+            ctx.found += found
+            _account(cmd, found, actions, [])
+            return after, out
+        reading.commands += 1
+        if reading.commands > MAX_COMMANDS:  # past the budget: never silent, see _overflow
+            if not reading.overflow and _names_publish(cmd, where):
+                reading.overflow = where.cwd
+            return where, _UNKNOWN
+    after, out = _simple_read(cmd, where, ctx, stdin)
+    if key is not None and reading is not None:
+        reading.memo[key] = (where, after, out, ctx.found[ctx.mark :], cmd.consumed or set())
+    return after, out
+
+
+def _memo_key(cmd: Simple, where: _Where, ctx: _Ctx, stdin: _Value | None, reading) -> tuple | None:
+    """Commands written the same way, run in the same state, do the same: a command repeated
+    thousands of times is read once. Not one with a substitution or a here-document (their
+    insides carry what the backstop needs), nor inside a function call."""
+    if ctx.calls or (stdin is not None and stdin is not _UNKNOWN) or not cmd.words:
+        return None
+    for word in cmd.words:
+        for part in word.parts:
+            if part.kind in {"sub", "array"} and _TOOLISH.search(part.text):
+                return None
+    redirects = []
+    for redirect in cmd.redirects:
+        if redirect.heredoc is not None or redirect.target is None:
+            return None
+        redirects.append((redirect.op, redirect.fd, redirect.target.value))
+    words = tuple(word.value for word in cmd.words)
+    ctx.mark = len(ctx.found)
+    state = (id(where), stdin is None, ctx.depth, ctx.label, reading.writes)
+    return (words, tuple(redirects), *state)
+
+
+def _simple_read(
+    cmd: Simple, where: _Where, ctx: _Ctx, stdin: _Value | None
+) -> tuple[_Where, _Value]:
     before = len(ctx.found)
     seen: set[Action] = set()
     subs = _substitutions(cmd, where, ctx)
@@ -715,6 +768,28 @@ def _simple(cmd: Simple, where: _Where, ctx: _Ctx, stdin: _Value | None) -> tupl
     out = _writes(cmd, child, out, subs)
     _account(cmd, ctx.found[before:], seen, used)
     return after, out
+
+
+_OVERFLOW = "it runs more commands than agentprint follows, and one past that names `{verb}`"
+
+
+def _names_publish(cmd: Simple, where: _Where) -> bool:
+    """A command past the budget: does it, or a variable it uses, name a publish or push?"""
+    for word in cmd.words:
+        if EVIDENCE.search(word.value) or any(
+            EVIDENCE.search(where.vars[n].evidence) for n in _names(word) if n in where.vars
+        ):
+            return True
+        if any(part.kind == "sub" and EVIDENCE.search(part.text) for part in word.parts):
+            return True
+    return any(r.heredoc is not None and EVIDENCE.search(r.heredoc.body) for r in cmd.redirects)
+
+
+def _overflow(reading) -> list[Risky]:
+    if not reading.overflow:
+        return []
+    why = _OVERFLOW.format(verb="publish")
+    return [Risky(Action.publish, "sh", reading.overflow, unsure=why, label="command line")]
 
 
 def _account(cmd: Simple, new: list[Risky], seen: set[Action], used: list) -> None:
@@ -851,6 +926,8 @@ def _assign(
 ) -> _Where:
     if not items:
         return where
+    if not exported and _no_change(where, items):
+        return where
     values = dict(where.vars)
     ifs = where.ifs
     for name, append, value, word in items:
@@ -884,6 +961,17 @@ def _bounded(evidence: str) -> str:
     if len(evidence) <= MAX_EVIDENCE:
         return evidence
     return evidence[:MAX_EVIDENCE] + "\n(cut: may publish)"
+
+
+def _no_change(where: _Where, items: list[tuple[str, bool, _Value, Word]]) -> bool:
+    """Setting variables to what they already hold, naming no tool (`a=` x 20000)."""
+    for name, append, value, word in items:
+        old = where.vars.get(name)
+        if append or old is None or old.value != value.text:
+            return False
+        if old.evidence != word.value or _TOOLISH.search(word.value):
+            return False
+    return True
 
 
 _NAME_REF = re.compile(r"\$\{?[#!]?([A-Za-z_][A-Za-z0-9_]*)")
@@ -979,6 +1067,7 @@ def _expand(word: Word, where: _Where, subs: dict, split: bool = True) -> list[_
         and parts[0].kind == "var"
         and parts[0].text in {"$@", "${@}"}
         and where.args is not None
+        and _budget(_size(where.args))
     ):
         return [_Arg(arg, word) for arg in where.args]  # "$@": each argument one word
     for part in word.parts:
@@ -997,7 +1086,9 @@ def _expand(word: Word, where: _Where, subs: dict, split: bool = True) -> list[_
             if out is not None and out.text is not None:
                 value = out.text.rstrip("\n")
                 origins.extend(out.origins)
-        size = len(value) if isinstance(value, str) else sum(map(len, value or []))
+        size = len(value) if isinstance(value, str) else _size(value or ())
+        if size and value is not None and not _budget(size):
+            value = None
         if value is None or added + size > MAX_FILLED:
             text = "$(" + part.text + ")" if part.kind == "sub" else part.text
             if part.kind == "array":
@@ -1034,6 +1125,23 @@ def _expand(word: Word, where: _Where, subs: dict, split: bool = True) -> list[_
 
 
 # ---- what one command does -------------------------------------------------------------------
+
+
+def _size(args) -> int:
+    reading = following._READING.get()
+    if reading is not None and reading.filled > MAX_FILLED_TOTAL:
+        return MAX_FILLED_TOTAL  # spent already: no need to add it up
+    return sum(map(len, args)) + len(args)
+
+
+def _budget(size: int) -> bool:
+    """Charge `size` filled-in characters to this command line; False once it is spent (the
+    reference then stays as written: only known at run time)."""
+    reading = following._READING.get()
+    if reading is None:
+        return True
+    reading.filled += size
+    return reading.filled <= MAX_FILLED_TOTAL
 
 
 def _segment(
@@ -2498,14 +2606,23 @@ def _script_name(tool: str, words: list[str], cwd: Path) -> str | None:
 
 
 def _scripts(cwd: Path) -> dict[str, str]:
+    reading = following._READING.get()
+    key = ("scripts", cwd)
+    if reading is not None and key in reading.parsed:
+        return reading.parsed[key]  # type: ignore[return-value]
     try:
         data = json.loads((cwd / "package.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {}
+        data = {}
     scripts = data.get("scripts") if isinstance(data, dict) else None
-    if not isinstance(scripts, dict):
-        return {}
-    return {k: v for k, v in scripts.items() if isinstance(k, str) and isinstance(v, str)}
+    out = (
+        {k: v for k, v in scripts.items() if isinstance(k, str) and isinstance(v, str)}
+        if isinstance(scripts, dict)
+        else {}
+    )
+    if reading is not None:
+        reading.parsed[key] = out
+    return out
 
 
 def _run_script(name: str, cwd: Path, depth: int) -> list[Risky]:

@@ -462,3 +462,33 @@ def test_a_huge_variable_in_one_recipe_line_stays_fast_and_seen(leaky):
     _files(leaky, {"Makefile": makefile + "\t$(NPM) publish demo-1.0.0.tgz\n"})
     assert timing.best_of(lambda: detect("make", leaky), times=1) < timing.bound(1.0)  # was 2.5 s
     assert evaluate("make", leaky).block
+
+
+def test_more_commands_than_the_budget_is_never_silent(tmp_path, monkeypatch):
+    from agentprint import commands
+
+    monkeypatch.setattr(commands, "MAX_COMMANDS", 10)
+    command = "".join(f"echo {i}; " for i in range(20)) + "P=publish; npm $P"
+    assert detect(command, tmp_path)
+
+
+# ---- 19, 22. never slow: no quadratic rescans, no runaway expansions -----------------------------
+
+
+@pytest.mark.parametrize(
+    ("command", "files"),
+    [
+        ("eval $x;" * 7900 + " # publish", None),  # was 15 s: each eval rescanned the line
+        ("CMD='npm test'; " + "$CMD;" * 10000, None),
+        ("make", {"Makefile": "NPM = npm\nV2 = " + "x" * 100 + "\nV1 = " + "$(V2)" * 20
+                  + "\nV0 = " + "$(V1)" * 30 + "\nall:\n" + "\techo $(V0)\n" * 60
+                  + "\t$(NPM) publish demo-1.0.0.tgz\n"}),  # was 2.5 s
+        ("./r.sh " + "a " * 1000, {"r.sh": "#!/bin/sh\n" + 'echo $1 $2 $3 "$@"\n' * 3000}),
+    ],
+    ids=["evals", "variable-commands", "nested-make-variables", "wrapper-arguments"],
+)  # fmt: skip
+def test_adversarial_inputs_stay_fast(tmp_path, command, files):
+    from tests import timing
+
+    _files(tmp_path, files)
+    assert timing.best_of(lambda: detect(command, tmp_path), times=2) < timing.bound(1.0)

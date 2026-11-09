@@ -160,6 +160,12 @@ class _Reading:
     calls: set = field(default_factory=set)  # function calls followed
     dynamic: list = field(default_factory=list)  # (prefix, suffix) of commands named at run time
     virtual: dict = field(default_factory=dict)  # files the command line writes: path -> value
+    parsed_texts: dict = field(default_factory=dict)  # text -> its parsed tree, read once
+    commands: int = 0  # simple commands read
+    filled: int = 0  # characters variables and arguments filled in
+    overflow: Path | None = None  # a command past the budget names a publish (folder it runs in)
+    memo: dict = field(default_factory=dict)  # a command and the state it ran in -> its result
+    writes: int = 0  # files written so far (a command that reads one may read something new)
 
 
 _READING: ContextVar[_Reading | None] = ContextVar("agentprint_reading", default=None)
@@ -243,6 +249,7 @@ def write_virtual(arg: str, cwd: Path, value, append: bool = False) -> None:
                 before + value.text, (*(old.origins if old else ()), *value.origins)
             )
     reading.virtual[path] = value
+    reading.writes += 1
 
 
 def file_text(arg: str, cwd: Path) -> str | None:
