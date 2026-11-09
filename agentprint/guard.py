@@ -29,7 +29,7 @@ from .models import CannotCheck, Finding
 from .pack import PackageListing, PackError, read_archive, read_npm_project
 from .report import FailOn, exit_code, to_agent
 from .sanitize import clean, quote
-from .secrets import find_secrets, redact
+from .secrets import mask_keys
 
 ARCHIVES = (".whl", ".tar.gz", ".zip", ".tgz")
 DEFAULT_DIST = ("dist/*",)
@@ -159,14 +159,8 @@ def _could_not(item: Risky, exc: Exception) -> str:
 
 
 def _masked(text: str) -> str:
-    """`text` with every key `find_secrets` sees replaced by its first 4 characters and length."""
-    out: list[str] = []
-    end = 0
-    for match in sorted(find_secrets(text), key=lambda m: (m.start, -m.end)):
-        if match.start >= end:
-            out += [text[end : match.start], redact(match.value)]
-            end = match.end
-    return "".join([*out, text[end:]])
+    """`text` with every key in it cut to its first 4 characters and length."""
+    return mask_keys(text)
 
 
 def _built(cwd: Path, patterns: tuple[str, ...]) -> list[PackageListing]:
