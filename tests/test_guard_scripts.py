@@ -641,3 +641,11 @@ def test_a_large_makefile_with_nothing_to_publish_stays_quiet(tmp_path):
     )
     assert evaluate("make", tmp_path) is None
     assert evaluate("make", tmp_path, strict=True) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [f"CMD='{P1}'; eval \"$CMD\"", f'CMD="{P1}"; $CMD', "V=publish; npm $V demo-1.0.0.tgz"],
+)
+def test_a_publish_through_a_variable_blocks_for_real(leaky, command):
+    assert evaluate(command, leaky).block and evaluate(command, leaky, strict=True).block

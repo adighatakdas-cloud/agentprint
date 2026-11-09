@@ -929,3 +929,49 @@ def test_a_here_document_fed_to_a_shell_is_still_read(command):
 def test_a_here_document_fed_to_python_on_the_command_line_is_scanned():
     command = "python3 - <<'EOF'\nimport subprocess\nsubprocess.run(['npm', 'publish'])\nEOF"
     assert labelled(command, CWD) == [(P, "npm", code("npm publish"), "here-document")]
+
+
+# ---- literal shell variables and eval ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("command", "want"),
+    [
+        ("CMD='npm publish'; eval \"$CMD\"", [(P, "npm")]),
+        ('CMD="npm publish"; $CMD', [(P, "npm")]),
+        ("V=publish; npm $V", [(P, "npm")]),
+        ("export CMD='git push'; eval $CMD", [(G, "git")]),
+        ('A=npm; B="$A publish"; $B', [(P, "npm")]),
+        ("readonly T=publish\nnpm ${T}", [(P, "npm")]),
+        ("CMD='npm pub'; CMD+='lish'; $CMD", [(P, "npm")]),
+        ("(CMD='npm publish'); echo $CMD", []),  # set in a subshell, gone after it
+        ("CMD='npm test'; $CMD", []),
+        ("MSG='push notifications'; echo \"$MSG\"", []),
+    ],
+)
+def test_a_literal_variable_is_filled_in(command, want):
+    got = detect(command, CWD)
+    assert [(r.action, r.tool) for r in got] == want and not any(r.unsure for r in got)
+
+
+def test_a_followed_script_fills_in_its_own_variables(tmp_path):
+    write(
+        tmp_path, "release.sh", '#!/bin/sh\nNPM=npm\nTAG=next\n"$NPM" publish --tag "$TAG"\n', 0o755
+    )
+    assert found("./release.sh", tmp_path) == [(P, "npm", tmp_path, "")]
+
+
+@pytest.mark.parametrize(
+    "command",
+    ['eval "$(cat release-cmd.txt)" # then publish', 'X=$(get-cmd); eval "$X"; echo push'],
+)
+def test_eval_of_something_unknown_is_could_not_check_when_a_publish_is_named(command):
+    [risky] = detect(command, CWD)
+    assert risky.label == "eval" and risky.unsure
+
+
+@pytest.mark.parametrize(
+    "command", ['eval "$(pyenv init -)"', 'eval "$(ssh-agent)"', 'eval "$(direnv hook bash)"']
+)
+def test_eval_of_ordinary_setup_stays_quiet(command):
+    assert detect(command, CWD) == []

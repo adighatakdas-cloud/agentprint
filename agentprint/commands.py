@@ -302,7 +302,7 @@ def _backstop(command: str, cwd: Path) -> list[Risky]:
 
 def _parse(command: str, cwd: Path, depth: int, seen: set) -> list[Risky]:
     found: list[Risky] = []
-    _parse_into(command, _Where(cwd), depth, seen, found)
+    _parse_into(command, _Where(cwd, text=command), depth, seen, found)
     return found
 
 
@@ -310,7 +310,7 @@ def _parse_lines(command: str, cwd: Path, depth: int, seen: set) -> list[Risky]:
     """A script one line at a time, so one line shlex can't read hides only itself (the
     backstop still scans it). A `cd` carries on to the next line, as in the script."""
     found: list[Risky] = []
-    where = _Where(cwd)
+    where = _Where(cwd, text=command)
     for line in command.split("\n"):
         try:
             where = _parse_into(line, where, depth, seen, found)
@@ -388,6 +388,8 @@ def _without_ansi_c(command: str) -> str:
 class _Where:
     cwd: Path
     unknown: str = ""  # set once a `cd` goes somewhere only known at run time
+    values: tuple[tuple[str, str | None], ...] = ()  # shell variables: a literal, or None
+    text: str = ""  # the whole text being read (for `eval` of something unknown)
 
 
 def _strip_redirects(words: list[str]) -> list[str]:
@@ -443,7 +445,13 @@ def _named_by_variable(first: str, program: str, args: list[str], cwd: Path) -> 
 
 def _segment(words: list[str], where: _Where, found: list[Risky], depth: int, seen) -> _Where:
     """Analyse one simple command. Returns where the shell is after it."""
-    words = _unwrap(_strip_redirects(words))
+    words = _filled(_strip_redirects(words), where)
+    body = words
+    while body and body[0] in {"then", "do", "else", "{"}:
+        body = body[1:]
+    if (assigned := _assigned(body, where)) is not None:
+        return assigned  # `CMD='npm publish'`, `export V=1`: nothing runs, a variable is set
+    words = _unwrap(words)
     if not words or words[0] in SKIP_SEGMENT:
         return where
     if (default := _DEFAULTED.fullmatch(words[0])) is not None:
@@ -466,6 +474,9 @@ def _segment(words: list[str], where: _Where, found: list[Risky], depth: int, se
             )
     elif program == "eval":
         found.extend(detect(" ".join(args), where.cwd, depth + 1))
+        if _VARIABLE.search(" ".join(args)) and (verb := _names_publish(where.text)):
+            why = "it runs `eval` of text known only when the command runs"
+            found.append(Risky(PUBLISH_VERBS[verb], "sh", where.cwd, unsure=why, label="eval"))
     elif program == "git":
         _git(args, where.cwd, found, seen)
     elif program in NODE:
@@ -489,6 +500,73 @@ def _segment(words: list[str], where: _Where, found: list[Risky], depth: int, se
     if where.unknown:
         found[before:] = [replace(r, unsure=r.unsure or where.unknown) for r in found[before:]]
     return where
+
+
+_ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(\+?)=(.*)", re.S)
+_DECLARERS = {"export", "local", "readonly", "declare", "typeset"}
+_REFERENCE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+MAX_VALUES = 64  # shell variables remembered per text
+MAX_VALUE = 4096  # characters in one remembered value
+MAX_FILLED = 16384  # characters filling in may add to one command
+
+
+def _assigned(words: list[str], where: _Where) -> _Where | None:
+    """`where` with the variables a plain assignment sets (`CMD='npm publish'`, `export V=1`,
+    `local X+=y`), or None when `words` runs a command. A value is remembered when it is a
+    literal once known variables are filled in; otherwise the name becomes unknown."""
+    rest = words[1:] if words and words[0] in _DECLARERS else words
+    rest = [word for word in rest if not (words[0] in _DECLARERS and word.startswith("-"))]
+    matches = [_ASSIGNMENT.fullmatch(word) for word in rest]
+    if not words or (words[0] not in _DECLARERS and not rest) or not all(matches):
+        return None
+    values = dict(where.values)
+    for match in matches:
+        assert match is not None
+        name, append, value = match.groups()
+        if append:
+            value = (values.get(name) or "") + value if values.get(name) is not None else "$x"
+        literal = not _VARIABLE.search(value) and len(value) <= MAX_VALUE
+        if name in values or len(values) < MAX_VALUES:
+            values[name] = value if literal else None
+    return replace(where, values=tuple(values.items()))
+
+
+def _filled(words: list[str], where: _Where) -> list[str]:
+    """`words` with the variables known to hold a literal filled in. A word that is only
+    `$NAME` is split as the shell splits an unquoted expansion (`$CMD` -> npm publish)."""
+    if not where.values or not any("$" in word for word in words):
+        return words
+    values = {name: value for name, value in where.values if value is not None}
+    out: list[str] = []
+    added = 0
+    for word in words:
+        whole = _REFERENCE.fullmatch(word)
+        name = (whole.group(1) or whole.group(2)) if whole else ""
+        if name in values and added + len(values[name]) <= MAX_FILLED:
+            added += len(values[name])
+            try:
+                out += shlex.split(values[name])
+            except ValueError:
+                out.append(values[name])
+            continue
+
+        def fill(match: re.Match[str]) -> str:
+            nonlocal added
+            value = values.get(match.group(1) or match.group(2))
+            if value is None or added + len(value) > MAX_FILLED:
+                return match.group(0)
+            added += len(value)
+            return value
+
+        out.append(_REFERENCE.sub(fill, word))
+    return out
+
+
+def _names_publish(text: str) -> str:
+    """The publish, upload or push word text names once quotes are dropped (`pub"lish"`), or
+    "": what makes an `eval` of something unknown worth a "could not check"."""
+    match = re.search(r"(?<![\w-])(publish|upload|push)(?![\w-])", re.sub(r"[\"'\\]", "", text))
+    return match.group(1) if match else ""
 
 
 def _unwrap(words: list[str]) -> list[str]:
@@ -552,8 +630,8 @@ def _chdir(where: _Where, target: str) -> _Where:
     other_users_home = target.startswith("~") and target != "~" and not target.startswith("~/")
     if target == "-" or _UNKNOWABLE.search(target) or other_users_home:
         why = f"its folder ({target!r}) is only known when the command runs"
-        return _Where(where.cwd, where.unknown or why)
-    return _Where(where.cwd / os.path.expanduser(target), where.unknown)
+        return replace(where, unknown=where.unknown or why)
+    return replace(where, cwd=where.cwd / os.path.expanduser(target))
 
 
 def _shell_script(args: list[str]) -> str | None:
