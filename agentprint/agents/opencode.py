@@ -8,7 +8,8 @@ opencode.jsonc in the project root. Provider keys live in ~/.local/share/opencod
 Docs: https://opencode.ai/docs/config/, https://opencode.ai/docs/permissions/,
 https://opencode.ai/docs/mcp-servers/.
 
-Not covered: OpenCode has no hook config; plugins are JavaScript files, which AP004 doesn't read.
+Not covered: OpenCode has no hook config; plugins are JavaScript files, which AP004 doesn't read
+(AP010 reads them as extensions, for risky content).
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
-from .base import artifacts, from_home, is_blanket_command, matches_any, mcp_servers
+from .base import artifacts, children, from_home, is_blanket_command, matches_any, mcp_servers
 
 NAME = "opencode"
 
@@ -65,6 +66,10 @@ _RECORDS = (
 )
 
 
+# Folders of OpenCode extensions, one per entry (extension_paths).
+_LOADED = ("agent", "agents", "command", "commands", "plugin", "plugins", "skill", "skills")
+
+
 class OpenCode:
     name = NAME
     package_rules = (
@@ -98,6 +103,19 @@ class OpenCode:
 
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         yield from artifacts(NAME, Kind.SETTINGS, *(root / name for name in _CONFIG_NAMES))
+
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # ~/.config/opencode/AGENTS.md, and the agents, commands, plugins (JavaScript run by
+        # OpenCode) and skills folders in ~/.config/opencode/ and a project's .opencode/, by
+        # their singular or plural names. https://opencode.ai/docs/rules,
+        # https://opencode.ai/docs/plugins/
+        paths: list[Path] = []
+        if home is not None:
+            base = home / ".config" / "opencode"
+            paths += [base / "AGENTS.md", *children(*(base / name for name in _LOADED))]
+        if project is not None:
+            paths += children(*(project / ".opencode" / name for name in _LOADED))
+        return paths
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)

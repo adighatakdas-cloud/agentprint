@@ -14,7 +14,16 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, Grant, HookCommand, Kind, PackageRule, Severity
 from ..structured import load
-from .base import artifacts, from_home, hook_commands, matches_any, mcp_servers
+from .base import (
+    artifacts,
+    children,
+    from_home,
+    glob,
+    hook_commands,
+    live_versions,
+    matches_any,
+    mcp_servers,
+)
 
 NAME = "codex"
 
@@ -106,6 +115,22 @@ class Codex:
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         base = root / ".codex"
         yield from artifacts(NAME, Kind.SETTINGS, base / "config.toml", base / "hooks.json")
+
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # AGENTS.md (or a non-empty AGENTS.override.md), custom prompts in ~/.codex/prompts/,
+        # skills in ~/.codex/skills/, ~/.agents/skills/ and a repo's .agents/skills/, and each
+        # plugin version in ~/.codex/plugins/cache/$MARKETPLACE/$PLUGIN/$VERSION/.
+        # https://developers.openai.com/codex/plugins/build
+        paths: list[Path] = []
+        if home is not None:
+            base = home / ".codex"
+            paths += [base / "AGENTS.md", base / "AGENTS.override.md"]
+            paths += children(base / "prompts", base / "skills", home / ".agents" / "skills")
+            paths += live_versions(glob(base / "plugins" / "cache", "*/*/*"))
+        if project is not None:
+            paths += [project / "AGENTS.md", project / "AGENTS.override.md"]
+            paths += children(project / ".agents" / "skills")
+        return paths
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)

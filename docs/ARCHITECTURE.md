@@ -19,7 +19,7 @@ steps, and what to ask the human). Who is running it decides which (`ui/detect.p
  HOW IT IS STARTED                 WHAT RUNS                            WHAT COMES OUT
  ─────────────────                 ─────────                            ──────────────
  agentprint scan ───► scanner.py ─► agents/*.py   find each agent's files
-                                    checks/*.py   AP001-AP008: what is risky ──┐
+                                    checks/*.py   AP001-AP011: what is risky ──┐
  agentprint pack ───► pack.py ────► checks/ap006  agent files in a package    │
                                                                                ▼
  agent's hook ──────► hook.py ────► commands.py   publish or push?          Findings
@@ -48,7 +48,11 @@ steps, and what to ask the human). Who is running it decides which (`ui/detect.p
   which hooks it runs, and which MCP servers it starts;
 - which of its history files are only records (`pure_history`), so `agentprint fix` may mask a
   key there, and which it reads back as instructions or config;
-- which of its files must never ship in a package (`package_rules`).
+- which of its files must never ship in a package (`package_rules`);
+- where it loads extensions from (`extension_paths`): instruction files, and each skill,
+  command, subagent, rule, plugin or extension. The scanner lists their files as kind
+  `extension`, apart from the rest, so a skill folder that is also history stays history for
+  the key checks.
 
 `agents/scan_only.py` holds 4 lighter agents that are only package rules and project files.
 An agent that a sweep reads in full but `install` can't arm yet carries an `AgentDoc`, which
@@ -57,7 +61,7 @@ format goes through one reader in `agents/base.py` (`read_mcp_servers`), and an 
 docs name an environment-variable reference for MCP keys says so with `env_reference`, which
 `agentprint fix` then writes. Adding an agent never touches a check.
 
-**`checks/` (what is risky).** One module per check, `ap001_...` to `ap008_...`. A check gets
+**`checks/` (what is risky).** One module per check, `ap001_...` to `ap011_...`. A check gets
 the list of found files and returns findings. Checks never parse an agent's file format; they
 use what the agent module understood. When two checks see the same key (an API key inside an
 MCP server entry is both AP002 and AP005), the more precise one claims it and the other drops

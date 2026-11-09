@@ -45,6 +45,9 @@ class ScanOnlyAgent:
         for rel, kind, personal in self.project_files:
             yield from artifacts(self.name, kind, root / rel, personal=personal)
 
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        return []  # agents known only by their package and project files
+
     def pure_history(self, path: Path) -> bool:
         """Every history file listed here is a transcript or a log (the rule of thumb above)."""
         text = path.as_posix()

@@ -85,6 +85,18 @@ class Zed:
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         yield from artifacts(NAME, Kind.SETTINGS, root / ".zed" / "settings.json")
 
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # Project instructions: the first of .rules, .cursorrules, .windsurfrules, .clinerules,
+        # .github/copilot-instructions.md, AGENT.md, AGENTS.md, CLAUDE.md, GEMINI.md (the rest
+        # are read through the agents that own them), and ~/.config/zed/AGENTS.md
+        # (https://zed.dev/docs/ai/rules, read 2026-11-07).
+        paths: list[Path] = []
+        if home is not None:
+            paths += [home / ".config" / "zed" / "AGENTS.md"]
+        if project is not None:
+            paths += [project / ".rules", project / "AGENT.md"]
+        return paths
+
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)
 

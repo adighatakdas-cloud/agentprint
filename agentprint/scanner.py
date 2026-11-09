@@ -6,12 +6,17 @@ from pathlib import Path
 
 from . import unread
 from .agents import ALL_AGENTS
+from .agents.base import extension_files
 from .checks import SCAN_CHECKS
 from .models import Artifact, Finding
 
 
 def discover(home: Path | None, project: Path | None) -> list[Artifact]:
+    """Every agent file, each once (the first agent to name a file keeps it). Extension files
+    (Kind.EXTENSION) are listed apart: a skill folder that is also history (Hermes skills/)
+    stays history for the key checks and is an extension for AP010."""
     found: dict[Path, Artifact] = {}
+    extensions: dict[Path, Artifact] = {}
     for agent in ALL_AGENTS:
         if home is not None:
             for artifact in agent.discover_home(home):
@@ -19,7 +24,9 @@ def discover(home: Path | None, project: Path | None) -> list[Artifact]:
         if project is not None:
             for artifact in agent.discover_project(project):
                 found.setdefault(artifact.path.resolve(), artifact)
-    return list(found.values())
+        for artifact in extension_files(agent.name, agent.extension_paths(home, project)):
+            extensions.setdefault(artifact.path.resolve(), artifact)
+    return [*found.values(), *extensions.values()]
 
 
 def drop_claimed(findings: list[Finding]) -> list[Finding]:

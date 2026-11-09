@@ -29,6 +29,7 @@ from ..structured import load
 from .base import (
     EnvReference,
     artifacts,
+    children,
     from_home,
     glob,
     hook_commands,
@@ -112,6 +113,10 @@ _RECORDS = (
     re.compile(r"(^|/)workspaceStorage/[^/]+/(chatSessions|chatEditingSessions)/"),
     re.compile(r"(^|/)globalStorage/(emptyWindowChatSessions|transferredChatSessions)/"),
 )
+
+
+# A repository's .github/ folders of Copilot extensions, one per entry (extension_paths).
+_LOADED = ("instructions", "prompts", "agents", "skills", "chatmodes")
 
 
 class Copilot:
@@ -218,6 +223,26 @@ class Copilot:
         yield from artifacts(
             NAME, Kind.SETTINGS, github / "copilot" / "settings.local.json", personal=True
         )
+
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # Custom instructions (~/.copilot/copilot-instructions.md, .github/copilot-instructions.md,
+        # .github/instructions/), prompt files and custom agents (.github/prompts/,
+        # .github/agents/, VS Code's user prompts/ folder), skills (~/.copilot/skills/,
+        # .github/skills/) and installed plugins (~/.copilot/installed-plugins/MARKETPLACE/
+        # PLUGIN-NAME, direct installs in _direct/). https://docs.github.com/en/copilot/
+        # reference/cli-plugin-reference, https://code.visualstudio.com/docs/copilot/customization
+        paths: list[Path] = []
+        if home is not None:
+            base = home / ".copilot"
+            paths += [base / "copilot-instructions.md"]
+            paths += children(base / "skills", base / "agents")
+            paths += glob(base / "installed-plugins", "*/*")
+            paths += children(*(user / "prompts" for user in _user_dirs(home)))
+        if project is not None:
+            github = project / ".github"
+            paths += [github / "copilot-instructions.md"]
+            paths += children(*(github / name for name in _LOADED))
+        return paths
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)

@@ -25,7 +25,16 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, Kind, PackageRule, Severity
 from ..structured import load
-from .base import AgentDoc, artifacts, dig, from_home, matches_any, mcp_servers, read_mcp_servers
+from .base import (
+    AgentDoc,
+    artifacts,
+    children,
+    dig,
+    from_home,
+    matches_any,
+    mcp_servers,
+    read_mcp_servers,
+)
 
 NAME = "continue"
 _SECRET_FIX = (
@@ -105,6 +114,14 @@ class Continue:
         yield from artifacts(NAME, Kind.SETTINGS, base / "mcpServers")
         yield from artifacts(NAME, Kind.CREDENTIALS, base / ".env", personal=True)
         yield from artifacts(NAME, Kind.SETTINGS, base / "settings.local.json", personal=True)
+
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # Rules in a project's .continue/rules/ (https://docs.continue.dev/customize/deep-dives/
+        # rules and .../customize/rules, read 2026-11-07 and 2026-11-09; neither names a
+        # global rules folder, so ~/.continue/rules is not read).
+        if project is None:
+            return []
+        return children(project / ".continue" / "rules")
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)
