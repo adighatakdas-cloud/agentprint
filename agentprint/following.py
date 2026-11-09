@@ -17,6 +17,7 @@ push.
 
 from __future__ import annotations
 
+import base64
 import glob
 import os
 import re
@@ -48,6 +49,8 @@ INTERPRETERS: dict[str, tuple[set[str], set[str]]] = {
              "--cert", "--env-file"}),  # `deno eval <code>` and `deno run <file>`
     "ruby": ({"-e"}, {"-r", "-I", "-C", "-E"}),
     "perl": ({"-e", "-E"}, {"-I", "-M", "-m"}),
+    "php": ({"-r"}, {"-c", "-d", "-z"}),
+    "bun": ({"-e", "--eval", "-p", "--print"}, {"-r", "--preload", "--cwd", "--config"}),
 }  # fmt: skip
 _MAKE_VALUES = {"-C", "--directory", "-f", "--file", "--makefile", "-I", "--include-dir", "-o",
                 "--old-file", "--assume-old", "-W", "--what-if", "--new-file", "--assume-new",
@@ -80,13 +83,13 @@ _SHELL_VALUES = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
 # or `np` are too common in ordinary code (`list.push(x)`, `import numpy as np`) to count by
 # themselves, and so is a method call near the tool word (`git ... summary.push(x)`).
 _NAMED_PUBLISH = re.compile(
-    r"(?<![\w.-])(?:(npm|pnpm|yarn|bun|uv|poetry|hatch|flit|changeset|lerna)"
+    r"(?=[npybuhfcltgsr])(?<![\w.$-])(?:(npm|pnpm|yarn|bun|uv|poetry|hatch|flit|changeset|lerna)"
     r"(?:\.|(?![\w.-]).{0,40}?(?<![\w./-]))publish(?![\w:-])"
     r"|(twine)(?![\w-]).{0,40}?(?<![\w-])upload(?![\w-])"
     r"|(git)(?:\.|(?![\w./-]).{0,40}?(?<![\w./-]))push(?![\w-])"
     r"|(semantic-release|release-it)(?![\w.-])"
     r"|npx\s+(np)(?![\w.-]))",
-    re.S,
+    re.S | re.I,  # code can build `NPM PUBLISH`.lower(); a shell on macOS finds `NPM` too
 )
 
 
@@ -137,6 +140,7 @@ class _File:
     named: tuple[Hit, ...] = ()  # a large file: the publishes and pushes it names
     bare: str = ""  # a large file: the first publish/upload/push word on its own
     first_line: str = ""  # a large file: its shebang, if any
+    includes: tuple[tuple[str, bool], ...] = ()  # a large file: its make include lines
 
 
 @dataclass
@@ -151,9 +155,21 @@ class _Reading:
     peeking: bool = False  # reading once more without following anything
     results: dict[tuple, list] = field(default_factory=dict)  # a script's result, per call
     parsed: dict[tuple, object] = field(default_factory=dict)  # makefiles and justfiles
+    texts: list = field(default_factory=list)  # every text read: the backstop scans them all
+    funcs: list = field(default_factory=list)  # every shell function defined
+    calls: set = field(default_factory=set)  # function calls followed
+    dynamic: list = field(default_factory=list)  # (prefix, suffix) of commands named at run time
+    virtual: dict = field(default_factory=dict)  # files the command line writes: path -> value
+    parsed_texts: dict = field(default_factory=dict)  # text -> its parsed tree, read once
+    commands: int = 0  # simple commands read
+    filled: int = 0  # characters variables and arguments filled in
+    overflow: Path | None = None  # a command past the budget names a publish (folder it runs in)
+    memo: dict = field(default_factory=dict)  # a command and the state it ran in -> its result
+    writes: int = 0  # files written so far (a command that reads one may read something new)
 
 
 _READING: ContextVar[_Reading | None] = ContextVar("agentprint_reading", default=None)
+_NAMING: ContextVar[str] = ContextVar("agentprint_naming", default="")  # the file being read
 
 
 def _real(path: Path) -> Path:
@@ -187,6 +203,8 @@ def _read(arg: str, cwd: Path) -> _File | None:
     if not arg or c._UNKNOWABLE.search(arg):
         return None
     reading = _reading(cwd)
+    if reading.virtual and (virtual := _virtual_path(arg, cwd)) in reading.virtual:
+        return _virtual_file(reading, virtual)  # written earlier by this same command line
     try:
         real = (cwd / os.path.expanduser(arg)).resolve(strict=True)
     except (OSError, RuntimeError):
@@ -196,6 +214,48 @@ def _read(arg: str, cwd: Path) -> _File | None:
     if real not in reading.files:
         reading.files[real] = _load(real, real.relative_to(reading.root).as_posix())
     return reading.files[real]
+
+
+def _virtual_path(arg: str, cwd: Path) -> Path:
+    return Path(os.path.normpath(_real(cwd) / os.path.expanduser(arg)))
+
+
+def _virtual_file(reading: _Reading, path: Path) -> _File | None:
+    value = reading.virtual[path]
+    for origin in value.origins:  # what was written is read again: the backstop counts it there
+        origin.delegated = True
+    if reading.root not in path.parents:
+        return None
+    name = path.relative_to(reading.root).as_posix()
+    if value.text is None:
+        return _File(path, name, None, "unreadable")
+    return _File(path, name, value.text)
+
+
+def write_virtual(arg: str, cwd: Path, value, append: bool = False) -> None:
+    """A file the command line writes (`cat > x.sh <<EOF`, `echo ... > x`, `tee x`): what a later
+    command in the same line reads or runs from it is this text, not what is on disk now."""
+    reading = _READING.get()
+    if reading is None or not arg or c._UNKNOWABLE.search(arg):
+        return
+    path = _virtual_path(arg, cwd)
+    if append:
+        old = reading.virtual.get(path)
+        before = old.text if old is not None else file_text(arg, cwd)
+        if before is None or value.text is None:
+            value = type(value)(None, (*(old.origins if old else ()), *value.origins))
+        else:
+            value = type(value)(
+                before + value.text, (*(old.origins if old else ()), *value.origins)
+            )
+    reading.virtual[path] = value
+    reading.writes += 1
+
+
+def file_text(arg: str, cwd: Path) -> str | None:
+    """A file's text when it is inside the folder and at most 64 KB (`cat file`, `< file`)."""
+    file = _read(arg, cwd)
+    return file.text if file is not None else None
 
 
 def _is_file(path: Path) -> bool:
@@ -239,43 +299,70 @@ def _text(data: bytes) -> str:
 def _scan_large(handle, head: bytes, path: Path, name: str) -> _File:
     """Scan a file too large to follow, 64 KB at a time with an overlap, up to 8 MB."""
     named: list[Hit] = []
+    includes: list[tuple[str, bool]] = []
     bare = ""
     first_line = _text(head[:4096]).split("\n", 1)[0]
-    total, chunk, tail = len(head), head, ""
+    total, chunk, tail, partial = len(head), head, "", ""
     while chunk:
-        text = tail + chunk.decode("utf-8", "replace")
+        decoded = chunk.decode("utf-8", "replace")
+        text = tail + decoded
         for hit in _named(text):
             if hit not in named:
                 named.append(hit)
         bare = bare or next((m.group(1) for m in _BARE_PUBLISH.finditer(text)), "")
         tail = text[-128:]
+        whole, _, partial = (partial + decoded).rpartition("\n")  # include lines, whole lines
+        includes += _include_lines(whole, len(includes))
         if total >= MAX_SCAN_BYTES:
             if handle.read(1):
                 return _File(path, name, None, "huge", first_line=first_line)
             break
         chunk = handle.read(min(MAX_FILE_BYTES, MAX_SCAN_BYTES - total))
         total += len(chunk)
-    return _File(path, name, None, "large", tuple(named), bare, first_line)
+    includes += _include_lines(partial, len(includes))
+    return _File(path, name, None, "large", tuple(named), bare, first_line, tuple(includes))
+
+
+_INCLUDE_LINE = re.compile(r"(?m)^[ \t]*(-include|sinclude|include)[ \t]+([^#\n]+)")
+
+
+def _include_lines(text: str, have: int) -> list[tuple[str, bool]]:
+    """The make include lines in text (a cheap line scan of a makefile too large to parse)."""
+    if have >= MAX_INCLUDES * 4 or "include" not in text:
+        return []
+    return [(m.group(2).strip(), m.group(1) != "include") for m in _INCLUDE_LINE.finditer(text)]
 
 
 # ---- what text names ------------------------------------------------------------------------
 
 
 _PARTS = re.compile(r"(\n|;|&&|\|\|?)")  # where one command ends in scanned text
-_DRY_RUN = re.compile(r"(?<![\w-])(?:--dry-run|--preview)(?![\w-])")
-_GIT_PUSH_N = re.compile(r"(?<![\w.-])git(?![\w-]).*(?<![\w-])push(?![\w-]).*(?<![\w-])-n(?![\w-])")
+_DRY_RUN = re.compile(r"(?<![\w-])(?:--dry-run|--preview)(?:=true)?(?![\w=-])", re.I)
+_GIT_PUSH_N = re.compile(
+    r"(?<![\w.-])git(?![\w-])[^\n]*?(?<![\w-])push(?![\w-])[^\n]*?(?<![\w-])-n(?![\w-])"
+)
+
+
+# A dry-run flag that depends on something: ${DRY:+--dry-run}, `dry ? '--dry-run' : ''`,
+# `+ (['--dry-run'] if '-n' in sys.argv else [])`. Such a command may well publish.
+_CONDITIONAL = re.compile(
+    r"\$\{|\$\(|`|\?|\bif\b|\bunless\b|\band\b|\bor\b|argv|environ|getenv|process\.env|ENV\["
+    r"|\*|\[\s*-?\d*\s*:|--no-dry-run|(?:dry-run|preview)['\"]?\s*[=,]?\s*['\"]?(?:false|0|no|off)\b",
+    re.I,
+)
 
 
 def _without_dry_runs(text: str) -> str:
     """Scanned text without the commands that are dry runs (`npm publish --dry-run`, `git push
-    -n`): those upload nothing, so naming one is not a reason to say "could not check"."""
-    parts = _PARTS.split(text)
-    return "".join(
-        " "
-        if not _PARTS.fullmatch(part) and (_DRY_RUN.search(part) or _GIT_PUSH_N.search(part))
-        else part
-        for part in parts
-    )
+    -n`): those upload nothing, so naming one is not a reason to say "could not check". Only a
+    literal, unconditional dry run counts; one that depends on a variable or a test does not."""
+
+    def dry(part: str) -> bool:
+        if _PARTS.fullmatch(part) or not (_DRY_RUN.search(part) or _GIT_PUSH_N.search(part)):
+            return False
+        return not _CONDITIONAL.search(part)
+
+    return "".join(" " if dry(part) else part for part in _PARTS.split(text))
 
 
 def _named(text: str) -> list[Hit]:
@@ -285,18 +372,286 @@ def _named(text: str) -> list[Hit]:
     text = _without_dry_runs(text)
     for match in _NAMED_PUBLISH.finditer(text):
         tool = next(group for group in match.groups() if group)
+        tool = tool.lower()
         hit = (c.Action.push if tool == "git" else c.Action.publish, tool)
         if hit not in hits:
             hits.append(hit)
     return hits
 
 
+# ---- code in other languages ----------------------------------------------------------------
+
+_STRING = r"""(?:"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\$])*`)"""
+_STRING_ANY = r"""(?:"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\])*`)"""
+_JOINED = re.compile(rf"({_STRING})(?:\s*(?:\+|\.\.?)\s*|[ \t]+)({_STRING})")  # "a" + 'b', "a" "b"
+_LIST = rf"{_STRING}(?:\s*,\s*{_STRING})*\s*,?"
+_PY_JOIN = re.compile(rf"({_STRING})\.join\(\s*[\[(]\s*({_LIST})\s*[\])]\s*\)")  # "".join([...])
+_JS_JOIN = re.compile(rf"\[\s*({_LIST})\s*\]\.join\(\s*({_STRING})?\s*\)")  # [...].join("")
+_LITERAL_PART = re.compile(rf"\$?\{{\s*({_STRING})\s*\}}")  # `${"lish"}`, f"{'lish'}"
+# Code that can start a process, anywhere in the file (aliases like `from subprocess import run`,
+# `import subprocess as sp` or `const {execSync: x} = require("child_process")` included). JS
+# `exec`/`spawn` count only with `child_process` (a RegExp's .exec() is not a process).
+_STARTS_PROCESS = re.compile(
+    r"\bsubprocess\b|\bos\.(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*)|\bpty\.spawn|"
+    r"\bpexpect\b|\bplumbum\b|\bimport\s+sh\b|\bfrom\s+sh\s+import\b|create_subprocess_|"
+    r"child_process|\bexeca\b|\bzx\b|\$`|Deno\.(?:Command|run)|Bun\.(?:spawn\w*|\$)|"
+    r"\bshelljs\b|cross-spawn|\bsystem\s*\(|(?<!['\"])\bexec(?:\s+|\s*\(\s*)[\"'`]|"
+    r"%x[{(\[]|\bqx[{(/]|shell_exec|passthru|proc_open|\bpopen\s*\(|IO\.popen|Open3\.|"
+    r"Process\.spawn|\bspawn\s*\(\s*[\"']"
+)
+# A publish or push word anywhere in code (or in what it is given on its command line), any case:
+# with a process start in the same code, "could not check" (`run([t, "PUBLISH".lower()])`).
+# A method call (`list.push(x)`, `client.publish(...)`), a path or a script name is not one.
+_CODE_WORD = re.compile(r"(?<![\w.$:/-])(publish|push)(?![\w:./-])", re.I)
+_UPLOAD_WORD = re.compile(r"(?<![\w.$:/-])upload(?![\w:./-])", re.I)
+_TOOL = r"(?:npm|pnpm|yarn|bun|twine|uv|poetry|hatch|flit|git|gh)"
+# A publishing tool as a string of its own (["npm", ...]) and what comes after it.
+_TOOL_ITEM = re.compile(rf"""(["'])({_TOOL})\1\s*([,\])+])""", re.I)
+# A command line written as one string: "npm " + verb, `npm ${v}`, f"git log {n}", "npm %s".
+_TOOL_TEXT = re.compile(rf"""(["'`])({_TOOL})(\s(?:(?!\1)[^\\\n]|\\.)*)(\1)?""", re.I)
+_ITEM = re.compile(rf"""\s*(?:({_STRING_ANY})|(\*|\.\.\.)|(\[)|(\]|\)))""")
+_PLACEHOLDER = re.compile(r"\$\{|\{|%[sdr]|#\{|^\$\w")
+_CODE_VALUES = {"--filter", "-F", "--dir", "-C", "--prefix", "--cwd", "-w", "--workspace",
+                "--tag", "--registry", "--loglevel", "-c", "--git-dir", "--work-tree", "-n",
+                "--format"}  # fmt: skip
+_BUILT = "it builds a `{tool}` command at run time, which agentprint can't read"
+MAX_NORMALISE = 8  # passes joining string literals
+
+
+def _content(literal: str) -> str:
+    return literal[1:-1]
+
+
+def _normalised(code: str) -> str:
+    """Code with strings built from literals joined: "pub" + "lish", 'npm ' . 'publish',
+    "".join(["npm ", "publish"]), ["pub", "lish"].join(""), `npm ${"publish"}`."""
+    for _ in range(MAX_NORMALISE):
+        before = code
+        code = _LITERAL_PART.sub(lambda m: _content(m.group(1)), code)
+        code = _PY_JOIN.sub(
+            lambda m: (
+                '"'
+                + _content(m.group(1)).join(_content(x) for x in re.findall(_STRING, m.group(2)))
+                + '"'
+            ),
+            code,
+        )
+        code = _JS_JOIN.sub(
+            lambda m: (
+                '"'
+                + (_content(m.group(2)) if m.group(2) else ",").join(
+                    _content(x) for x in re.findall(_STRING, m.group(1))
+                )
+                + '"'
+            ),
+            code,
+        )
+        code = _JOINED.sub(
+            lambda m: m.group(1)[0] + _content(m.group(1)) + _content(m.group(2)) + m.group(1)[0],
+            code,
+        )
+        if code == before:
+            break
+    return code
+
+
+_RUNTIME_WORD = "it starts a process and names `{verb}`, so it may build a publish at run time"
+
+
+def _code_flags(
+    code: str, name: str, cwd: Path, program: str = "", argv: list[str] | tuple = ()
+) -> list[c.Risky]:
+    """Code in another language, which agentprint does not read as commands: "could not check"
+    when it names a publish or push once strings built from literals are joined (and literal
+    base64, hex and character codes decoded), when it starts a process for a publishing tool
+    whose subcommand is not written out, or when it starts a process and names a publish or push
+    (any case) in its text or in what it is given on its command line."""
+    plain = _normalised(code)
+    if '\\"' in plain or "\\'" in plain:  # exec("os.system(\"npm pub\" + \"lish\")")
+        plain += "\n" + _normalised(plain.replace('\\"', '"').replace("\\'", "'"))
+    decoded = _decoded(plain)
+    if decoded:
+        plain += "\n" + decoded
+    hits = _named(code) + [hit for hit in _named(plain) if hit not in _named(code)]
+    if hits:
+        return _flag(hits, name, cwd, _CODE)
+    if not _starts_process(plain, program):
+        return []
+    given = " ".join(argv)
+    plain = _without_dry_runs(plain)
+    evidence = _CODE_WORD.search(plain) or _CODE_WORD.search(given)
+    if not evidence and re.search(r"twine", plain + given, re.I):
+        evidence = _UPLOAD_WORD.search(plain) or _UPLOAD_WORD.search(given)
+    for tool, kind in _built_commands(plain):
+        if kind == "splat" and not evidence:
+            continue  # def git(*args): run(["git", *args]): a helper, its calls written out
+        tool = tool.lower()
+        action = c.Action.push if tool in {"git", "gh"} else c.Action.publish
+        return [c.Risky(action, tool, cwd, unsure=_BUILT.format(tool=tool), label=name)]
+    if evidence:
+        verb = evidence.group(1).lower()
+        action = c.Action.push if verb == "push" else c.Action.publish
+        why = _RUNTIME_WORD.format(verb=verb)
+        return [c.Risky(action, Path(program).name or "code", cwd, unsure=why, label=name)]
+    return []
+
+
+def _starts_process(code: str, program: str) -> bool:
+    if _STARTS_PROCESS.search(code):
+        return True
+    return Path(program).name in {"ruby", "perl", "php"} and "`" in code
+
+
+def _built_commands(code: str) -> list[tuple[str, str]]:
+    """Publishing tools the code runs with a subcommand that is not written out: ("npm",
+    "dynamic") for ["npm", verb] or `npm ${v}`, ("npm", "changed") for ["npm", "X".lower()],
+    ("git", "splat") for ["git", *args]. A written-out subcommand (`pnpm --filter ${p} build`,
+    f"npm install {pkg}", "git rev-parse " + ref) is not listed."""
+    out: list[tuple[str, str]] = []
+    for match in _TOOL_ITEM.finditer(code):
+        kind = _list_verb(code, match.end(3) - 1)
+        if kind != "literal":
+            out.append((match.group(2), kind))
+    for match in _TOOL_TEXT.finditer(code):
+        kind = _text_verb(match.group(3), code[match.end() : match.end() + 3], bool(match.group(4)))
+        if kind != "literal":
+            out.append((match.group(2), kind))
+    return out
+
+
+def _list_verb(code: str, at: int) -> str:
+    """The subcommand after a tool written as one item of a list: what kind it is."""
+    after = code[at]
+    if after in "])":
+        rest = code[at + 1 : at + 8].lstrip()
+        return "dynamic" if rest[:1] in {"+", "*"} or rest[:6] == ".concat" else "literal"
+    if after == "+":
+        return "dynamic"
+    i = at + 1
+    takes_value = False
+    for _ in range(16):
+        item = _ITEM.match(code, i)
+        if item is None:  # an expression: a variable, sys.argv[1], a call...
+            if not takes_value:
+                return "dynamic"
+            takes_value = False  # ["--filter", process.argv[1], "build"]: an option's value
+            i = _skip_expression(code, i)
+            comma = re.match(r"\s*,", code[i:])
+            if not comma:
+                return "literal"
+            i += comma.end()
+            continue
+        literal, splat, opening, closing = item.groups()
+        i = item.end()
+        if opening:
+            continue
+        if closing:
+            return "literal"  # no subcommand at all
+        if splat:
+            return "splat"
+        assert literal is not None
+        tail = code[i : i + 3].lstrip()
+        if tail[:1] not in {",", "]", ")", ""}:
+            return "changed"  # "PUBLISH".lower(), "hsilbup"[::-1], "pub%s" % x
+        text = literal[1:-1]
+        if takes_value:
+            takes_value = False
+        elif text.startswith("-"):
+            takes_value = text.partition("=")[0] in _CODE_VALUES and "=" not in text
+        else:
+            return "literal" if not _PLACEHOLDER.search(text) else "dynamic"
+        comma = re.match(r"\s*,", code[i:])
+        if not comma:
+            return "literal"
+        i += comma.end()
+    return "dynamic"
+
+
+def _skip_expression(code: str, i: int) -> int:
+    """Where an expression in a list ends: the next `,` (or closing bracket) outside brackets."""
+    depth = 0
+    end = min(len(code), i + 400)
+    while i < end:
+        char = code[i]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            if depth == 0:
+                return i
+            depth -= 1
+        elif char == "," and depth == 0:
+            return i
+        elif char in "\"'`":
+            close = code.find(char, i + 1)
+            i = end if close < 0 else close
+        i += 1
+    return i
+
+
+def _text_verb(rest: str, after: str, closed: bool) -> str:
+    """The subcommand inside a command written as one string ("npm publish x", `npm ${v}`)."""
+    words = rest.split()
+    takes_value = False
+    for k, word in enumerate(words):
+        if _PLACEHOLDER.search(word):
+            if takes_value:
+                takes_value = False
+                continue
+            return "dynamic"
+        if takes_value:
+            takes_value = False
+        elif word.startswith("-"):
+            takes_value = word.partition("=")[0] in _CODE_VALUES and "=" not in word
+        else:
+            last = k == len(words) - 1 and not rest[-1:].isspace()
+            if last and closed and after.lstrip()[:1] in {"+", ".", "%"}:
+                return "changed"  # "npm pub" + "lish": the word goes on past the string
+            return "literal"
+    if not closed:
+        return "literal"
+    return "dynamic" if after.lstrip()[:1] in {"+", ".", "%", ","} else "literal"
+
+
+_B64_LITERAL = re.compile(r"""["']([A-Za-z0-9+/]{8,}={0,2})["']""")
+_HEX_LITERAL = re.compile(r"""["']((?:[0-9a-fA-F]{2}){4,})["']""")
+_CHAR_CODES = re.compile(r"(?<![\w.])\d{2,3}(?:\s*,\s*\d{2,3}){3,}(?![\w.])")
+
+
+def _decoded(code: str) -> str:
+    """Text written in code as base64, hex or character codes, decoded (so a publish hidden
+    that way is still named)."""
+    out: list[str] = []
+    for match in _B64_LITERAL.finditer(code):
+        literal = match.group(1)
+        if len(literal) % 4:
+            continue
+        try:
+            text = base64.b64decode(literal, validate=True).decode("ascii")
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if text.isprintable():
+            out.append(text)
+    for match in _HEX_LITERAL.finditer(code):
+        try:
+            text = bytes.fromhex(match.group(1)).decode("ascii")
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if text.isprintable():
+            out.append(text)
+    for match in _CHAR_CODES.finditer(code):
+        codes = [int(n) for n in re.findall(r"\d+", match.group())]
+        if all(32 <= n < 127 for n in codes):
+            out.append("".join(map(chr, codes)))
+    return "\n".join(out)
+
+
 def _hits(text: str, cwd: Path) -> list[Hit]:
-    """Shell text only scanned, not read as commands: named publishes and backstop hits."""
+    """Shell text only scanned, not read as commands: named publishes and the publish and push
+    commands written in it."""
     hits = _named(text)
-    for risky in c._backstop(_without_dry_runs(text), cwd):
-        if (risky.action, risky.tool) not in hits:
-            hits.append((risky.action, risky.tool))
+    for hit in c.scan_hits(text):
+        if hit not in hits:
+            hits.append(hit)
     return hits
 
 
@@ -333,22 +688,32 @@ def _unread(file: _File, cwd: Path, runner: str, shell: bool) -> list[c.Risky]:
 # ---- following ------------------------------------------------------------------------------
 
 
-def _step(step: recipes.Step, name: str, cwd: Path, depth: int) -> list[c.Risky]:
-    """One script or recipe line from file `name`. Shell is read as commands; other languages
-    are only scanned for a publish or push they name."""
+def _step(
+    step: recipes.Step,
+    name: str,
+    cwd: Path,
+    depth: int,
+    args: list[str] | None = None,
+    env: dict | None = None,
+) -> list[c.Risky]:
+    """One script or recipe line from file `name`. Shell is read as commands (with the arguments
+    and exported variables it is given); other languages are only scanned for a publish or push
+    they name or build."""
     if not _is_shell(step.program):
-        return _flag(_named(step.text), name, cwd, _CODE)
-    text, other = recipes.shell_text(step.text)
-    text = recipes.called_only(text)  # a function's body runs only when it is called
-    found = [risky for body in other for risky in _flag(_named(body), name, cwd, _CODE)]
+        return _code_flags(step.text, name, cwd, step.program, args or [])
+    text = step.text
     reading = _reading(cwd)
     if reading.peeking or reading.bytes + len(text) > MAX_BYTES:  # charged before it is read
-        return found + _flag(_hits(text, cwd), name, cwd, _DEEP)
+        return _flag(_hits(text, cwd), name, cwd, _DEEP)
     if depth >= c.MAX_DEPTH or reading.steps >= MAX_STEPS:
-        return found + _peek(text, cwd, min(depth, c.MAX_DEPTH))
+        return _peek(text, cwd, min(depth, c.MAX_DEPTH))
     reading.steps += 1
     reading.bytes += len(text)
-    return found + c.detect(text, cwd, depth + 1)
+    token = _NAMING.set(name)
+    try:
+        return c.read_script(text, cwd, depth + 1, args, env)
+    finally:
+        _NAMING.reset(token)
 
 
 def _peek(text: str, cwd: Path, depth: int) -> list[c.Risky]:
@@ -400,11 +765,13 @@ def _script(
     runner: str | None = None,
     unknown: str = "",
     argv: list[str] | None = None,
+    env: dict | None = None,
 ) -> list[c.Risky]:
     """`./release.sh`, `bash scripts/release.sh`, `python release.py`: what the file runs.
 
     `unknown` is set when an earlier `cd` went somewhere only known at run time; `argv` is what
-    the script is given, filled in for "$@", $1... (a wrapper: `./with-env.sh npm publish`)."""
+    the script is given: its "$@", $1... (a wrapper: `./with-env.sh npm publish`); `env` the
+    variables and functions it inherits."""
     file = _read(arg, cwd)
     if file is None:
         return _lost(arg, cwd, depth, unknown)
@@ -415,41 +782,40 @@ def _script(
         return _unread(file, cwd, program, _is_shell(program))
     reading = _reading(cwd)
     argv = argv or []
-    key = (file.path, cwd, program, depth, reading.peeking, tuple(argv))
+    key = (file.path, cwd, program, depth, reading.peeking, tuple(argv), _env_key(env))
     if key not in reading.results:
         text = file.text
         if _is_shell(program):
-            text = _with_args(_own_folder(text, file.path.parent), argv)
-        reading.results[key] = _step(recipes.Step(text, program), file.name, cwd, depth)
+            text = _own_folder(text, file.path.parent)
+        step = recipes.Step(text, program)
+        reading.results[key] = _step(step, file.name, cwd, depth, argv, env)
     return list(reading.results[key])
 
 
-_POSITIONAL = re.compile(
-    r'"\$[@*]"|"\$\{[@*]\}"|\$\{[@*]\}|\$[@*]|"\$\{?([1-9])\}?"|\$\{?([1-9])\}?|\$#'
-)
-MAX_ARGS_TEXT = 4096  # what a wrapper's "$@" may grow into, per use
+def _env_key(env: dict | None) -> tuple:
+    if not env:
+        return ()
+    values = tuple(sorted((k, v.value) for k, v in env.get("vars", {}).items()))
+    return values, tuple(sorted(env.get("funcs", {})))
 
 
-def _with_args(text: str, argv: list[str]) -> str:
-    """A shell script with "$@", "$*", $1..$9 and $# filled in from the arguments it was run
-    with, so a wrapper that forwards them is read as what it runs. Left alone with no
-    arguments (and inside a function they'd mean something else, so this is a best effort)."""
-    if not argv:
-        return text
-    everything = shlex.join(argv)
-    if len(everything) > MAX_ARGS_TEXT:
-        return text
-
-    def fill(match: re.Match[str]) -> str:
-        if match.group(0) == "$#":
-            return str(len(argv))
-        number = match.group(1) or match.group(2)
-        if number is None:
-            return everything
-        index = int(number) - 1
-        return shlex.quote(argv[index]) if index < len(argv) else "''"
-
-    return _POSITIONAL.sub(fill, text)
+def sourced(arg: str, cwd: Path, depth: int, unknown: str = "") -> str | list[c.Risky]:
+    """`source file`: its text (read in the caller's shell), or what to report instead when it
+    can't be read whole."""
+    file = _read(arg, cwd)
+    if file is None:
+        return _lost(arg, cwd, depth, unknown)
+    if file.text is None:
+        return _unread(file, cwd, "sh", True)
+    reading = _reading(cwd)
+    text = _own_folder(file.text, file.path.parent)
+    if reading.peeking or reading.bytes + len(text) > MAX_BYTES:
+        return _flag(_hits(text, cwd), file.name, cwd, _DEEP)
+    if depth >= c.MAX_DEPTH or reading.steps >= MAX_STEPS:
+        return _peek(text, cwd, min(depth, c.MAX_DEPTH))
+    reading.steps += 1
+    reading.bytes += len(text)
+    return text
 
 
 def _lost(arg: str, cwd: Path, depth: int, unknown: str) -> list[c.Risky]:
@@ -485,25 +851,27 @@ def _interpreter(program: str) -> bool:
     return bool(c._PYTHON.match(program)) or program in INTERPRETERS or program == "nodejs"
 
 
-def _interpreted(program: str, args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
-    """`python scripts/release.py`, `node -e '...'`, `python -u -m twine upload`."""
+def interpreter_input(program: str, args: list[str]) -> tuple[str, int | None]:
+    """What `python ...`, `node ...` runs: ("code", i) inline code at args[i], ("module", i) a
+    `python -m` module, ("file", i) a script, ("stdin", i) code from stdin (`python3 -`, no
+    script), or ("none", None)."""
     key = "python" if c._PYTHON.match(program) else "node" if program == "nodejs" else program
     code, values = INTERPRETERS[key]
+    start = 0
     if key == "deno":
         if args[:1] == ["eval"]:
-            return _flag(_named(" ".join(args[1:])), "deno eval", cwd, _CODE)
+            return ("code", 1) if len(args) > 1 else ("none", None)
         if args[:1] != ["run"]:
-            return []
-        args = args[1:]
-    i = 0
+            return "none", None
+        start = 1
+    i = start
     while i < len(args):
         arg = args[i]
-        flag, eq, inline = arg.partition("=")
+        flag, eq, _ = arg.partition("=")
         if key == "python" and arg == "-m":
-            return c.detect(shlex.join(args[i + 1 :]), cwd, depth + 1)
+            return "module", i + 1
         if flag in code:
-            text = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
-            return _flag(_named(text), f"{program} {flag}", cwd, _CODE)
+            return ("code", i) if eq else ("code", i + 1)  # the word that holds the code
         if arg == "--":
             i += 1
             break
@@ -511,8 +879,37 @@ def _interpreted(program: str, args: list[str], cwd: Path, depth: int) -> list[c
             break
         i += 2 if flag in values and not eq else 1
     if i >= len(args) or args[i] == "-":
-        return []  # a prompt, or code from stdin
-    return _script(args[i], cwd, depth, runner=program)
+        return "stdin", i
+    return "file", i
+
+
+def _interpreted(
+    program: str, args: list[str], cwd: Path, depth: int, stdin: str | None = None
+) -> list[c.Risky]:
+    """`python scripts/release.py`, `node -e '...'`, `python -u -m twine upload`, and code fed
+    on stdin (`python3 - <<EOF`). What the code is given on its command line counts too."""
+    kind, i = interpreter_input(program, args)
+    if kind == "module" and i is not None:
+        return c.detect(shlex.join(args[i:]), cwd, depth + 1)
+    if kind == "code" and i is not None:
+        word = args[i] if i < len(args) else ""
+        if word.startswith("-") and "=" in word:  # --eval=CODE
+            flag, _, text = word.partition("=")
+        else:
+            flag, text = (args[i - 1] if i else ""), word
+        return _code_flags(text, f"{program} {flag}".strip(), cwd, program, args[i + 1 :])
+    if kind == "stdin":
+        if stdin is None:
+            return []  # a prompt, or code from somewhere agentprint can't see
+        rest = args[(i or 0) + 1 :] if i is not None and i < len(args) else []
+        return _code_flags(stdin, _stdin_label(), cwd, program, rest)
+    if kind == "file" and i is not None:
+        return _script(args[i], cwd, depth, runner=program, argv=args[i + 1 :])
+    return []
+
+
+def _stdin_label() -> str:
+    return _NAMING.get() or "here-document"
 
 
 def _find_up(start: Path, wanted: tuple[str, ...]) -> Path | None:
@@ -536,8 +933,9 @@ def _find_up(start: Path, wanted: tuple[str, ...]) -> Path | None:
 # ---- make, just, task -----------------------------------------------------------------------
 
 
-def _make(args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
-    """`make [target ...]`: the targets' recipes and their prerequisites', from the makefile."""
+def _make(args: list[str], cwd: Path, depth: int, stdin: str | None = None) -> list[c.Risky]:
+    """`make [target ...]`: the targets' recipes and their prerequisites', from the makefile
+    (`make -f -` reads it from stdin: a here-document typed on the command line)."""
     dirs: list[str] = []
     files: list[str] = []
     goals: list[str] = []
@@ -580,6 +978,8 @@ def _make(args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
         if not folder or c._UNKNOWABLE.search(folder):
             return []
         cwd = cwd / os.path.expanduser(folder)
+    if "-" in files and stdin is not None:
+        write_virtual("-", cwd, c._Value(stdin))
     if not files:
         try:
             present = set(os.listdir(cwd))
@@ -601,11 +1001,29 @@ def _make(args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
     reading = _reading(cwd)
     for raw in plan.raw:
         left = MAX_BYTES - reading.bytes
+        before = len(found)
         if reading.peeking or left <= 0:  # scan only, with a small expansion
-            found += _flag(_hits(plan.text(raw, limit=4096), cwd), name, cwd, _DEEP)
+            text = plan.text(raw, limit=recipes.SMALL_EXPANSION)
+            found += _flag(_hits(text, cwd), name, cwd, _DEEP)
         elif text := plan.text(raw, total=left):  # a .ONESHELL step stops growing at the budget
             found += _step(recipes.Step(text), name, cwd, depth)
+        if len(found) == before and "${" in text:  # filled in only when make runs
+            found += _filled_by_make(plan.evidence(raw), name, cwd)
     return found
+
+
+_MAKE_FILLS = "it runs a recipe line make fills in at run time, from text that names `{verb}`"
+
+
+def _filled_by_make(evidence: str, name: str, cwd: Path) -> list[c.Risky]:
+    """A recipe line with a value only make knows (`$(call pub,npm)`, `$(shell ...)`): "could not
+    check" when the line or the variables it uses name a publish or push."""
+    match = c.EVIDENCE.search(evidence)
+    if match is None:
+        return []
+    verb = match.group(1).lower()
+    action = c.Action.push if verb == "push" else c.Action.publish
+    return [c.Risky(action, "make", cwd, unsure=_MAKE_FILLS.format(verb=verb), label=name)]
 
 
 _Loaded = tuple[recipes.Makefile, str, bool, list["c.Risky"]]
@@ -624,38 +1042,38 @@ def _makefile(cwd: Path, files: list[str]) -> _Loaded | list[c.Risky]:
     name = ""
     incomplete = False
     queue = [(path, False) for path in files]
-    read = 0
+    read = tries = 0
     scanned: list[c.Risky] = []  # includes too large to follow: what their scan found
     result: _Loaded | list[c.Risky] = []
-    while queue and read < MAX_INCLUDES:
+    first = True
+    while queue and read < MAX_INCLUDES and tries < MAX_INCLUDES * 4:
         path, optional = queue.pop(0)
+        tries += 1
         file = _read(path, cwd)
         if file is None:
-            if mf is None:
+            if first:
                 break  # the makefile is missing, outside the folder, or not text
             incomplete = incomplete or not optional
             continue
-        if file.text is None:
-            if mf is None:  # the makefile itself: only its scan
-                result = _unread(file, cwd, "make", True)
-                break
-            incomplete = True  # an include (or a second -f) too large to follow
-            scanned += _unread(file, cwd, "make", True)
-            continue
-        before = len(mf.includes) if mf else 0
-        mf = recipes.parse_make(file.text, mf)
+        first, read = False, read + 1
         name = name or file.name
-        for line, optional in mf.includes[before:]:  # include lines, variables filled in
-            for word in recipes.expand_make(line, mf.variables).split():
+        if file.text is None:  # too large to follow (or unreadable): scanned, includes read
+            incomplete = True
+            scanned += _unread(file, cwd, "make", True)
+            lines = list(file.includes)
+        else:
+            before = len(mf.includes) if mf else 0
+            mf = recipes.parse_make(file.text, mf)
+            lines = mf.includes[before:]
+        for line, optional in lines:  # include lines, variables filled in
+            for word in recipes.expand_make(line, mf.variables if mf else {}).split():
                 if "$" in word:
                     incomplete = True  # only make knows which file this is
                 elif "*" in word or "?" in word or "[" in word:
                     queue += [(found, True) for found in sorted(glob.glob(str(cwd / word)))]
                 else:
                     queue.append((word, optional))
-        read += 1
-    if mf is not None:
-        result = (mf, name, incomplete or bool(queue), scanned)
+    result = (mf, name, incomplete or bool(queue), scanned) if mf is not None else scanned
     reading.parsed[key] = result
     return result
 

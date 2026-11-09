@@ -1,8 +1,9 @@
-"""Read the files a command hands its work to: shell scripts, Makefiles, justfiles, Taskfiles.
+"""Read the files a command hands its work to: Makefiles, justfiles, Taskfiles, and which
+program runs a script.
 
 Pure text functions with no file access and nothing run: `commands` reads the files (inside the
 folder the agent's command runs in, 64 KB at most) and sends what these return back through its
-own command reader.
+own command reader. Shell text itself is read by `shell` (a tokenizer), never cut down here.
 """
 
 from __future__ import annotations
@@ -16,14 +17,7 @@ import yaml
 
 # ---- shell scripts --------------------------------------------------------------------------
 
-_HEREDOC = re.compile(r"<<(-?)[ \t]*(?:'([^'\n]*)'|\"([^\"\n]*)\"|\\?([A-Za-z0-9_.@+-]+))")
-_HEREDOC_SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "ssh"}  # their stdin is commands
-_INTERPRETER = re.compile(
-    r"^(?:python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|tsx|ts-node|ruby|perl|php|lua|pwsh"
-    r"|powershell)$"
-)
 _SHEBANG = re.compile(r"#!\s*(\S+)(.*)")
-_SPECIAL = re.compile(r"[#'\"\\<]")  # what _scan has to look at: comments, quotes, heredocs
 _BY_EXTENSION = {
     ".py": "python3",
     ".js": "node",
@@ -63,174 +57,6 @@ def interpreter(text: str, name: str) -> str:
     return _BY_EXTENSION.get(PurePosixPath(name).suffix.lower(), "sh")
 
 
-def shell_text(text: str) -> tuple[str, list[str]]:
-    """A shell script's commands, without its comments and here-document bodies.
-
-    Also returns the bodies of here-documents fed to another language (`python3 - <<EOF`):
-    code, but not shell. A body fed to a shell (`bash <<EOF`, `ssh host <<EOF`) stays in the
-    commands; a body fed to anything else (`cat > ci.yml <<EOF`) is data and is dropped."""
-    lines = text.splitlines()
-    kept: list[str] = []
-    other: list[str] = []
-    quote = ""
-    i = 0
-    while i < len(lines):
-        line, quote, heredocs = _scan(lines[i], quote)
-        kept.append(line)
-        i += 1
-        fed_to = _fed_to(line) if heredocs else ""
-        for strip_tabs, word in heredocs:
-            body: list[str] = []
-            while i < len(lines):
-                end = lines[i].lstrip("\t") if strip_tabs else lines[i]
-                i += 1
-                if end == word:
-                    break
-                body.append(lines[i - 1])
-            if fed_to == "shell":
-                inner, more = shell_text("\n".join(body))
-                kept.append(inner)
-                other += more
-            elif fed_to == "other":
-                other.append("\n".join(body))
-    return "\n".join(kept), other
-
-
-def _scan(line: str, quote: str) -> tuple[str, str, list[tuple[bool, str]]]:
-    """One line without its comment; the quote still open after it; here-documents it opens."""
-    if not quote and not _SPECIAL.search(line):
-        return line.rstrip(), "", []  # nothing to take out: most lines
-    out: list[str] = []
-    heredocs: list[tuple[bool, str]] = []
-    arithmetic = 0  # open `((`: a `<<` inside $(( 1 << 2 )) is a shift, not a here-document
-    i = 0
-    while i < len(line):
-        char = line[i]
-        if quote:
-            if char == "\\" and quote == '"':
-                out.append(line[i : i + 2])
-                i += 2
-                continue
-            if char == quote:
-                quote = ""
-        elif char == "\\":
-            out.append(line[i : i + 2])
-            i += 2
-            continue
-        elif char in "'\"":
-            quote = char
-        elif char == "#" and (i == 0 or line[i - 1] in " \t;&|()"):
-            break
-        elif line.startswith("((", i) or line.startswith("))", i):
-            arithmetic += 1 if char == "(" else -1
-            out.append(line[i : i + 2])
-            i += 2
-            continue
-        elif line.startswith("<<<", i):  # a here-string: its word is on this line
-            out.append("<<<")
-            i += 3
-            continue
-        elif line.startswith("<<", i) and arithmetic <= 0:
-            match = _HEREDOC.match(line, i)
-            if match:
-                word = next(g for g in match.groups()[1:] if g is not None)
-                heredocs.append((match.group(1) == "-", word))
-                out.append(match.group(0))
-                i = match.end()
-                continue
-        out.append(char)
-        i += 1
-    return "".join(out).rstrip(), quote, heredocs
-
-
-def _fed_to(line: str) -> str:
-    names = {PurePosixPath(w).name for w in re.findall(r"[^\s;&|()<>]+", line)}
-    if names & _HEREDOC_SHELLS:
-        return "shell"
-    if any(_INTERPRETER.match(name) for name in names):
-        return "other"
-    return "data"
-
-
-_FUNCTION = re.compile(
-    r"(?m)^[ \t]*(?:function[ \t]+([A-Za-z_][\w.:-]*)(?:[ \t]*\(\s*\))?"
-    r"|([A-Za-z_][\w.:-]*)[ \t]*\(\s*\))\s*\{"
-)
-MAX_FUNCTIONS = 200
-
-
-def called_only(text: str) -> str:
-    """Shell text without the functions it defines but never calls: a function's body runs only
-    when it is called, so `source lib.sh` reads only the lib's top-level lines. A function
-    called anywhere outside its own body is kept where it is, and so are the ones it calls."""
-    spans: dict[str, tuple[int, int]] = {}
-    end = 0
-    for match in _FUNCTION.finditer(text):
-        if match.start() < end or len(spans) >= MAX_FUNCTIONS:
-            continue  # nested in the one before
-        close = _matching_brace(text, match.end() - 1)
-        if close < 0:
-            break  # not a function body agentprint can read: leave the rest alone
-        spans[match.group(1) or match.group(2)] = (match.start(), close + 1)
-        end = close + 1
-    if not spans:
-        return text
-    outside = "\n".join(text[a:b] for a, b in _gaps(sorted(spans.values()), len(text)))
-    called: set[str] = set()
-    todo = [name for name in spans if _calls(outside, name)]
-    while todo:
-        name = todo.pop()
-        if name in called:
-            continue
-        called.add(name)
-        start, stop = spans[name]
-        body = text[start:stop]
-        todo += [other for other in spans if other not in called and _calls(body, other)]
-    out, at = [], 0
-    for name, (start, stop) in sorted(spans.items(), key=lambda item: item[1]):
-        if name not in called:
-            out += [text[at:start], "\n" * text.count("\n", start, stop)]
-            at = stop
-    return "".join([*out, text[at:]])
-
-
-def _calls(text: str, name: str) -> bool:
-    return re.search(rf"(?<![\w.:$/-]){re.escape(name)}(?![\w.:/=(-])", text) is not None
-
-
-def _gaps(spans: list[tuple[int, int]], size: int) -> list[tuple[int, int]]:
-    gaps, at = [], 0
-    for start, stop in spans:
-        gaps.append((at, start))
-        at = stop
-    return [*gaps, (at, size)]
-
-
-def _matching_brace(text: str, start: int) -> int:
-    """The `}` that closes the `{` at `start`, outside quotes; -1 when there is none."""
-    level, quote, i = 0, "", start
-    while i < len(text):
-        char = text[i]
-        if quote:
-            if char == "\\" and quote == '"':
-                i += 2
-                continue
-            quote = "" if char == quote else quote
-        elif char == "\\":
-            i += 2
-            continue
-        elif char in "'\"":
-            quote = char
-        elif char == "{":
-            level += 1
-        elif char == "}":
-            level -= 1
-            if level == 0:
-                return i
-        i += 1
-    return -1
-
-
 # ---- Makefiles ------------------------------------------------------------------------------
 
 _MAKE_ASSIGN = re.compile(
@@ -243,6 +69,7 @@ _RECIPE_PREFIX = re.compile(r"^[\s@+-]+")
 _MAKE_NAME = re.compile(r"[A-Za-z_][\w.-]*")
 _EXPANSION_DEPTH = 8
 _MAX_EXPANSION = 64 * 1024
+SMALL_EXPANSION = 4096  # past a budget: enough for `$(NPM)`, not for a runaway value
 
 
 @dataclass
@@ -259,10 +86,14 @@ def parse_make(text: str, into: Makefile | None = None) -> Makefile:
     mf = into or Makefile()
     prefix = "\t"
     current: list[str] | None = None  # the targets whose recipe the next tab line belongs to
-    in_define = False
+    define: tuple[str, list[str]] | None = None  # define NAME ... endef: a multi-line variable
     for line in _logical_lines(text):
-        if in_define:
-            in_define = not re.match(r"^\s*endef\b", line)
+        if define is not None:
+            if re.match(r"^\s*endef\b", line):
+                mf.variables[define[0]] = "\n".join(define[1])
+                define = None
+            else:
+                define[1].append(line)
             continue
         if line.startswith(prefix):
             for target in current or []:
@@ -273,7 +104,8 @@ def parse_make(text: str, into: Makefile | None = None) -> Makefile:
             continue  # neither ends a recipe
         current = None
         if _MAKE_DEFINE.match(stripped):
-            in_define = True
+            words = re.sub(r"^(?:(?:override|export)\s+)?define\s*", "", stripped).split()
+            define = (words[0] if words else "", [])
         elif assign := _MAKE_ASSIGN.match(stripped):
             name, op, value = assign.groups()
             if name == ".RECIPEPREFIX":
@@ -344,18 +176,44 @@ class MakePlan:
     def text(self, step: str, limit: int = 0, total: int = 0) -> str:
         """One step with variables filled in and `@`/`-`/`+` taken off each line. A value that
         grows past `limit` characters (64 KB when 0) stays unknown. Once the step is longer than
-        `total` characters (when given), the rest of its lines (a `.ONESHELL` recipe) are kept
-        as written, unexpanded, so one step can't grow without bound."""
+        `total` characters (when given), the rest of its lines (a `.ONESHELL` recipe) are filled
+        in under a small limit, so one step can't grow without bound and `$(NPM) publish` still
+        reads as `npm publish`."""
         lines: list[str] = []
         size = 0
+        single = "\n" not in step  # a line of its own: a huge variable in it stays unknown
         for line in step.split("\n"):
-            if not total or size <= total:
-                line = expand_make(line, self.variables, self.memo, limit=limit)
+            past = total and size > total
+            line = expand_make(
+                line,
+                self.variables,
+                self.memo,
+                limit=SMALL_EXPANSION if past else limit,
+                value_limit=SMALL_EXPANSION if single else 0,
+            )
             line = _RECIPE_PREFIX.sub("", line)
             if line.strip():
                 lines.append(line)
                 size += len(line) + 1
         return "\n".join(lines)
+
+    def evidence(self, step: str) -> str:
+        """A recipe step as written, with the values of the variables it names (and theirs):
+        what a line make fills in at run time (`$(call pub,npm)`) may run."""
+        out = [step]
+        todo = _MAKE_REFS.findall(step)
+        seen: set[str] = set()
+        while todo and len(seen) < 64:
+            name = todo.pop()
+            if name in seen or name not in self.variables:
+                continue
+            seen.add(name)
+            out.append(self.variables[name])
+            todo += _MAKE_REFS.findall(self.variables[name])
+        return "\n".join(out)[: 64 * 1024]
+
+
+_MAKE_REFS = re.compile(r"\$[({](?:call\s+)?([A-Za-z_][\w.-]*)")
 
 
 def make_plan(mf: Makefile, goals: list[str], overrides: dict[str, str]) -> MakePlan:
@@ -408,10 +266,11 @@ def expand_make(
     memo: dict[str, str] | None = None,
     depth: int = 0,
     limit: int = 0,
+    value_limit: int = 0,
 ) -> str:
     """`text` with make variables filled in. Each variable is expanded once (`memo`); one that
-    refers to itself, nests too deeply or grows past 64 KB is left as `${NAME}`, and so is the
-    whole text when it grows past `limit` characters (64 KB when 0)."""
+    refers to itself, nests too deeply or grows past 64 KB (or `value_limit`) is left as
+    `${NAME}`, and so is the whole text when it grows past `limit` characters (64 KB when 0)."""
     memo = {} if memo is None else memo
     limit = limit or _MAX_EXPANSION
     out: list[str] = []
@@ -428,7 +287,10 @@ def expand_make(
             if end < 0:
                 piece, i = text[i:], len(text)
             else:
-                piece, i = _make_value(text[i + 2 : end], variables, memo, depth), end + 1
+                piece = _make_value(text[i + 2 : end], variables, memo, depth)
+                if value_limit and len(piece) > value_limit:
+                    piece = "${" + text[i + 2 : end].strip() + "}"
+                i = end + 1
         else:  # $@, $<, $^ and one-letter variables: only make knows
             piece, i = "$" + text[i + 1], i + 2
         out.append(piece)

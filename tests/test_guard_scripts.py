@@ -506,3 +506,199 @@ def test_a_function_the_script_calls_is_read(leaky):
     _repo(leaky, {"release.sh": script})
     verdict = evaluate("./release.sh", leaky)
     assert verdict.block and "git push" not in verdict.reason
+
+
+# ---- an ANSI-C $'...' string with an apostrophe after it --------------------------------------
+
+P1 = "npm publish demo-1.0.0.tgz"
+
+
+@pytest.mark.parametrize(
+    ("command", "files"),
+    [
+        (f"echo $'it\\'s' && {P1} # don't", {}),
+        (f"echo $'it\\'s' && {P1} && echo don\\'t", {}),
+        (f"echo $'x\\'' ; {P1} ; echo '\\'", {}),
+        ("./r.sh", {"r.sh": f"#!/bin/bash\necho $'Releasing: it\\'s time'\n{P1}\n# that's all\n"}),
+        ("./r.sh", {"r.sh": f"#!/bin/bash\necho $'it\\'s'\nset -e\n{P1}\necho ok\n# don't\n"}),
+        ("./r.sh", {"r.sh": f"#!/bin/bash\necho $'it\\'s'\n{P1}\necho can\\'t\n"}),
+        ("make release", {"Makefile": f"release:\n\techo $$'it\\'s' && {P1} # don't\n"}),
+        (f"bash -c \"echo \\$'it\\\\'s' && {P1} # don't\"", {}),
+    ],
+    ids=["comment", "escaped-later", "backslash-quote", "script-comment", "script-comment-far",
+         "script-escaped", "make", "bash-c-double-quoted"],
+)  # fmt: skip
+def test_an_ansi_c_string_then_an_apostrophe_still_blocks(leaky, command, files):
+    _repo(leaky, files)
+    assert evaluate(command, leaky).block
+
+
+@pytest.mark.parametrize(
+    ("command", "files"),
+    [
+        ("./r.sh", {"r.sh": f"#!/bin/bash\necho $'it\\'s'\ncd pkg\n# it's\n{P1}\n"}),
+        (f"echo $'it\\'s' && cd pkg && echo don\\'t; {P1}", {}),
+    ],
+    ids=["script", "command-line"],
+)
+def test_an_ansi_c_string_does_not_hide_a_cd(tmp_path, command, files):
+    (tmp_path / "pkg").mkdir()
+    _tgz(tmp_path / "demo-1.0.0.tgz", CLEAN)
+    _tgz(
+        tmp_path / "pkg" / "demo-1.0.0.tgz", {**CLEAN, "package/.claude/settings.local.json": LEAKY}
+    )
+    _repo(tmp_path, files)
+    assert evaluate(command, tmp_path).block
+
+
+# ---- a wrapper's arguments: whole words only, bounded, shift ---------------------------------
+
+
+@pytest.mark.parametrize(
+    ("command", "script"),
+    [
+        ("./r.sh 'a\"b'", f'#!/bin/sh\necho "Releasing $@"\n{P1}\n# don\'t\n'),
+        ("./r.sh 'a\"b'", f'#!/bin/sh\necho "Releasing $1"\n{P1}\n# don\'t\n'),
+        ("./r.sh '\"; cd decoy; echo \"'", f'#!/bin/sh\necho "Releasing $1"\n{P1}\n'),
+    ],
+    ids=["quote-in-all-args", "quote-in-first-arg", "fake-cd"],
+)
+def test_an_argument_inside_a_quoted_string_is_not_filled_in(leaky, command, script):
+    (leaky / "decoy").mkdir()
+    _tgz(leaky / "decoy" / "demo-1.0.0.tgz", CLEAN)
+    _repo(leaky, {"r.sh": script})
+    assert evaluate(command, leaky).block
+
+
+def test_shift_drops_the_arguments_a_wrapper_forwards(tmp_path):
+    _repo(tmp_path, {"w.sh": '#!/bin/sh\nshift\nnpm "$@"\n'})
+    assert evaluate("./w.sh publish test", tmp_path) is None  # runs `npm test`
+    assert evaluate("./w.sh x publish", tmp_path).warning  # runs `npm publish`: checked
+
+
+def test_filling_in_arguments_is_bounded(leaky):
+    from tests import timing
+
+    body = "#!/bin/sh\n" + "echo $@\n" * 6000 + P1 + "\n"
+    _repo(leaky, {"big.sh": body})
+    command = "./big.sh " + "a" * 4000
+    assert timing.best_of(lambda: evaluate(command, leaky), times=1) < timing.bound(2.0)
+    assert evaluate(command, leaky).warning or evaluate(command, leaky).block
+
+
+# ---- a function called through a variable is kept --------------------------------------------
+
+RELEASE_FN = f"release() {{\n  {P1}\n}}\n"
+
+
+@pytest.mark.parametrize(
+    "dispatch",
+    [
+        "TASK=${1:-release}\n$TASK\n",
+        '"${@:-release}"\n',
+        'cmd=$1; shift\n"$cmd" "$@"\n',
+        "for step in build release; do $step; done\n",
+    ],
+    ids=["default-arg", "default-all-args", "first-arg", "for-loop"],
+)
+def test_a_function_called_through_a_variable_is_read(leaky, dispatch):
+    _repo(leaky, {"tasks.sh": "#!/bin/bash\n" + RELEASE_FN + dispatch})
+    assert evaluate("./tasks.sh release", leaky).block  # (with no argument, "$cmd" runs nothing)
+
+
+def test_a_brace_in_a_regex_does_not_hide_what_follows_a_function(leaky):
+    script = f"#!/bin/bash\ncheck() {{\n  [[ $1 =~ ^[{{] ]] && echo json\n}}\n{P1}\n"
+    _repo(leaky, {"r.sh": script})
+    assert evaluate("./r.sh", leaky).block
+    _repo(leaky, {"lib.sh": 'build() { make; }\nrelease() { cd "$PKG"; npm publish; }\n'})
+    assert evaluate("source lib.sh && build", leaky) is None  # still no wolf
+
+
+# ---- a makefile too large to parse: its includes are still followed --------------------------
+
+PAD_RULES = "".join(f"obj/f{i}.o: src/f{i}.c\n" for i in range(4000))  # ~90 KB of plain rules
+
+
+@pytest.mark.parametrize(
+    ("files", "command"),
+    [
+        ({"Makefile": PAD_RULES + "include release.mk\n", "release.mk": f"release:\n\t{PUBLISH}"},
+         "make release"),
+        ({"big.mk": PAD_RULES, "rel.mk": f"release:\n\t{PUBLISH}"},
+         "make -f big.mk -f rel.mk release"),
+    ],
+    ids=["include-in-large-makefile", "large-first-makefile"],
+)  # fmt: skip
+def test_a_large_makefile_still_leads_to_its_other_files(leaky, files, command):
+    _repo(leaky, files)
+    assert evaluate(command, leaky).block
+
+
+def test_a_large_makefile_with_nothing_to_publish_stays_quiet(tmp_path):
+    _repo(
+        tmp_path,
+        {"Makefile": PAD_RULES + "-include deps.mk\nall:\n\tcc x.c\n", "deps.mk": "x.o: x.c\n"},
+    )
+    assert evaluate("make", tmp_path) is None
+    assert evaluate("make", tmp_path, strict=True) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [f"CMD='{P1}'; eval \"$CMD\"", f'CMD="{P1}"; $CMD', "V=publish; npm $V demo-1.0.0.tgz"],
+)
+def test_a_publish_through_a_variable_blocks_for_real(leaky, command):
+    assert evaluate(command, leaky).block and evaluate(command, leaky, strict=True).block
+
+
+# ---- code in other languages: strings built from literals, commands built at run time ---------
+
+CODE_BYPASSES = [
+    'python3 -c \'import subprocess; x=["npm","pub"+"lish"]; subprocess.run(x)\'',
+    'python3 -c \'import subprocess; subprocess.run(["npm", "pub"+"lish"])\'',
+    'node -e \'require("child_process").execSync("npm " + "pub" + "lish")\'',
+    'python3 -c \'import os; os.system("".join(["npm ", "publish"]))\'',
+    'node -e \'require("child_process").execSync(["npm", "publish"].join(" "))\'',
+    'ruby -e \'system("npm " + "pub" + "lish")\'',
+    'perl -e \'system("npm " . "pub" . "lish")\'',
+    'php -r \'shell_exec("npm " . "pub" . "lish");\'',
+    'bun -e \'Bun.spawn(["npm", "pub" + "lish"])\'',
+    'deno eval \'new Deno.Command("npm", {args: ["pub" + "lish"]}).spawn()\'',
+    "python3 -c 'import subprocess,sys; subprocess.run([\"npm\", sys.argv[1]])' publish",
+    "node -e 'const v=process.argv[1]; require(\"child_process\").execSync(`npm ${v}`)' publish",
+    'python3 -c \'import subprocess; v="publish"; subprocess.run(f"npm {v}", shell=True)\'',
+]
+
+
+@pytest.mark.parametrize("command", CODE_BYPASSES)
+def test_a_publish_built_in_code_is_never_a_silent_pass(tmp_path, command):
+    verdict = evaluate(command, tmp_path)
+    assert verdict is not None and verdict.warning and not verdict.block
+    assert evaluate(command, tmp_path, strict=True).block
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'python3 -c \'import subprocess; subprocess.run(["git","status"])\'',
+        'python3 -c \'import subprocess, sys; subprocess.run(["git", "commit", "-m", '
+        'f"bump {sys.argv[1]}"])\' 1.2',
+        'node -e \'require("child_process").execSync("git status")\'',
+        'python3 -c \'print("pub" + "lic")\'',
+    ],
+)
+def test_ordinary_code_that_builds_strings_stays_quiet(tmp_path, command):
+    assert evaluate(command, tmp_path) is None
+    assert evaluate(command, tmp_path, strict=True) is None
+
+
+def test_a_followed_release_script_that_builds_its_command_is_could_not_check(tmp_path):
+    _repo(
+        tmp_path,
+        {
+            "release.py": 'import subprocess\nsubprocess.run(["npm", "pub" + "lish"])\n',
+            "release.mjs": 'import { execa } from "execa";\nawait execa("npm", [verb]);\n',
+        },
+    )
+    assert 'could not check "release.py"' in evaluate("python release.py", tmp_path).warning
+    assert 'could not check "release.mjs"' in evaluate("node release.mjs", tmp_path).warning

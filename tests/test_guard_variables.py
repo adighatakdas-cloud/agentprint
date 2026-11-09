@@ -56,10 +56,18 @@ def test_a_defaulted_tool_is_checked_as_its_default(tmp_path: Path):
 
 def test_inside_a_followed_script_too(tmp_path: Path):
     script = tmp_path / "release.sh"
-    script.write_text('#!/bin/sh\nset -e\nNPM=npm\n"$NPM" publish\n', newline="\n")
+    script.write_text('#!/bin/sh\nset -e\n"$NPM" publish\n', newline="\n")
     script.chmod(0o755)
     [risky] = detect("./release.sh", tmp_path)
     assert risky.action == Action.publish and "variable" in risky.unsure
+
+
+def test_a_variable_set_to_a_literal_is_checked_as_what_it_holds(tmp_path: Path):
+    script = tmp_path / "release.sh"
+    script.write_text('#!/bin/sh\nset -e\nNPM=npm\n"$NPM" publish\n', newline="\n")
+    script.chmod(0o755)
+    [risky] = detect("./release.sh", tmp_path)
+    assert (risky.action, risky.tool, risky.unsure) == (Action.publish, "npm", "")
 
 
 def test_default_mode_warns_and_strict_blocks(tmp_path: Path):

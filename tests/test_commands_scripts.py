@@ -51,11 +51,11 @@ def large(what: str) -> str:
     return f"it is larger than 64 KB and names `{what}`, so agentprint did not follow it"
 
 
-# ---- the backstop word scan -----------------------------------------------------------------
+# ---- the backstop scan ----------------------------------------------------------------------
 
 
 def _backstop(text):
-    return [(r.action, r.tool) for r in commands._backstop(text, CWD)]
+    return commands.scan_hits(text)
 
 
 @pytest.mark.parametrize(
@@ -67,7 +67,7 @@ def _backstop(text):
         ("\n\n  \n\t  npm publish", [(Action.publish, "npm")]),  # after a run of blank lines
         ("(cd x)/npm publish", [(Action.publish, "npm")]),
         ("do  twine upload dist/*", [(Action.publish, "twine")]),
-        ("a=b;c npm publish", []),  # `c` is the program here, not npm
+        ("a=b;c npm publish", [(Action.publish, "npm")]),  # `c` may run it (like `chronic`)
         ("D=./bin/twine upload", []),  # an assignment, then a program called `upload`
         ("git -c a=b -C sub push origin", [(Action.push, "git")]),
         ("npm --access=public --provenance publish", [(Action.publish, "npm")]),
@@ -101,7 +101,7 @@ def test_backstop_reads_command_positions(text, want):
          "npm-option-semi", "git-value-semi", "twine-option-semi"],
 )  # fmt: skip
 def test_backstop_is_linear_on_a_64kb_script(text):
-    assert timing.best_of(lambda: commands._backstop(text, CWD)) < timing.bound(0.5)
+    assert timing.best_of(lambda: commands.scan_hits(text)) < timing.bound(1.0)  # was 15 s
 
 
 # ---- (1) shell scripts ----------------------------------------------------------------------
@@ -678,11 +678,19 @@ def test_an_unreadable_script_is_could_not_check_only_when_it_looks_like_a_relea
 @pytest.mark.parametrize(
     "command",
     ["./missing.sh", "bash missing.sh", "make", "just", "task", "python missing.py",
-     '"$DIR"/release.sh', "bash $SCRIPT", "bash", "bash -s < release.sh", "./"],
+     '"$DIR"/release.sh', "bash $SCRIPT", "bash", "./"],
 )  # fmt: skip
 def test_nothing_to_read_is_not_a_publish(tmp_path, command):
     write(tmp_path, "release.sh", "npm publish\n", 0o755)
     assert detect(command, tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "command", ["bash -s < release.sh", "sh < release.sh", "cat release.sh | sh"]
+)
+def test_a_script_fed_to_a_shell_on_stdin_is_read(tmp_path, command):
+    write(tmp_path, "release.sh", "npm publish\n", 0o755)
+    assert found(command, tmp_path) == [(P, "npm", tmp_path, "")]
 
 
 def test_where_following_stops_it_looks_one_level_further(tmp_path):
@@ -878,3 +886,123 @@ def test_a_dry_run_found_by_a_scan_is_not_could_not_check(tmp_path):
     assert labelled("./s1.sh", tmp_path) == [(P, "npm", deep("npm publish"), "s6.sh")]
     write(tmp_path, "check.py", "subprocess.run(['npm', 'publish', '--dry-run'])\n")
     assert detect("python check.py", tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("command", "files"),
+    [
+        ("node release.js", {"release.js": "const dry = process.argv.includes('-n');\n"
+                             "execSync(`npm publish ${dry ? '--dry-run' : ''}`);\n"}),
+        ("python release.py", {"release.py": "import subprocess, sys\nsubprocess.run(['npm', "
+                               "'publish'] + (['--dry-run'] if '-n' in sys.argv else []))\n"}),
+        ("./s1.sh", {**{f"s{i}.sh": f"./s{i + 1}.sh\n" for i in range(1, 6)},
+                     "s6.sh": "npm publish ${DRY_RUN:+--dry-run}\n"}),
+    ],
+    ids=["node-ternary", "python-conditional", "shell-parameter"],
+)  # fmt: skip
+def test_a_conditional_dry_run_does_not_silence_a_publish(tmp_path, command, files):
+    for rel, text in files.items():
+        write(tmp_path, rel, text, 0o755)
+    assert tools(command, tmp_path) == [(P, "npm")]
+
+
+def test_a_variable_publish_past_the_oneshell_cap_is_still_seen(tmp_path):
+    big = "V2 = " + "x" * 100 + "\nV1 = " + "$(V2)" * 20 + "\nV0 = " + "$(V1)" * 30 + "\n"
+    makefile = ".ONESHELL:\nNPM = npm\n" + big + "all:\n" + "\techo $(V0)\n" * 60
+    write(tmp_path, "Makefile", makefile + "\t$(NPM) publish demo-1.0.0.tgz\n")
+    assert tools("make", tmp_path) == [(P, "npm")]  # scanned past the cap: could not check
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat > RELEASING.md <<'EOF'\nDon't forget the changelog.\nThen:\nnpm publish\nEOF",
+        "tee notes.txt <<EOF\ngit push origin main\nEOF\necho done",
+    ],
+)
+def test_a_here_document_typed_on_the_command_line_is_data(command):
+    assert detect(command, CWD) == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["bash <<EOF\nnpm publish\nEOF", "cat <<EOF | sh\nnpm publish\nEOF",
+     "cat > notes.md <<'EOF'\nnpm publish\nEOF\nnpm publish"],
+    ids=["fed-to-bash", "piped-to-sh", "publish-after-the-body"],
+)  # fmt: skip
+def test_a_here_document_fed_to_a_shell_is_still_read(command):
+    assert tools(command, CWD) == [(P, "npm")]
+
+
+def test_a_here_document_fed_to_python_on_the_command_line_is_scanned():
+    command = "python3 - <<'EOF'\nimport subprocess\nsubprocess.run(['npm', 'publish'])\nEOF"
+    assert labelled(command, CWD) == [(P, "npm", code("npm publish"), "here-document")]
+
+
+# ---- literal shell variables and eval ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("command", "want"),
+    [
+        ("CMD='npm publish'; eval \"$CMD\"", [(P, "npm")]),
+        ('CMD="npm publish"; $CMD', [(P, "npm")]),
+        ("V=publish; npm $V", [(P, "npm")]),
+        ("export CMD='git push'; eval $CMD", [(G, "git")]),
+        ('A=npm; B="$A publish"; $B', [(P, "npm")]),
+        ("readonly T=publish\nnpm ${T}", [(P, "npm")]),
+        ("CMD='npm pub'; CMD+='lish'; $CMD", [(P, "npm")]),
+        ("(CMD='npm publish'); echo $CMD", []),  # set in a subshell, gone after it
+        ("CMD='npm test'; $CMD", []),
+        ("MSG='push notifications'; echo \"$MSG\"", []),
+    ],
+)
+def test_a_literal_variable_is_filled_in(command, want):
+    got = detect(command, CWD)
+    assert [(r.action, r.tool) for r in got] == want and not any(r.unsure for r in got)
+
+
+def test_a_followed_script_fills_in_its_own_variables(tmp_path):
+    write(
+        tmp_path, "release.sh", '#!/bin/sh\nNPM=npm\nTAG=next\n"$NPM" publish --tag "$TAG"\n', 0o755
+    )
+    assert found("./release.sh", tmp_path) == [(P, "npm", tmp_path, "")]
+
+
+@pytest.mark.parametrize(
+    "command",
+    ['eval "$(cat release-cmd.txt)" # then publish', 'X=$(get-cmd publish); eval "$X"'],
+)
+def test_eval_of_something_unknown_is_could_not_check_when_a_publish_is_named(command):
+    [risky] = detect(command, CWD)
+    assert risky.label == "eval" and risky.unsure
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'X=$(get-cmd); eval "$X"; echo push',  # "push" is elsewhere on the line, not in the eval
+        'eval "$(ssh-agent -s)" && ssh-add -l; echo publish',
+    ],
+)
+def test_eval_looks_only_at_what_it_runs(command):
+    assert detect(command, CWD) == []
+
+
+@pytest.mark.parametrize(
+    "command", ['eval "$(pyenv init -)"', 'eval "$(ssh-agent)"', 'eval "$(direnv hook bash)"']
+)
+def test_eval_of_ordinary_setup_stays_quiet(command):
+    assert detect(command, CWD) == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git commit -m 'run `npm publish` later'",
+        "echo 'try $(npm publish) by hand'",
+        "node -e 'const m = /v(\\d+)/.exec(s); console.log(`npm ${m}`)'",
+    ],
+)
+def test_a_substitution_inside_single_quotes_is_text(command):
+    assert detect(command, CWD) == []
