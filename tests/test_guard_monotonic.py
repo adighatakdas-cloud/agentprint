@@ -540,3 +540,65 @@ def test_an_npm_abbreviation_the_reader_does_not_follow_is_seen_by_the_backstop(
 @pytest.mark.parametrize("command", ["npm p", "npm ci && flutter pub get", "npm i pug"])
 def test_words_that_only_look_like_an_npm_abbreviation_are_not_a_publish(tmp_path, command):
     assert detect(command, tmp_path) == []
+
+
+# ---- reader round 4: a function called again is read again ----------------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "publish() { npm publish $FLAGS demo-1.0.0.tgz; }; "
+        "FLAGS=--dry-run; publish; FLAGS=; publish",
+        "pub() { npm publish $F demo-1.0.0.tgz; }; F=--dry-run; pub && F= && pub",
+        "run() { npm $V demo-1.0.0.tgz; }; V=pack; run; V=publish; run",
+        "rel() { npm publish ${DRY:+--dry-run} demo-1.0.0.tgz; }; DRY=1; rel; unset DRY; rel",
+        "run() { sh r.sh; }; echo 'npm test' > r.sh; run; "
+        "echo 'npm publish demo-1.0.0.tgz' > r.sh; run",
+        "f() { :; }; g() { f; }; g; f() { npm publish demo-1.0.0.tgz; }; g",
+    ],
+)  # fmt: skip
+def test_a_function_called_again_in_a_new_state_is_read_again(leaky, command):
+    assert evaluate(command, leaky).block
+
+
+def test_a_function_called_again_sets_its_variables_again(tmp_path):
+    _files(tmp_path, {"pkg/package.json": '{"name": "demo", "version": "1.0.0"}'})
+    command = "pick() { D=pkg; }; pick; D=.; pick; cd $D && npm publish"
+    [risky] = detect(command, tmp_path)
+    assert risky.cwd == tmp_path / "pkg" and not risky.unsure
+
+
+def test_a_call_past_the_budget_is_could_not_check(tmp_path, monkeypatch):
+    from agentprint import commands
+
+    monkeypatch.setattr(commands, "MAX_CALLS", 2)
+    command = "rel() { npm publish $F demo-1.0.0.tgz; }; F=--dry-run; rel; F=-q; rel; F=; rel"
+    assert any(r.unsure and r.label == "npm publish" for r in detect(command, tmp_path))
+    command = "set_cmd() { CMD='npm publish'; }; a() { :; }; a; a 1; set_cmd; $CMD"
+    assert any(r.unsure for r in detect(command, tmp_path))
+
+
+# ---- reader round 4: a script run again is read again when what it reads changed -------------
+
+REWRITES = [
+    "echo 'npm test' > r.sh; sh r.sh; echo 'npm publish demo-1.0.0.tgz' > r.sh; sh r.sh",
+    "echo 'npm test' > r.sh; sh r.sh; echo 'npm publish demo-1.0.0.tgz' >> r.sh; sh r.sh",
+    "cat > r.sh <<'EOF'\nnpm test\nEOF\nsh r.sh\n"
+    "cat > r.sh <<'EOF'\nnpm publish demo-1.0.0.tgz\nEOF\nsh r.sh",
+    "f() { echo hi; }; export -f f; echo f > r.sh; bash r.sh; "
+    "f() { npm publish demo-1.0.0.tgz; }; export -f f; bash r.sh",
+    "printf 'x:\\n\\techo hi\\n' > mk; make -f mk x; "
+    "printf 'x:\\n\\tnpm publish demo-1.0.0.tgz\\n' > mk; make -f mk x",
+]
+
+
+@pytest.mark.parametrize("command", REWRITES)
+def test_a_script_run_again_after_it_changed_is_read_again(leaky, command):
+    assert evaluate(command, leaky).block
+
+
+def test_a_script_run_again_with_other_inherited_text_is_read_again(leaky):
+    command = 'export CMD="$(git config x) test"; ./run.sh; '
+    command += 'export CMD="$(git config x) publish"; ./run.sh'
+    assert _blocks(command, leaky, {"run.sh": "#!/bin/sh\n$CMD\n"})

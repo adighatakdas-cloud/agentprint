@@ -974,6 +974,11 @@ def walk_words(nodes: list[AndOr]):
                 yield from _command_words(command)
 
 
+def command_words(command):
+    """Every word of one command (a function body, a loop...), nested substitutions' not."""
+    yield from _command_words(command)
+
+
 def _command_words(command):
     if isinstance(command, Simple):
         yield from command.words

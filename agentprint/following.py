@@ -158,7 +158,7 @@ class _Reading:
     parsed: dict[tuple, object] = field(default_factory=dict)  # makefiles and justfiles
     texts: list = field(default_factory=list)  # every text read: the backstop scans them all
     funcs: list = field(default_factory=list)  # every shell function defined
-    calls: set = field(default_factory=set)  # function calls followed
+    calls: dict = field(default_factory=dict)  # function calls followed -> their result
     dynamic: list = field(default_factory=list)  # (prefix, suffix) of commands named at run time
     virtual: dict = field(default_factory=dict)  # files the command line writes: path -> value
     parsed_texts: dict = field(default_factory=dict)  # text -> its parsed tree, read once
@@ -783,7 +783,10 @@ def _script(
         return _unread(file, cwd, program, _is_shell(program))
     reading = _reading(cwd)
     argv = argv or []
-    key = (file.path, cwd, program, depth, reading.peeking, tuple(argv), _env_key(env))
+    # Everything that changes what the script does: its text (a file the command line wrote may
+    # be written again), its arguments (and which are only known at run time), what it inherits.
+    given = tuple((arg, type(arg) is not str) for arg in argv)
+    key = (file.path, file.text, cwd, program, depth, reading.peeking, given, _env_key(env))
     if key not in reading.results:
         text = file.text
         if _is_shell(program):
@@ -794,10 +797,17 @@ def _script(
 
 
 def _env_key(env: dict | None) -> tuple:
+    """What a script inherits, as a cache key: each variable's value and, when that is only
+    known at run time, what it was set from; each function's own definition."""
     if not env:
         return ()
-    values = tuple(sorted((k, v.value) for k, v in env.get("vars", {}).items()))
-    return values, tuple(sorted(env.get("funcs", {})))
+    values = tuple(
+        sorted(
+            (k, v.value, v.evidence if v.value is None else "")
+            for k, v in env.get("vars", {}).items()
+        )
+    )
+    return values, tuple(sorted((name, id(func)) for name, func in env.get("funcs", {}).items()))
 
 
 def sourced(arg: str, cwd: Path, depth: int, unknown: str = "") -> str | list[c.Risky]:
@@ -1035,7 +1045,7 @@ def _makefile(cwd: Path, files: list[str]) -> _Loaded | list[c.Risky]:
     some include was not read, and what a scan of an include too large to follow found. A list
     when the makefile itself can't be followed: empty (missing, outside, not text) or a scan."""
     reading = _reading(cwd)
-    key = ("make", _real(cwd), tuple(files))
+    key = ("make", _real(cwd), tuple(files), reading.writes)
     cached = reading.parsed.get(key)
     if cached is not None:
         return cached  # type: ignore[return-value]
@@ -1131,7 +1141,7 @@ def _just(args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
 def _justfile(path: Path, cwd: Path) -> tuple[recipes.Justfile, _File, bool] | list[c.Risky]:
     """The justfile and its imports, read once per command line (a list when not followed)."""
     reading = _reading(cwd)
-    key = ("just", str(path), _real(cwd))
+    key = ("just", str(path), _real(cwd), reading.writes)
     cached = reading.parsed.get(key)
     if cached is not None:
         return cached  # type: ignore[return-value]

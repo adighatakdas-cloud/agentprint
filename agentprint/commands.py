@@ -339,6 +339,7 @@ class _Var:
     origins: tuple = ()  # the words (and here-documents) the value came from
     evidence: str = ""  # every assignment, as written: does it name a publish?
     exported: bool = False
+    unset: bool = False  # `unset X`: known to hold nothing at all (not even an empty value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -691,16 +692,25 @@ def _define(node: Function, where: _Where) -> _Where:
 
 def _call(func: _Func, args: list[str] | None, where: _Where, ctx: _Ctx) -> _Where:
     """A function called: its body read with its arguments as "$@". Its variables and `cd`s
-    last; its positional parameters and `local` variables do not."""
+    last; its positional parameters and `local` variables do not.
+
+    A call is read again unless it is the same function with the same arguments in the very same
+    state (variables, functions, folder, files written so far): what it did then is done again.
+    Past the call budget, a publish written in its body is "could not check"."""
     func.reached = True
     reading = following._READING.get()
     if reading is None:
         return where
-    key = (id(func), None if args is None else tuple(args), where.cwd, where.unknown)
-    if key in reading.calls or len(reading.calls) >= MAX_CALLS or ctx.calls >= MAX_CALL_DEPTH:
-        return where
-    reading.calls.add(key)
+    key = (id(func), None if args is None else tuple(args), id(where), ctx.depth, ctx.label,
+           reading.writes, reading.peeking)  # fmt: skip
+    hit = reading.calls.get(key)
+    if hit is not None and hit[0] is where:  # `where` is kept in the value: its id stays its own
+        ctx.found += hit[2]
+        return hit[1]
+    if len(reading.calls) >= MAX_CALLS or ctx.calls >= MAX_CALL_DEPTH:
+        return _unfollowed_call(func, where, ctx)
     func.ran = True
+    before = len(ctx.found)
     inner = replace(ctx, calls=ctx.calls + 1, locals=set())
     after, _ = _command(func.node.body, replace(where, args=None if args is None else tuple(args)),
                         inner, None)  # fmt: skip
@@ -710,7 +720,38 @@ def _call(func: _Func, args: list[str] | None, where: _Where, ctx: _Ctx) -> _Whe
             values[name] = where.vars[name]
         else:
             values.pop(name, None)
-    return replace(after, args=where.args, vars=values)
+    after = replace(after, args=where.args, vars=values)
+    reading.calls[key] = (where, after, ctx.found[before:])
+    return after
+
+
+_UNFOLLOWED_CALL = "it calls a function more often or more deeply than agentprint follows"
+
+
+def _unfollowed_call(func: _Func, where: _Where, ctx: _Ctx) -> _Where:
+    """A call past the budget: a publish or push written in the body is "could not check", and
+    what the body may set or `cd` to is only known at run time."""
+    scan = _Scan()
+    scan.command(func.node.body, True)
+    for unit in scan.units:
+        if scan.wanted(unit, None, True):
+            for action, tool in unit.shapes():
+                label = _shape_label(action, tool)
+                risky = Risky(action, tool, where.cwd, unsure=_UNFOLLOWED_CALL, label=label)
+                if risky not in ctx.found:
+                    ctx.found.append(risky)
+    values = dict(where.vars)
+    moves = False
+    for word in shell.command_words(func.node.body):
+        match = _assignment_name(word)
+        if match:
+            name = match.group(1)
+            old = values.get(name) or _Var(None)
+            evidence = _bounded(old.evidence + "\n" + word.value)
+            values[name] = _Var(None, (*old.origins, word), evidence, _exported(where, name))
+        moves = moves or word.literal in {"cd", "pushd", "popd"}
+    unknown = where.unknown or (_UNFOLLOWED_CALL if moves else "")
+    return replace(where, vars=values, unknown=unknown)
 
 
 def _reach_dynamic(reading) -> list[Risky]:
@@ -1069,7 +1110,8 @@ def _param(text: str, where: _Where) -> tuple[str | list[str], tuple] | None:
         if got is None:
             return None
         value = got[0]
-        empty = not value if colon else False
+        var = where.vars.get(name)
+        empty = not value if colon else bool(var and var.unset)
         if isinstance(value, list):
             empty = not value
         if op == "-":
@@ -1478,7 +1520,11 @@ def _unset(args: list[_Arg], where: _Where, ctx: _Ctx, stdin) -> _Where:
     names = {a.text for a in args if not a.text.startswith("-")}
     if functions:
         return replace(where, funcs={k: v for k, v in where.funcs.items() if k not in names})
-    return replace(where, vars={k: v for k, v in where.vars.items() if k not in names})
+    values = dict(where.vars)
+    for name in names:  # known to be gone: neither set here nor passed on to a child
+        if re.fullmatch(r"[A-Za-z_]\w*", name) and (name in values or len(values) < MAX_VALUES):
+            values[name] = _Var("", (), "", False, unset=True)
+    return replace(where, vars=values)
 
 
 def _trap(args: list[_Arg], where: _Where, ctx: _Ctx, stdin) -> _Where:
@@ -1518,7 +1564,7 @@ def _declare(program: str, words: list[Word], where: _Where, ctx: _Ctx, subs: di
         for name in names:
             if name in where.funcs:
                 where.funcs[name].exported = True
-        return where
+        return replace(where, funcs=dict(where.funcs))  # a new state: what children get changed
     where = _assign(where, items, exported=exported)
     values = dict(where.vars)
     for name in names:
@@ -2679,7 +2725,7 @@ def _script_name(tool: str, words: list[str], cwd: Path) -> str | None:
 
 def _scripts(cwd: Path) -> dict[str, str]:
     reading = following._READING.get()
-    key = ("scripts", cwd)
+    key = ("scripts", cwd, reading.writes if reading is not None else 0)
     if reading is not None and key in reading.parsed:
         return reading.parsed[key]  # type: ignore[return-value]
     try:
