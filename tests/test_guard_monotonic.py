@@ -504,3 +504,39 @@ def test_adversarial_inputs_stay_fast(tmp_path, command, files):
 
     _files(tmp_path, files)
     assert timing.best_of(lambda: detect(command, tmp_path), times=2) < timing.bound(1.0)
+
+
+# ---- reader round 4: npm reads abbreviations ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("command", "files"),
+    [
+        ("npm pu demo-1.0.0.tgz", None),
+        ("npm pub demo-1.0.0.tgz", None),
+        ("npm publis demo-1.0.0.tgz", None),
+        ("npm --tag next publ demo-1.0.0.tgz", None),
+        ("bash -c 'npm publ demo-1.0.0.tgz'", None),
+        ("npm run rel", {"package.json": '{"scripts": {"rel": "npm pub demo-1.0.0.tgz"}}'}),
+        ("npm run-s rel", {"package.json": '{"scripts": {"rel": "npm publish demo-1.0.0.tgz"}}'}),
+        ("npm tes", {"package.json": '{"scripts": {"test": "npm publish demo-1.0.0.tgz"}}'}),
+        ("npm vers patch", {"package.json": '{"scripts": {"version": "npm pub demo-1.0.0.tgz"}}'}),
+    ],
+)  # fmt: skip
+def test_npm_abbreviations_are_the_commands_npm_runs(leaky, command, files):
+    _files(leaky, files)
+    assert evaluate(command, leaky).block  # checked for real: a leaky package blocks
+
+
+def test_an_npm_abbreviation_the_reader_does_not_follow_is_seen_by_the_backstop(tmp_path):
+    from agentprint.commands import scan_hits
+
+    assert scan_hits("npm --loglevel warn pub") == [(Action.publish, "npm")]
+    code = 'python3 -c \'import subprocess; subprocess.run(["npm", "publ"])\''
+    [risky] = detect(code, tmp_path)
+    assert risky.unsure and risky.tool == "npm"
+
+
+@pytest.mark.parametrize("command", ["npm p", "npm ci && flutter pub get", "npm i pug"])
+def test_words_that_only_look_like_an_npm_abbreviation_are_not_a_publish(tmp_path, command):
+    assert detect(command, tmp_path) == []

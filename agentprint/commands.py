@@ -116,6 +116,70 @@ RUN_VERBS = {"run", "run-script", "rum", "urn"}
 NPM_SCRIPT_ALIASES = {"test": "test", "t": "test", "tst": "test", "start": "start",
                       "stop": "stop", "restart": "restart"}  # fmt: skip
 EXEC_VERBS = {"exec", "x", "dlx"}
+# npm takes any unambiguous start of a command or alias name (npm 11, lib/utils/cmd-list.js):
+# `npm pu`, `npm publ` and `npm publis` all publish. pnpm, yarn and bun take no abbreviations.
+_NPM_COMMANDS = (
+    "access", "adduser", "audit", "bugs", "cache", "ci", "completion", "config", "dedupe",
+    "deprecate", "diff", "dist-tag", "docs", "doctor", "edit", "exec", "explain", "explore",
+    "find-dupes", "fund", "get", "help", "help-search", "init", "install", "install-ci-test",
+    "install-test", "link", "ll", "login", "logout", "ls", "org", "outdated", "owner", "pack",
+    "ping", "pkg", "prefix", "profile", "prune", "publish", "query", "rebuild", "repo", "restart",
+    "root", "run", "run-script", "sbom", "search", "set", "shrinkwrap", "star", "stars", "start",
+    "stop", "team", "test", "token", "trust", "undeprecate", "uninstall", "unpublish", "unstar",
+    "update", "version", "view", "whoami",
+)  # fmt: skip
+_NPM_ALIASES = {
+    "author": "owner", "home": "docs", "issues": "bugs", "info": "view", "show": "view",
+    "find": "search", "add": "install", "unlink": "uninstall", "remove": "uninstall",
+    "rm": "uninstall", "r": "uninstall", "un": "uninstall", "rb": "rebuild", "list": "ls",
+    "ln": "link", "create": "init", "i": "install", "it": "install-test",
+    "cit": "install-ci-test", "up": "update", "c": "config", "s": "search", "se": "search",
+    "tst": "test", "t": "test", "ddp": "dedupe", "v": "view", "clean-install": "ci",
+    "clean-install-test": "install-ci-test", "x": "exec", "why": "explain", "la": "ll",
+    "verison": "version", "ic": "ci", "innit": "init", "in": "install", "ins": "install",
+    "inst": "install", "insta": "install", "instal": "install", "isnt": "install",
+    "isnta": "install", "isntal": "install", "isntall": "install", "install-clean": "ci",
+    "isntall-clean": "ci", "hlep": "help", "dist-tags": "dist-tag", "upgrade": "update",
+    "udpate": "update", "rum": "run-script", "sit": "install-ci-test", "urn": "run-script",
+    "ogr": "org", "add-user": "adduser",
+}  # fmt: skip
+
+
+def _abbrev(names: list[str]) -> dict[str, str]:
+    """Every unambiguous start of each name -> the name (npm's `abbrev` package)."""
+    out: dict[str, str] = {}
+    ordered = sorted(set(names))
+    for k, name in enumerate(ordered):
+        before = ordered[k - 1] if k else ""
+        after = ordered[k + 1] if k + 1 < len(ordered) else ""
+        shared = 0
+        while shared < len(name) and (
+            name[: shared + 1] == before[: shared + 1] or name[: shared + 1] == after[: shared + 1]
+        ):
+            shared += 1
+        for end in range(min(shared + 1, len(name)), len(name) + 1):
+            out[name[:end]] = name
+        out[name] = name
+    return out
+
+
+_NPM_ABBREV = _abbrev([*_NPM_COMMANDS, *_NPM_ALIASES])
+
+
+def npm_command(word: str) -> str:
+    """The npm command a word names, the way npm reads it (`pub` -> publish, `t` -> test,
+    `runScript` -> run-script); the word itself when npm knows no such command."""
+    if any(char.isupper() for char in word):
+        word = re.sub(r"[A-Z]", lambda m: "-" + m.group().lower(), word)
+    if word in _NPM_COMMANDS:
+        return word
+    name = _NPM_ALIASES.get(word) or _NPM_ABBREV.get(word, word)
+    for _ in range(4):
+        name = _NPM_ALIASES.get(name, name)
+    return name
+
+
+NPM_PUBLISH_WORDS = frozenset(w for w in _NPM_ABBREV if npm_command(w) == "publish")
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "ash", "mksh", "yash", "posh", "oksh",
           "rbash", "tcsh", "csh"}  # fmt: skip
 LAUNCHERS = {"uvx", "npx", "pnpx", "bunx", "corepack"}  # run the next word as a program
@@ -2252,7 +2316,7 @@ def _shapes(tokens: list[_Tok]) -> list[tuple[Action, str, int, int]]:
         while j < count and steps < 24 and not tokens[j].sep:
             word = tokens[j].text
             low = word.lower()
-            if low == verb and name != "gh":
+            if (low == verb or (name == "npm" and low in NPM_PUBLISH_WORDS)) and name != "gh":
                 break
             if name == "gh" and low == "release":
                 k = j + 1
@@ -2532,6 +2596,9 @@ def _node(tool: str, args: list[str], cwd: Path, found: list[Risky], depth: int,
         return
     opts = _options(tool, args, cwd)
     words = opts.words
+    typed = words[0] if words else ""
+    if tool == "npm" and words:  # npm pub, npm publ...: npm reads abbreviations
+        words = [npm_command(typed), *words[1:]]
     if not words or words[0] in NOT_PUBLISH:
         return
     if tool == "yarn" and words[0] == "workspace" and len(words) > 2:
@@ -2563,7 +2630,7 @@ def _node(tool: str, args: list[str], cwd: Path, found: list[Risky], depth: int,
     if script is not None:
         found.extend(_run_script(script, opts.cwd, depth))
     elif words[0] in EXEC_VERBS or tool != "npm":
-        rest = args[args.index(words[0]) + 1 :] if words[0] in EXEC_VERBS else words
+        rest = args[args.index(typed) + 1 :] if words[0] in EXEC_VERBS else words
         found.extend(detect(shlex.join(_drop_strs(list(rest), set())), opts.cwd, depth + 1))
 
 

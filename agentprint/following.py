@@ -88,7 +88,8 @@ _NAMED_PUBLISH = re.compile(
     r"|(twine)(?![\w-]).{0,40}?(?<![\w-])upload(?![\w-])"
     r"|(git)(?:\.|(?![\w./-]).{0,40}?(?<![\w./-]))push(?![\w-])"
     r"|(semantic-release|release-it)(?![\w.-])"
-    r"|npx\s+(np)(?![\w.-]))",
+    r"|npx\s+(np)(?![\w.-])"
+    r"|(npm)[\s\"',]+pu(?:b(?:l(?:is?)?)?)?(?![\w:-]))",  # npm reads `npm pub` as npm publish
     re.S | re.I,  # code can build `NPM PUBLISH`.lower(); a shell on macOS finds `NPM` too
 )
 
