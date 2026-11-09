@@ -170,14 +170,16 @@ def called_only(text: str) -> str:
     """Shell text without the functions it defines but never calls: a function's body runs only
     when it is called, so `source lib.sh` reads only the lib's top-level lines. A function
     called anywhere outside its own body is kept where it is, and so are the ones it calls."""
+    if _DYNAMIC_CALL.search(text):
+        return text  # `$TASK`, "$cmd", for s in ...; do $s: any function may run
     spans: dict[str, tuple[int, int]] = {}
     end = 0
     for match in _FUNCTION.finditer(text):
         if match.start() < end or len(spans) >= MAX_FUNCTIONS:
             continue  # nested in the one before
-        close = _matching_brace(text, match.end() - 1)
+        close = _function_end(text, match)
         if close < 0:
-            break  # not a function body agentprint can read: leave the rest alone
+            return text  # a body agentprint can't delimit: keep every function
         spans[match.group(1) or match.group(2)] = (match.start(), close + 1)
         end = close + 1
     if not spans:
@@ -199,6 +201,32 @@ def called_only(text: str) -> str:
             out += [text[at:start], "\n" * text.count("\n", start, stop)]
             at = stop
     return "".join([*out, text[at:]])
+
+
+# A command whose name is a variable: `$TASK`, `"$cmd" "$@"`, `"${@:-release}"`, `do $step`.
+_DYNAMIC_CALL = re.compile(
+    r"(?m)(?:^|[;&|({]|\b(?:do|then|else|elif|if|while|until|time|exec|eval|command)[ \t])"
+    r"[ \t]*\"?\$\{?[A-Za-z_@*0-9]"
+)
+
+
+def _function_end(text: str, header: re.Match[str]) -> int:
+    """Where the body that `header` opens ends: on the header's own line (`f() { ...; }`), or
+    at the first later line that is a `}` indented no deeper than the header. -1 if neither.
+    Not by counting braces: a `[{]` in a regex or a `${x}` would throw that off."""
+    brace = header.end() - 1
+    line_end = text.find("\n", brace)
+    line_end = len(text) if line_end < 0 else line_end
+    close = _matching_brace(text[:line_end], brace)
+    if close >= 0:
+        return close
+    line_start = text.rfind("\n", 0, header.start()) + 1
+    indent = len(text[line_start : header.start()]) + (
+        len(text[header.start() :]) - len(text[header.start() :].lstrip(" \t"))
+    )
+    closing = re.compile(rf"(?m)^[ \t]{{0,{indent}}}\}}[ \t]*(?:[;&|#].*)?$")
+    found = closing.search(text, line_end)
+    return found.start() + found.group(0).index("}") if found else -1
 
 
 def _calls(text: str, name: str) -> bool:

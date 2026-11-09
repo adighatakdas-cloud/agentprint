@@ -584,3 +584,31 @@ def test_filling_in_arguments_is_bounded(leaky):
     command = "./big.sh " + "a" * 4000
     assert timing.best_of(lambda: evaluate(command, leaky), times=1) < timing.bound(2.0)
     assert evaluate(command, leaky).warning or evaluate(command, leaky).block
+
+
+# ---- a function called through a variable is kept --------------------------------------------
+
+RELEASE_FN = f"release() {{\n  {P1}\n}}\n"
+
+
+@pytest.mark.parametrize(
+    "dispatch",
+    [
+        "TASK=${1:-release}\n$TASK\n",
+        '"${@:-release}"\n',
+        'cmd=$1; shift\n"$cmd" "$@"\n',
+        "for step in build release; do $step; done\n",
+    ],
+    ids=["default-arg", "default-all-args", "first-arg", "for-loop"],
+)
+def test_a_function_called_through_a_variable_is_read(leaky, dispatch):
+    _repo(leaky, {"tasks.sh": "#!/bin/bash\n" + RELEASE_FN + dispatch})
+    assert evaluate("./tasks.sh", leaky).block
+
+
+def test_a_brace_in_a_regex_does_not_hide_what_follows_a_function(leaky):
+    script = f"#!/bin/bash\ncheck() {{\n  [[ $1 =~ ^[{{] ]] && echo json\n}}\n{P1}\n"
+    _repo(leaky, {"r.sh": script})
+    assert evaluate("./r.sh", leaky).block
+    _repo(leaky, {"lib.sh": 'build() { make; }\nrelease() { cd "$PKG"; npm publish; }\n'})
+    assert evaluate("source lib.sh && build", leaky) is None  # still no wolf
