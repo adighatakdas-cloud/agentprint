@@ -40,8 +40,8 @@ from pathlib import Path, PureWindowsPath
 
 from . import __version__, platform
 from .advice import Moment
-from .gitcheck import _git, check_push, repo_root
-from .guard import _masked, strict_block, strict_requested
+from .gitcheck import _git, check_push, check_pushed, parse_updates, repo_root
+from .guard import _masked, _project, _settle, strict_block, strict_requested
 from .install import (
     STATE_DIR,
     _read,
@@ -66,7 +66,7 @@ CHAINED = "pre-push.agentprint-chained"
 STATE_FILE = "protect.json"
 NPM_WRAPPER = "agentprint-cli"
 PUSH_CHECK_SINCE = (0, 1, 1)  # the first agentprint with `push-check`
-_ZERO_SHA = re.compile(r"0{40,}")
+OK = "agentprint: OK"
 
 
 def npm_command() -> str:
@@ -648,30 +648,32 @@ def protection_text(found: list[str]) -> str:
 # ---- push-check (run by the hook) -------------------------------------------------------------
 
 
-def uploads(refs: str | None) -> bool:
-    """False only when git's ref lines show nothing but deletes (an all-zero local sha). No
-    lines (a terminal, or a hook manager that did not pass them on) counts as uploading."""
-    if refs is None:
-        return True
-    lines = [line.split() for line in refs.splitlines() if line.strip()]
-    if not lines:
-        return True
-    return any(len(parts) < 2 or not _ZERO_SHA.fullmatch(parts[1]) for parts in lines)
-
-
 def push_check(
     cwd: Path,
     refs: str | None,
     env: Mapping[str, str],
-    fail_on: FailOn = FailOn.high,
+    fail_on: FailOn | None = None,
     strict: bool = False,
 ) -> tuple[int, str]:
-    """(exit code, report) for `agentprint push-check`: 1 blocks the push, 0 lets it go."""
+    """(exit code, report) for `agentprint push-check`: 1 blocks the push, 0 lets it go.
+
+    With git's pre-push lines it checks what those refs upload, read from git's own objects:
+    the tree each one points at and the commits on the way, never the working tree. Without
+    any (run by hand, or by a hook manager that kept them) it checks what git tracks now. A
+    push that only deletes remote refs uploads nothing and always goes. The project config
+    and baseline apply as they do for the agent hook (`fail_on` None: the config's, else high).
+    """
     strict = strict or strict_requested(env)
-    if not uploads(refs):
-        return 0, "agentprint: OK — this push only deletes remote branches or tags."
+    updates = parse_updates(refs or "")
+    if updates and all(update.deletes for update in updates):
+        return 0, OK
     try:
-        findings = check_push(cwd)
+        project = _project(cwd, None)
+        strict = strict or project.config.strict
+        if updates:
+            findings, notes = check_pushed(cwd, updates)
+        else:
+            findings, notes = check_push(cwd), []
     except CannotCheck as exc:
         why = f"agentprint could not check this git push: {clean(_masked(str(exc)))}."
         if strict:
@@ -682,4 +684,10 @@ def push_check(
         if strict:
             return 1, strict_block(why).reason.rstrip("\n")
         return 0, f"{why} The push was allowed. Please report this."
-    return exit_code(findings, fail_on), to_agent(findings, fail_on, Moment.push, rerun="git push")
+    findings, threshold, known, config_notes = _settle(findings, fail_on, project)
+    code = exit_code(findings, threshold)
+    if strict and notes and not code:
+        return 1, strict_block(f"agentprint could not check all of this push: {notes[0]}.").reason
+    text = to_agent(findings, threshold, Moment.push, rerun="git push", known=known)
+    lines = [f"agentprint: {clean(note)}." for note in notes] + config_notes
+    return code, "\n".join([text, *lines])

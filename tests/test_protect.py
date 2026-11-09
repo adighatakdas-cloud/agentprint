@@ -16,8 +16,9 @@ from typer.testing import CliRunner
 
 from agentprint import __version__, protect
 from agentprint.cli import app
+from agentprint.gitcheck import RefUpdate, parse_updates
 from agentprint.models import CannotCheck
-from agentprint.protect import CHAINED, MARK, hook_script, npm_command, push_check, uploads
+from agentprint.protect import CHAINED, MARK, hook_script, npm_command, push_check
 from tests import fakes
 from tests.conftest import set_home
 
@@ -432,31 +433,36 @@ def test_npm_reads_the_edited_package_json(package, home, monkeypatch):
 # ---- push-check -------------------------------------------------------------------------------
 
 
-def test_only_deletes_upload_nothing():
-    assert not uploads(f"(delete) {ZERO} refs/heads/old {SHA}\n")
-    assert not uploads(f"(delete) {'0' * 64} refs/tags/v1 {'b' * 64}\n")  # SHA-256 repos
-    assert uploads(
-        f"(delete) {ZERO} refs/heads/old {SHA}\nrefs/heads/main {SHA} refs/heads/main {ZERO}\n"
+def test_git_pre_push_lines_are_read_and_deletes_told_apart():
+    text = (
+        f"refs/heads/main {SHA} refs/heads/main {ZERO}\n"
+        f"(delete) {ZERO} refs/heads/old {SHA}\n"
+        f"refs/tags/v1 {'b' * 64} refs/tags/v1 {'0' * 64}\n"  # SHA-256 repositories
+        "not a ref line\n"
     )
-    assert uploads("")  # no lines: a terminal or a hook manager that kept them: check
-    assert uploads(None)
+    updates = parse_updates(text)
+    assert [u.deletes for u in updates] == [False, True, False]
+    assert updates[0] == RefUpdate("refs/heads/main", SHA, "refs/heads/main", ZERO)
+    assert parse_updates("") == []
 
 
 def test_push_check_never_blocks_a_delete(tmp_path, monkeypatch):
-    monkeypatch.setattr(protect, "check_push", lambda cwd: pytest.fail("checked a delete"))
+    for name in ("check_push", "check_pushed"):
+        monkeypatch.setattr(protect, name, lambda *a: pytest.fail("checked a delete"))
     code, text = push_check(tmp_path, f"(delete) {ZERO} refs/heads/x {SHA}\n", {})
-    assert code == 0 and text.startswith("agentprint: OK")
+    assert (code, text) == (0, "agentprint: OK")
 
 
 @pytest.mark.parametrize("error", [CannotCheck("git is not installed"), RuntimeError("bug")])
+@pytest.mark.parametrize("refs", [f"refs/heads/main {SHA} refs/heads/main {ZERO}\n", ""])
 def test_push_check_lets_the_push_go_when_it_cannot_check_unless_strict(
-    tmp_path, monkeypatch, error
+    tmp_path, monkeypatch, error, refs
 ):
-    def boom(cwd):
+    def boom(*args):
         raise error
 
     monkeypatch.setattr(protect, "check_push", boom)
-    refs = f"refs/heads/main {SHA} refs/heads/main {ZERO}\n"
+    monkeypatch.setattr(protect, "check_pushed", boom)
     code, text = push_check(tmp_path, refs, {})
     assert code == 0 and "allowed" in text and not text.startswith("agentprint: BLOCK")
     for env, strict in (({}, True), ({"AGENTPRINT_STRICT": "1"}, False)):
@@ -473,20 +479,60 @@ def test_push_check_masks_keys_in_why_it_could_not_check(tmp_path, monkeypatch):
     assert fakes.GITHUB not in text and fakes.GITHUB[:4] in text
 
 
-@needs_git
-def test_push_check_command_blocks_a_leaky_repo(repo, monkeypatch):
+def test_a_partly_read_push_is_said_and_blocks_only_in_strict_mode(tmp_path, monkeypatch):
+    monkeypatch.setattr(protect, "check_pushed", lambda cwd, updates: ([], ["read only part"]))
+    refs = f"refs/heads/main {SHA} refs/heads/main {ZERO}\n"
+    code, text = push_check(tmp_path, refs, {})
+    assert code == 0 and "agentprint: read only part." in text
+    code, text = push_check(tmp_path, refs, {}, strict=True)
+    assert code == 1 and text.startswith("agentprint: BLOCK (strict mode)")
+
+
+def _commit_leak(repo):
     leak = {"permissions": {"allow": [f"Bash(export K={fakes.ANTHROPIC})"]}}
     (repo / ".claude").mkdir()
     (repo / ".claude" / "settings.local.json").write_text(json.dumps(leak))
     git(repo, "add", "-A")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "x")
+    return git(repo, "rev-parse", "HEAD").strip()
+
+
+@needs_git
+def test_push_check_command_blocks_a_leaky_commit(repo, monkeypatch):
+    head = _commit_leak(repo)
     monkeypatch.chdir(repo)
-    refs = f"refs/heads/main {SHA} refs/heads/main {ZERO}\n"
+    refs = f"refs/heads/main {head} refs/heads/main {ZERO}\n"
     result = CliRunner().invoke(app, ["push-check"], input=refs)
     assert result.exit_code == 1
     assert result.output.startswith("agentprint: BLOCK")
     assert fakes.ANTHROPIC not in result.output
-    deleting = CliRunner().invoke(app, ["push-check"], input=f"(delete) {ZERO} refs/heads/x {SHA}")
+    deleting = CliRunner().invoke(app, ["push-check"], input=f"(delete) {ZERO} refs/heads/x {head}")
     assert deleting.exit_code == 0
+
+
+@needs_git
+def test_push_check_reads_the_pushed_commit_not_the_working_tree(repo, monkeypatch):
+    head = _commit_leak(repo)
+    git(repo, "rm", "-q", "--cached", ".claude/settings.local.json")  # the index is clean now
+    (repo / ".claude" / "settings.local.json").unlink()  # and so is the working tree
+    monkeypatch.chdir(repo)
+    assert push_check(repo, None, {})[0] == 0  # no ref lines: the working tree, clean
+    code, text = push_check(repo, f"refs/heads/main {head} refs/heads/main {ZERO}\n", {})
+    assert code == 1 and "AP002" in text and "AP006" in text
+
+
+@needs_git
+def test_a_key_only_in_an_older_pushed_commit_gets_the_rewrite_brief(repo):
+    first = _commit_leak(repo)
+    git(repo, "rm", "-q", "--cached", ".claude/settings.local.json")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "y")
+    head = git(repo, "rev-parse", "HEAD").strip()
+    code, text = push_check(repo, f"refs/heads/main {head} refs/heads/main {ZERO}\n", {})
+    assert code == 1
+    assert f"in pushed commit {first[:12]}" in text
+    assert "git reset --soft" in text and "Rotate the Anthropic API key" in text
+    assert 'starts "sk-a…(len 105)"' in text  # the key stub, without the commit note
+    assert "AP006" not in text  # an older version only matters for its keys
 
 
 def test_push_check_is_hidden_from_help():

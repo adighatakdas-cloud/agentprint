@@ -111,6 +111,11 @@ class AgentConfig:
     mcp_servers: tuple[McpServer, ...] = ()
 
 
+# Ends the detail of a key found in an older version of a file that a push would upload (in a
+# commit on the way out, though no longer in the newest one): " (in pushed commit 1a2b3c4d5e6f)".
+IN_PUSHED_COMMIT = " (in pushed commit "
+
+
 class CannotCheck(Exception):
     """agentprint could not tell what a publish or push would upload. Callers report
     "could not check" (and allow), never "OK"."""

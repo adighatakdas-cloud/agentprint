@@ -206,3 +206,98 @@ def test_after_undo_the_push_is_not_checked(world):
     done = shell(repo, "git push -q origin HEAD:main")
     assert done.returncode == 0, done.stderr
     assert "agentprint" not in done.stderr
+
+
+# ---- what is checked is what git uploads, never the working tree ------------------------------
+
+
+def push(repo, *args):
+    return subprocess.run(
+        ["git", "push", *args], cwd=repo, capture_output=True, text=True, timeout=120
+    )
+
+
+def remote_has(remote, ref):
+    return git(remote, "rev-parse", "--verify", "-q", ref, check=False).stdout.strip() or None
+
+
+def test_a_key_committed_then_fixed_only_on_disk_is_blocked(world):
+    repo, remote, home = world
+    server = {"command": "npx", "env": {"GITHUB_TOKEN": fakes.GITHUB}}
+    (repo / ".mcp.json").write_text(json.dumps({"mcpServers": {"x": server}}))
+    commit(repo, "shared mcp config")
+    server["env"] = {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}  # fixed on disk, not committed
+    (repo / ".mcp.json").write_text(json.dumps({"mcpServers": {"x": server}}))
+    install(repo, home)
+    done = push(repo, "origin", "HEAD:main")
+    assert done.returncode != 0 and "agentprint: BLOCK" in done.stderr
+    assert remote_head(remote) is None
+
+
+def test_a_file_untracked_but_not_committed_is_blocked(world):
+    repo, remote, home = world
+    leak(repo)
+    git(repo, "rm", "-q", "--cached", ".claude/settings.local.json")
+    install(repo, home)
+    done = push(repo, "origin", "HEAD:main")
+    assert done.returncode != 0 and "agentprint: BLOCK" in done.stderr
+    assert remote_head(remote) is None
+
+
+def test_pushing_a_leaky_branch_from_a_clean_checkout_is_blocked(world):
+    repo, remote, home = world
+    git(repo, "checkout", "-q", "-b", "leaky")
+    leak(repo)
+    git(repo, "checkout", "-q", "-")
+    assert not (repo / ".claude" / "settings.local.json").exists()
+    install(repo, home)
+    done = push(repo, "origin", "leaky")
+    assert done.returncode != 0 and "agentprint: BLOCK" in done.stderr
+    assert remote_has(remote, "refs/heads/leaky") is None
+
+
+@pytest.mark.parametrize("annotated", [False, True])
+def test_a_tag_on_a_leaky_commit_is_blocked(world, annotated):
+    repo, remote, home = world
+    git(repo, "checkout", "-q", "-b", "tmp")
+    leak(repo)
+    tag = ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "tag"]
+    git(repo, *tag, *(["-a", "-m", "v1"] if annotated else []), "v1")
+    git(repo, "checkout", "-q", "-")
+    install(repo, home)
+    done = push(repo, "origin", "v1")
+    assert done.returncode != 0 and "agentprint: BLOCK" in done.stderr
+    assert remote_has(remote, "refs/tags/v1") is None
+
+
+def test_an_uncommitted_key_that_is_not_pushed_does_not_block(world):
+    repo, remote, home = world
+    (repo / ".mcp.json").write_text(json.dumps({"mcpServers": {"x": {"command": "npx"}}}))
+    commit(repo, "shared mcp config")
+    server = {"command": "npx", "env": {"GITHUB_TOKEN": fakes.GITHUB}}
+    (repo / ".mcp.json").write_text(json.dumps({"mcpServers": {"x": server}}))  # not committed
+    install(repo, home)
+    done = push(repo, "origin", "HEAD:main")
+    assert done.returncode == 0, done.stderr
+    assert remote_head(remote) == git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def test_a_key_added_and_removed_on_the_way_is_blocked_until_the_commits_are_rewritten(world):
+    repo, remote, home = world
+    assert push(repo, "-q", "origin", "HEAD:main").returncode == 0
+    pushed = git(repo, "rev-parse", "HEAD").stdout.strip()
+    git(repo, "branch", "-q", "-u", "origin/main")
+    leak(repo)
+    git(repo, "rm", "-q", "--cached", ".claude/settings.local.json")
+    (repo / ".gitignore").write_text(".claude/settings.local.json\n")
+    commit(repo, "untrack it")  # the newest tree is clean; the commit before holds the key
+    install(repo, home)
+    done = push(repo, "origin", "HEAD:main")
+    assert done.returncode != 0 and "agentprint: BLOCK" in done.stderr
+    assert "in pushed commit" in done.stderr and "git reset --soft" in done.stderr
+    assert fakes.ANTHROPIC not in done.stderr
+    assert remote_head(remote) == pushed
+    git(repo, "reset", "-q", "--soft", pushed)  # what the brief says: rewrite, then push again
+    commit(repo, "ignore local settings")
+    done = push(repo, "origin", "HEAD:main")
+    assert done.returncode == 0, done.stderr

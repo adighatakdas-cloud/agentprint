@@ -982,6 +982,7 @@ def guard(
 
 @app.command("push-check", hidden=True)
 def push_check(
+    ctx: typer.Context,
     fail_on: FailOnOpt = FailOn.high,
     strict: Annotated[
         bool,
@@ -1000,7 +1001,7 @@ def push_check(
 
     platform.use_utf8_streams()
     refs = None if sys.stdin is None or sys.stdin.isatty() else sys.stdin.read()
-    code, text = run_push_check(Path.cwd(), refs, os.environ, fail_on, strict)
+    code, text = run_push_check(Path.cwd(), refs, os.environ, _given(ctx, fail_on), strict)
     typer.echo(text)
     raise typer.Exit(code)
 
