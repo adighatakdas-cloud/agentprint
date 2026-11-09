@@ -21,7 +21,7 @@ from .guard import CannotCheck, check_package_path
 from .models import Finding
 from .pack import PackError
 from .report import to_agent
-from .sanitize import clean
+from .sanitize import clean, safe_text
 from .scanner import scan as run_scan
 
 INSTRUCTIONS = (
@@ -58,7 +58,7 @@ def _answer(
     text = to_agent(
         settled.active, settled.fail_on, moment, not_checked=not_checked, known=settled.known
     )
-    return text + "".join(f"\nwarning: {clean(note)}" for note in project.warnings)
+    return text + "".join(f"\nwarning: {safe_text(note)}" for note in project.warnings)
 
 
 def build_server() -> MCPServer:

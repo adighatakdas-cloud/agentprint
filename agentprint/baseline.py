@@ -35,7 +35,7 @@ from .config import Config, Sources, read_regular
 from .config import load as load_config
 from .models import KEY_CHECKS, Finding
 from .report import FailOn, exit_code
-from .sanitize import clean, quote
+from .sanitize import clean, quote, safe_text
 
 FORMAT = 1
 MAX_BASELINE_BYTES = 8 * 1024 * 1024
@@ -124,20 +124,20 @@ def defaults(root: Path) -> Project:
 def read(path: Path, links: bool = True) -> tuple[dict[str, Entry], list[str]]:
     """The entries of a baseline file: a regular file, read without ever blocking, at most 8
     MiB, and with `links` False never through a symbolic link. No file: none, no warning."""
-    name = clean(str(path))
+    name = safe_text(str(path))
     unusable = f"could not read baseline {name}"
     try:
         raw = read_regular(path, MAX_BASELINE_BYTES, links=links)
     except FileNotFoundError:
         return {}, []
     except OSError as exc:
-        return {}, [f"{unusable}: {clean(exc.strerror or type(exc).__name__)}"]
+        return {}, [f"{unusable}: {safe_text(exc.strerror or type(exc).__name__)}"]
     except ValueError as exc:
-        return {}, [f"{unusable}: {clean(str(exc))}"]
+        return {}, [f"{unusable}: {safe_text(str(exc))}"]
     try:
         data = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as exc:
-        return {}, [f"{unusable}: {clean(str(exc))}"]
+        return {}, [f"{unusable}: {safe_text(str(exc))}"]
     items = data.get("entries") if isinstance(data, dict) else None
     if not isinstance(items, list):
         return {}, [f"{unusable}: no entries list"]
@@ -150,11 +150,11 @@ def read(path: Path, links: bool = True) -> tuple[dict[str, Entry], list[str]]:
             bad += 1
             continue
         assert isinstance(item, dict)
-        entries[fp] = Entry(
+        entries[fp] = Entry(  # the file's text, maybe a repository's: keys masked (hard rule 2)
             fp,
-            clean(str(item.get("check", "")), 20),
-            clean(str(item.get("path", ""))),
-            clean(str(item.get("reason", "")), 200) or "accepted",
+            safe_text(str(item.get("check", "")), 20),
+            safe_text(str(item.get("path", ""))),
+            safe_text(str(item.get("reason", "")), 200) or "accepted",
             count,
         )
     warnings = [f"{bad} entries in baseline {name} are not valid and were skipped"] if bad else []
@@ -176,8 +176,8 @@ def dumps(entries: Iterable[Entry]) -> str:
             {
                 "fingerprint": e.fingerprint,
                 "check": e.check,
-                "path": e.path,
-                "reason": e.reason,
+                "path": safe_text(e.path),  # what is stored never holds a key (hard rule 2)
+                "reason": safe_text(e.reason, 200),
                 "count": e.count,
             }
             for e in rows
@@ -309,7 +309,7 @@ def tally(
             continue
         fp = fingerprint(f, path)
         seen = out.get(fp)
-        out[fp] = Entry(fp, f.check_id, clean(path), "", seen.count + 1 if seen else 1)
+        out[fp] = Entry(fp, f.check_id, safe_text(path), "", seen.count + 1 if seen else 1)
     return out
 
 

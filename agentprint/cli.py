@@ -322,10 +322,11 @@ def _project(root: Path, sources: Sources | None, home: Path | None = None) -> P
     """The project's config and baseline (and with `home`, the personal baseline in it), each
     warning about them on stderr."""
     from .baseline import load
+    from .sanitize import safe_text
 
     project = load(root, sources, home)
-    for warning in project.warnings:
-        typer.secho(f"warning: {warning}", err=True, fg=typer.colors.YELLOW)
+    for warning in project.warnings:  # config and baseline text: keys masked, cleaned
+        typer.secho(f"warning: {safe_text(warning)}", err=True, fg=typer.colors.YELLOW)
     return project
 
 
