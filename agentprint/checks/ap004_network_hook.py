@@ -37,6 +37,15 @@ def network_indicator(command: str) -> str | None:
     return None
 
 
+def network_indicators(command: str) -> list[str]:
+    """Every kind of network call in a command, in a fixed order: the programs ("curl"), a pipe
+    into a shell ("| sh"), URL schemes ("https://"). Words only, never the command's text."""
+    found = sorted({m.group(1).lower() for m in _PROGRAMS.finditer(command)})
+    found += sorted({f"| {m.group(1)}" for m in _PIPE_TO_SHELL.finditer(command)})
+    found += sorted({f"{m.group(1).lower()}://" for m in _URL.finditer(command)})
+    return found
+
+
 def _line(path: Path, hook: HookCommand) -> int | None:
     words = hook.command.split()
     for needle in (hook.command[:60], json.dumps(hook.command)[1:61], *words[:3], hook.event):
@@ -70,23 +79,24 @@ class NetworkHook:
                 event = safe_snippet(hook.event, 40)
                 command = safe_snippet(hook.command, 100)
                 where = "the notify setting" if hook.event == "notify" else f"hooks.{event}"
-                findings.append(
-                    Finding(
-                        check_id=self.id,
-                        severity=self.severity,
-                        title=self.title,
-                        agent=artifact.agent,
-                        location=str(artifact.path),
-                        line=_line(artifact.path, hook),
-                        detail=f'{event} hook runs {indicator}: "{command}"',
-                        fix=(
-                            f"In this file, find {where}. {ASK_FIRST} If it is wanted, move the "
-                            "command into a script kept in the repo that calls one pinned URL, "
-                            "never pipes a download into a shell, and reads tokens from "
-                            "environment variables."
-                        ),
-                    )
+                finding = Finding(
+                    check_id=self.id,
+                    severity=self.severity,
+                    title=self.title,
+                    agent=artifact.agent,
+                    location=str(artifact.path),
+                    line=_line(artifact.path, hook),
+                    detail=f'{event} hook runs {indicator}: "{command}"',
+                    fix=(
+                        f"In this file, find {where}. {ASK_FIRST} If it is wanted, move the "
+                        "command into a script kept in the repo that calls one pinned URL, "
+                        "never pipes a download into a shell, and reads tokens from "
+                        "environment variables."
+                    ),
                 )
+                # A hook that changes its kind of network call is a new finding.
+                finding.subject = f"{event} {' '.join(network_indicators(hook.command))}"
+                findings.append(finding)
         return findings
 
 

@@ -36,7 +36,7 @@ def run_hook(
     agent: str,
     raw: str,
     env: Mapping[str, str],
-    fail_on: FailOn = FailOn.high,
+    fail_on: FailOn | None = FailOn.high,  # None: the project config's, else high
     strict: bool = False,
 ) -> HookReply:
     integration = ALL_INTEGRATIONS.get(agent)

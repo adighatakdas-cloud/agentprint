@@ -7,6 +7,10 @@ from dataclasses import asdict, dataclass
 from enum import IntEnum, StrEnum
 from pathlib import Path
 
+# Checks whose findings are a key, shown only as its redact() stub ("<rule>: sk-a…(len 105)").
+# Ruling C1 and the baseline lean on this set: a new check that reports keys belongs in it.
+KEY_CHECKS = frozenset({"AP001", "AP002", "AP005"})
+
 
 class Severity(IntEnum):
     LOW = 1
@@ -51,6 +55,10 @@ class Finding:
         # Not a dataclass field, so it never reaches to_dict() or the reports: the exact files
         # a check wants changed (AP008), for `agentprint fix` to use instead of re-deriving them.
         self.paths: tuple[Path, ...] = ()
+        # Not a field either: what a finding that is not a key is about, for its baseline
+        # fingerprint (AP003: the setting and the granted value; AP004: the hook event and its
+        # network indicators). Never a key or a command's text. Empty: the check's title.
+        self.subject: str = ""
 
     def to_dict(self) -> dict:
         data = asdict(self)
