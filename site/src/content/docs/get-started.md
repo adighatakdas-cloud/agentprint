@@ -43,6 +43,7 @@ Prefix the commands below with `uv run` when you run from source.
 | `agentprint scan` | A sweep: checks your home folder and the current folder for keys, risky settings and readable agent files. |
 | `agentprint fix` | Makes the safe fixes for what `scan` finds, after showing you the plan. `--undo` puts back what it can. |
 | `agentprint pack` | A preflight: checks what your npm or PyPI package would publish. |
+| `agentprint baseline` | Accepts the findings you have reviewed, so later runs show only what is new. See [Config and baseline](/agentprint/config/). |
 | `agentprint install` | Arms every AI coding agent it finds: a hook, an MCP server and a short note in each agent's global instructions. On Windows it adds only the MCP server and the note for now. |
 | `agentprint uninstall` | Disarms your agents: takes out only what `install` added. |
 | `agentprint status` | Shows the roster: which AI agents are on this machine and which are armed. |

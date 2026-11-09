@@ -22,14 +22,16 @@ from pathlib import Path
 import yaml
 
 from .advice import Moment
+from .baseline import Known, Project, Settled, defaults, settle
+from .baseline import load as load_project
 from .checks import PACKAGE_WANT, check_package
 from .commands import NODE, ROOT_RELEASERS, WORKSPACE_RELEASERS, Action, Risky, detect
 from .gitcheck import check_push
 from .models import CannotCheck, Finding
 from .pack import PackageListing, PackError, read_archive, read_npm_project
-from .report import FailOn, exit_code, to_agent
+from .report import KNOWN_WORD, FailOn, exit_code, known_groups, to_agent
 from .sanitize import clean, quote
-from .secrets import find_secrets, redact
+from .secrets import mask_keys
 
 ARCHIVES = (".whl", ".tar.gz", ".zip", ".tgz")
 DEFAULT_DIST = ("dist/*",)
@@ -91,21 +93,72 @@ def strict_block(why: str) -> Verdict:
 
 
 def evaluate(
-    command: str, cwd: Path, fail_on: FailOn = FailOn.high, strict: bool = False
+    command: str,
+    cwd: Path,
+    fail_on: FailOn | None = None,
+    strict: bool = False,
+    project: Project | None = None,
 ) -> Verdict | None:
     """None when the command neither publishes nor pushes.
 
-    With `strict`, an internal error or a publish/push that cannot be checked blocks."""
+    With `strict`, an internal error or a publish/push that cannot be checked blocks. The
+    project config and baseline of `cwd` (or `project`) apply: `fail_on` None means the
+    config's, else high, and its `strict = true` turns strict mode on."""
     try:
         risky = detect(command, cwd)
     except Exception as exc:  # noqa: BLE001 - a parser bug must never block work
+        strict = strict or _project(cwd, project).config.strict
         return _failed(exc, strict and bool(_LOOKS_RISKY.search(command)))
     if not risky:
         return None
+    project = _project(cwd, project)
+    strict = strict or project.config.strict
     try:
-        return _decide(command, risky, fail_on, strict)
+        return _decide(command, risky, fail_on, strict, project)
     except Exception as exc:  # noqa: BLE001 - fail open (unless strict), but say so
         return _failed(exc, strict)
+
+
+def _project(cwd: Path, project: Project | None) -> Project:
+    """The project config and baseline. Never raises: on a bug, the defaults (nothing known)."""
+    if project is not None:
+        return project
+    try:
+        return load_project(cwd)
+    except Exception:  # noqa: BLE001 - a config bug must never stop the check
+        return defaults(cwd)
+
+
+def _settle(
+    findings: list[Finding], fail_on: FailOn | None, project: Project | None
+) -> tuple[list[Finding], FailOn, list[Known], list[str]]:
+    """What counts, the fail_on, what is known, and the config's warnings. Ruling C1: a key on
+    its way out always counts, whatever the config or baseline says."""
+    default = fail_on or FailOn.high
+    if project is None:
+        return findings, default, [], []
+    try:
+        settled = settle(findings, project, fail_on, publishing=True, package=None)
+    except Exception as exc:  # noqa: BLE001 - never allow because of a bug: everything counts
+        why = f"agentprint could not apply the project config ({type(exc).__name__})"
+        return findings, default, [], [f"{why}; every finding counts."]
+    notes = [f"agentprint: {clean(note)}." for note in project.warnings]
+    if exit_code(findings, default) and not exit_code(settled.active, settled.fail_on):
+        notes.append(_allowed_by_config(settled, project, default))  # say why it went through
+    return settled.active, settled.fail_on, settled.known, notes
+
+
+def _allowed_by_config(settled: Settled, project: Project, default: FailOn) -> str:
+    """One line for a publish or push the project config let through, that would have been
+    blocked without it."""
+    parts = [
+        f"{n} {check_id} {KNOWN_WORD.get(via, via)} {quote(reason)}"
+        for check_id, via, reason, n in known_groups(settled.known)
+    ]
+    if exit_code(settled.active, default):
+        source = clean(str(project.config.source or "the project config"))
+        parts.append(f"fail_on = {settled.fail_on.value} in {source}")
+    return f"agentprint: allowed by project config: {'; '.join(parts)}."
 
 
 def _failed(exc: Exception, strict: bool) -> Verdict:
@@ -124,7 +177,13 @@ def _internal(exc: Exception) -> str:
     )
 
 
-def _decide(command: str, risky: list[Risky], fail_on: FailOn, strict: bool = False) -> Verdict:
+def _decide(
+    command: str,
+    risky: list[Risky],
+    fail_on: FailOn | None,
+    strict: bool = False,
+    project: Project | None = None,
+) -> Verdict:
     os.environ.setdefault("NPM_CONFIG_UPDATE_NOTIFIER", "false")  # keep npm pack offline
     findings: list[Finding] = []
     warnings: list[str] = []
@@ -140,11 +199,14 @@ def _decide(command: str, risky: list[Risky], fail_on: FailOn, strict: bool = Fa
             warnings.append(_could_not(item, exc))
     moment = Moment.publish if any(r.action is Action.publish for r in risky) else Moment.push
     warning = " ".join(warnings) or None
-    if exit_code(findings, fail_on):
-        return Verdict(True, to_agent(findings, fail_on, moment, rerun=command), warning)
+    findings, threshold, known, notes = _settle(findings, fail_on, project)
+    shown = " ".join([*warnings, *notes]) or None  # config warnings never trip strict mode
+    if exit_code(findings, threshold):
+        reason = to_agent(findings, threshold, moment, rerun=command, known=known)
+        return Verdict(True, reason, shown)
     if strict and warnings:
         return strict_block(warning or "")
-    return Verdict(False, warning=warning)
+    return Verdict(False, warning=shown)
 
 
 def _could_not(item: Risky, exc: Exception) -> str:
@@ -159,14 +221,8 @@ def _could_not(item: Risky, exc: Exception) -> str:
 
 
 def _masked(text: str) -> str:
-    """`text` with every key `find_secrets` sees replaced by its first 4 characters and length."""
-    out: list[str] = []
-    end = 0
-    for match in sorted(find_secrets(text), key=lambda m: (m.start, -m.end)):
-        if match.start >= end:
-            out += [text[end : match.start], redact(match.value)]
-            end = match.end
-    return "".join([*out, text[end:]])
+    """`text` with every key in it cut to its first 4 characters and length."""
+    return mask_keys(text)
 
 
 def _built(cwd: Path, patterns: tuple[str, ...]) -> list[PackageListing]:
