@@ -346,7 +346,10 @@ def test_a_hooks_folder_outside_the_repo_that_you_own_is_written(repo, home, tmp
     shared = tmp_path / "shared-hooks"
     shared.mkdir()
     git(repo, "config", "core.hooksPath", str(shared))
-    code, text = run(repo, home)
+    code, text = run(repo, home)  # other repositories may use it: only with --global
+    assert code == 1 and "agentprint protect --global" in text
+    assert list(shared.iterdir()) == []
+    code, text = run(repo, home, shared=True)
     assert code == 0, text
     assert MARK in (shared / "pre-push").read_text()
     assert "every repository that uses that folder" in text
@@ -662,9 +665,10 @@ def test_push_check_is_hidden_from_help():
 # ---- the CLI, status and scan -----------------------------------------------------------------
 
 
-def test_cli_undo_takes_no_strict(tmp_path):
-    result = CliRunner().invoke(app, ["protect", "--undo", "--strict", str(tmp_path)])
-    assert result.exit_code == 2
+def test_cli_undo_takes_no_strict_or_global(tmp_path):
+    for flag in ("--strict", "--global"):
+        result = CliRunner().invoke(app, ["protect", "--undo", flag, str(tmp_path)])
+        assert result.exit_code == 2
 
 
 @needs_git

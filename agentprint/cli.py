@@ -1043,6 +1043,14 @@ def protect(
             "(default: it lets the push go with a note).",
         ),
     ] = False,
+    shared: Annotated[
+        bool,
+        typer.Option(
+            "--global",
+            help="If core.hooksPath names a folder outside the repository, add the hook there: "
+            "it then checks pushes from every repository that uses that folder.",
+        ),
+    ] = False,
 ) -> None:
     """Check every git push and npm publish at git and npm themselves, for one project.
 
@@ -1053,14 +1061,14 @@ def protect(
     from .protect import protect as run_protect
     from .protect import unprotect
 
-    if undo and strict:
-        typer.secho("error: --undo takes no --strict", err=True, fg=typer.colors.RED)
+    if undo and (strict or shared):
+        typer.secho("error: --undo takes no --strict or --global", err=True, fg=typer.colors.RED)
         raise typer.Exit(2)
     home = Path.home()
     code = (
         unprotect(path, home, typer.echo)
         if undo
-        else run_protect(path, home, typer.echo, strict=strict)
+        else run_protect(path, home, typer.echo, strict=strict, shared=shared)
     )
     raise typer.Exit(code)
 

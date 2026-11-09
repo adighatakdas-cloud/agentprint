@@ -233,15 +233,17 @@ def _owned_dir(folder: Path) -> bool:
         return False
 
 
-def _hook_folder(repo: Repo) -> tuple[Path | None, str]:
-    """(the folder to write the hook in, a note) or (None, why the line is printed instead)."""
+def _hook_folder(repo: Repo, shared: bool = False) -> tuple[Path | None, str]:
+    """(the folder to write the hook in, a note) or (None, why the line is printed instead).
+    A folder outside the repository serves every repository that names it: written to only
+    with `shared` (protect --global), and only when this user owns it."""
     if not repo.hooks_path_set or _inside(repo.hooks, repo.common):
         return repo.hooks, ""
     if _inside(repo.hooks, repo.root):
         return None, "managed"
-    if _owned_dir(repo.hooks):
-        return repo.hooks, "shared"
-    return None, "not-owned"
+    if not _owned_dir(repo.hooks):
+        return None, "not-owned"
+    return (repo.hooks, "shared") if shared else (None, "global")
 
 
 # A pre-push hook that a hook manager wrote, or that finds out which hook it is from its own file
@@ -322,10 +324,19 @@ def _by_hand(repo: Repo, manager: str | None, strict: bool) -> list[str]:
 def _manager_advice(repo: Repo, why: str, strict: bool) -> list[str]:
     """What to add by hand when core.hooksPath names a hook manager's or someone else's folder."""
     shown = _short(str(repo.hooks))
-    owner = "a folder inside the repository" if why == "managed" else "a folder you don't own"
+    owner = {
+        "managed": "a folder inside the repository",
+        "not-owned": "a folder you don't own",
+        "global": "a folder outside this repository that other repositories may use too",
+    }[why]
     lines = [
         f"git: core.hooksPath is set to {shown}, {owner}, so agentprint did not add a hook there."
     ]
+    if why == "global":
+        lines.append(
+            "  To check every push from every repository that uses it, run agentprint protect "
+            "--global. Or, for this repository only:"
+        )
     manager = "husky" if why == "managed" and ".husky" in repo.hooks.parts else None
     lines += _by_hand(repo, manager if why == "managed" else None, strict)
     lines.append(
@@ -388,6 +399,7 @@ def protect(
     *,
     strict: bool = False,
     agentprint: list[str] | None = None,
+    shared: bool = False,
 ) -> int:
     """Add the git hook and the npm script. 0 = done (or already there), 1 = something needs
     doing by hand (printed), 2 = nothing here to protect."""
@@ -407,7 +419,9 @@ def protect(
     needs_you = 0
     try:
         if repo is not None:
-            needs_you += _layer("git", echo, _protect_git, repo, entries, echo, strict, agentprint)
+            needs_you += _layer(
+                "git", echo, _protect_git, repo, entries, echo, strict, agentprint, shared
+            )
         else:
             echo("git: not a git repository, so no pre-push hook was added.")
         if package.is_file():
@@ -429,9 +443,14 @@ def _layer(name: str, echo: Echo, step: Callable[..., int], *args: object) -> in
 
 
 def _protect_git(
-    repo: Repo, entries: dict[str, dict], echo: Echo, strict: bool, agentprint: list[str] | None
+    repo: Repo,
+    entries: dict[str, dict],
+    echo: Echo,
+    strict: bool,
+    agentprint: list[str] | None,
+    shared: bool = False,
 ) -> int:
-    folder, why = _hook_folder(repo)
+    folder, why = _hook_folder(repo, shared)
     if folder is None:
         for line in _manager_advice(repo, why, strict):
             echo(line)
@@ -646,7 +665,7 @@ def _by_hand_git(hook: Path, chained: Path | None) -> str:
 
 
 def _undo_git(repo: Repo, entries: dict[str, dict], echo: Echo) -> int:
-    folder, _ = _hook_folder(repo)
+    folder, _ = _hook_folder(repo, shared=True)
     here = _key(folder / HOOK) if folder is not None else None
     repo_id = str(repo.common.resolve())
     mine = [
