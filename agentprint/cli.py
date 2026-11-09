@@ -375,6 +375,12 @@ def run_scan_command(
         not_checked=platform.scan_notes(),
         known=settled.known,
     )
+    if fmt is Format.agent:
+        from .protect import protection_line
+
+        protected = protection_line(path)  # only in a protected repo: other output is unchanged
+        if protected:
+            typer.echo(protected)
     known = len(settled.known)
     return _write_badge(badge_dir, "scan", fail_on, findings, known) or exit_code(findings, fail_on)
 
@@ -407,6 +413,26 @@ def scan(
     )
 
 
+class IfUnavailable(StrEnum):
+    block = "block"
+    allow = "allow"
+
+
+def _one_line(error: Exception) -> str:
+    """An error as one short line: its first line, keys masked (no tool's whole stderr)."""
+    from .guard import _masked
+    from .sanitize import clean
+
+    first = (str(error).strip().splitlines() or [type(error).__name__])[0]
+    return clean(_masked(first), limit=200)
+
+
+# `pack --if-unavailable allow` exits with these instead of 1 and 2, so a wrapper (the npm one)
+# can tell agentprint's own verdict from uv, npx or Python failing to run agentprint at all.
+ALLOW_BLOCK_EXIT = 3  # something would leak
+ALLOW_UNCHECKED_EXIT = 4  # the package could not be checked (not a missing tool)
+
+
 def run_pack_command(
     target: Path,
     fmt: Format | None,
@@ -414,22 +440,43 @@ def run_pack_command(
     plain: bool,
     badge_dir: Path | None = None,
     sources: Sources | None = None,
+    if_unavailable: IfUnavailable = IfUnavailable.block,
 ) -> int:
     """`agentprint pack`, returning the exit code (the menu runs it too). The project config is
     read from the target folder (for a built file, from the current folder); `fail_on` None:
-    the config's, else high."""
-    from .baseline import settle
+    the config's, else high.
 
+    Each ecosystem in the folder is checked on its own: what one finds always counts, even if
+    another can't be listed. Inside an npm `prepublishOnly` only the npm package is checked
+    (that is what npm is publishing). With `if_unavailable` allow, a tool agentprint needs being
+    missing (npm, uv) lets the publish go with one line; a package that can't be checked still
+    blocks, and the exit codes are ALLOW_BLOCK_EXIT / ALLOW_UNCHECKED_EXIT instead of 1 / 2."""
+    from .baseline import settle
+    from .pack import collect_each
+
+    allow = if_unavailable is IfUnavailable.allow
     fmt = _auto_format(fmt, Format.agent, Format.table)
     project = _project(target if target.is_dir() else Path("."), sources)
     out = themed_console(dict(os.environ), plain=plain) if fmt is Format.table else None
+    # npm (and pnpm, yarn, bun) name the running script in lowercase npm_lifecycle_event.
+    npm_only = os.environ.get("npm_lifecycle_event") == "prepublishOnly"  # noqa: SIM112
     started = time.perf_counter()
     try:
         with _working(out, plain, "preflighting…"):
-            listings = collect(target, PACKAGE_WANT)
+            listings, errors = collect_each(target, PACKAGE_WANT, npm_only=npm_only)
     except PackError as exc:
-        typer.secho(f"error: {exc}", err=True, fg=typer.colors.RED)
-        return 2
+        listings, errors = [], [exc]
+    missing_tool = bool(errors) and all(error.unavailable for error in errors)
+    if not listings:
+        if allow and missing_tool:
+            typer.echo(
+                f"agentprint: could not check this package ({_one_line(errors[0])}); the "
+                "publish goes on (--if-unavailable allow).",
+                err=True,
+            )
+            return 0
+        _unchecked(errors[0], allow)
+        return ALLOW_UNCHECKED_EXIT if allow else 2
     secs = time.perf_counter() - started
     findings = [finding for listing in listings for finding in check_package(listing)]
     # Ruling C1: a key in the package always counts; ignore and baseline cover the rest.
@@ -447,9 +494,35 @@ def run_pack_command(
         out=out,
         header=header,
         known=settled.known,
+        not_checked=[f"could not list part of it: {_one_line(e)}" for e in errors],
     )
     known = len(settled.known)
-    return _write_badge(badge_dir, "pack", fail_on, findings, known) or exit_code(findings, fail_on)
+    code = _write_badge(badge_dir, "pack", fail_on, findings, known) or exit_code(findings, fail_on)
+    if code == 1:  # a finding always blocks, whatever else could not be listed
+        return ALLOW_BLOCK_EXIT if allow else 1
+    if code or not errors:
+        return code
+    if allow and missing_tool:
+        typer.echo(
+            f"agentprint: could not check part of this package ({_one_line(errors[0])}); the "
+            "publish goes on (--if-unavailable allow).",
+            err=True,
+        )
+        return 0
+    _unchecked(errors[0], allow)
+    return ALLOW_UNCHECKED_EXIT if allow else 2
+
+
+def _unchecked(error: PackError, allow: bool) -> None:
+    """Say a package could not be checked: the whole error, or (in allow mode, where a
+    wrapper reads it) one line."""
+    if allow:
+        typer.echo(
+            f"agentprint: could not check this package ({_one_line(error)}); the publish stops.",
+            err=True,
+        )
+    else:
+        typer.secho(f"error: {error}", err=True, fg=typer.colors.RED)
 
 
 @app.command()
@@ -466,6 +539,14 @@ def pack(
     config: ConfigOpt = None,
     no_config: NoConfigOpt = False,
     baseline_file: BaselineOpt = None,
+    if_unavailable: Annotated[
+        IfUnavailable,
+        typer.Option(
+            "--if-unavailable",
+            help="allow: if a tool agentprint needs (npm, uv) is missing, exit 0 with one line. "
+            "Verdicts then exit 3 (would leak) and 4 (can't check) instead of 1 and 2.",
+        ),
+    ] = IfUnavailable.block,
 ) -> None:
     """Check what a package would publish: agent files, the keys inside them, and what lets an
     AI rebuild your source (source maps, original source, AI instruction files).
@@ -476,9 +557,9 @@ def pack(
     """
     plain = _top_plain(ctx, plain)
     sources = Sources(config, no_config, baseline_file)
-    raise typer.Exit(
-        run_pack_command(target, fmt, _given(ctx, fail_on), plain, badge, sources=sources)
-    )
+    given = _given(ctx, fail_on)
+    code = run_pack_command(target, fmt, given, plain, badge, sources, if_unavailable)
+    raise typer.Exit(code)
 
 
 class FixFormat(StrEnum):
@@ -974,6 +1055,92 @@ def guard(
     raise typer.Exit(reply.exit_code)
 
 
+@app.command("push-check", hidden=True)
+def push_check(
+    ctx: typer.Context,
+    fail_on: FailOnOpt = FailOn.high,
+    strict: Annotated[
+        bool,
+        typer.Option(
+            "--strict",
+            help="Block the push when agentprint cannot check it. Same as AGENTPRINT_STRICT=1.",
+        ),
+    ] = False,
+    remote: Annotated[
+        str | None,
+        typer.Option("--remote", help="The remote git named to the pre-push hook ($1)."),
+    ] = None,
+    pre_push: Annotated[
+        bool,
+        typer.Option("--pre-push", help="stdin is git's own pre-push input (empty: up to date)."),
+    ] = False,
+) -> None:
+    """Git pre-push hook entry point (`agentprint protect` sets it up).
+
+    Reads git's pre-push lines on stdin, checks what the push would publish, prints the brief
+    and exits 1 to stop the push. A push that only deletes remote branches is never stopped.
+    """
+    from .protect import push_check as run_push_check
+
+    platform.use_utf8_streams()
+    refs = None if sys.stdin is None or sys.stdin.isatty() else sys.stdin.read()
+    code, text = run_push_check(
+        Path.cwd(),
+        refs,
+        os.environ,
+        _given(ctx, fail_on),
+        strict,
+        remote=remote,
+        pre_push=pre_push,
+    )
+    typer.echo(text)
+    raise typer.Exit(code)
+
+
+@app.command()
+def protect(
+    path: Annotated[Path, typer.Argument(help="Project folder. Default: this one.")] = Path("."),
+    undo: Annotated[
+        bool, typer.Option("--undo", help="Take out what protect added, exactly.")
+    ] = False,
+    strict: Annotated[
+        bool,
+        typer.Option(
+            "--strict",
+            help="The hook blocks the push when agentprint is missing or cannot check it "
+            "(default: it lets the push go with a note).",
+        ),
+    ] = False,
+    shared: Annotated[
+        bool,
+        typer.Option(
+            "--global",
+            help="If core.hooksPath names a folder outside the repository, add the hook there: "
+            "it then checks pushes from every repository that uses that folder.",
+        ),
+    ] = False,
+) -> None:
+    """Check every git push and npm publish at git and npm themselves, for one project.
+
+    Adds a git pre-push hook (a hook already there is kept and runs first) and, if PATH has a
+    package.json, a prepublishOnly script. They fire however the push or publish was started,
+    even one hidden from the agent hook. `agentprint protect --undo` takes them out.
+    """
+    from .protect import protect as run_protect
+    from .protect import unprotect
+
+    if undo and (strict or shared):
+        typer.secho("error: --undo takes no --strict or --global", err=True, fg=typer.colors.RED)
+        raise typer.Exit(2)
+    home = Path.home()
+    code = (
+        unprotect(path, home, typer.echo)
+        if undo
+        else run_protect(path, home, typer.echo, strict=strict, shared=shared)
+    )
+    raise typer.Exit(code)
+
+
 @app.command()
 def mcp() -> None:
     """Run agentprint as an MCP server on stdin/stdout, for AI agents.
@@ -1094,6 +1261,7 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
     notes = [note for s in states if s.found and (note := _keep_one(s))]
     # Agents a sweep reads in full but install can't arm yet: listed when found.
     swept = scanned(home_dir)
+    protected = _protected_here()  # only set in a protected repo: other output is unchanged
     if fmt is StatusFormat.json:
         agents = []
         for s in states:
@@ -1102,11 +1270,10 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
                 agent["plugin"] = s.plugin  # "enabled", "disabled" or "unknown"
             agents.append(agent)
         also = [{"name": s.name, "label": s.label, "found": s.found} for s in swept]
-        typer.echo(
-            json_lib.dumps(
-                {"tool": "agentprint", "version": __version__, "agents": agents, "scanned": also}
-            )
-        )
+        data = {"tool": "agentprint", "version": __version__, "agents": agents, "scanned": also}
+        if protected:
+            data["protected"] = protected
+        typer.echo(json_lib.dumps(data))
     elif fmt is StatusFormat.agent:
         for s in states:
             typer.echo(f"{clean(s.name)} {_status_word(s)}")
@@ -1117,6 +1284,8 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
             typer.echo("Arm unarmed agents with: agentprint install")
         for note in notes:
             typer.echo(note)
+        if protected:
+            typer.echo(_protected_text(protected))
     else:
         out = themed_console(env or dict(os.environ), plain=plain)
         out.print(Text(f"agentprint {__version__} · roster", style="ap.dim"))
@@ -1144,7 +1313,23 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
         for note in notes:
             for line in hang("", note, out.width):
                 out.print(line)
+        if protected:
+            for line in hang("", Text(_protected_text(protected), style="ap.dim"), out.width):
+                out.print(line)
     return 0
+
+
+def _protected_here() -> list[str]:
+    """What checks pushes and publishes at git and npm themselves for the current folder."""
+    from .protect import protection
+
+    return protection(Path.cwd())
+
+
+def _protected_text(found: list[str]) -> str:
+    from .protect import protection_text
+
+    return protection_text(found)
 
 
 def _status_word(s: AgentState) -> str:

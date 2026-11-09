@@ -22,7 +22,7 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, HookCommand, Kind, PackageRule, Severity
 from ..structured import load
-from .base import MCP_WHY, AgentDoc, artifacts, from_home, read_mcp_servers
+from .base import MCP_WHY, AgentDoc, artifacts, children, from_home, read_mcp_servers
 
 NAME = "kiro"
 _SECRET_FIX = (
@@ -75,6 +75,17 @@ class Kiro:
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         base = root / ".kiro"
         yield from artifacts(NAME, Kind.SETTINGS, base / "settings" / "mcp.json", base / "hooks")
+
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # Steering files, always or conditionally in context: .kiro/steering/ and
+        # ~/.kiro/steering/ (https://kiro.dev/docs/steering/, read 2026-11-07). Hooks are
+        # config (.kiro/hooks/, read above as settings).
+        paths: list[Path] = []
+        if home is not None:
+            paths += children(home / ".kiro" / "steering")
+        if project is not None:
+            paths += children(project / ".kiro" / "steering")
+        return paths
 
     def pure_history(self, path: Path) -> bool:
         return False  # no Kiro history is read yet

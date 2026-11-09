@@ -28,6 +28,7 @@ from .base import (
     AgentDoc,
     EnvReference,
     artifacts,
+    children,
     from_home,
     hook_commands,
     matches_any,
@@ -103,6 +104,21 @@ class Crush:
         yield from artifacts(
             NAME, Kind.SETTINGS, *(root / name for name in (*_RC_NAMES, *_JSON_NAMES))
         )
+
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # Global instructions ~/.config/crush/CRUSH.md and ~/.config/AGENTS.md, and skills in
+        # ~/.config/crush/skills/, ~/.config/agents/skills/, the agents and crush skills folders in
+        # %LOCALAPPDATA% and a project's .crush/skills/ and .cursor/skills/ (the README, read
+        # 2026-11-07; .agents/skills/ and .claude/skills/ are read through Codex and Claude Code).
+        paths: list[Path] = []
+        if home is not None:
+            config, local = home / ".config", home / "AppData" / "Local"
+            paths += [config / "crush" / "CRUSH.md", config / "AGENTS.md"]
+            paths += children(config / "crush" / "skills", config / "agents" / "skills")
+            paths += children(local / "agents" / "skills", local / "crush" / "skills")
+        if project is not None:
+            paths += children(project / ".crush" / "skills", project / ".cursor" / "skills")
+        return paths
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)

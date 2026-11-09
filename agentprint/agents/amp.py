@@ -8,7 +8,7 @@ ampcode.com, not on disk. A third-party tool reports pasted keys in ~/.local/sha
 (not in Amp's docs): probed, and only checked for who can read it.
 Docs: https://ampcode.com/docs/cli/settings, https://ampcode.com/docs/customize/mcp.
 
-Not covered: plugins (TypeScript).
+Plugins (TypeScript) and skills are read as extensions, for risky content only (AP010).
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from ..models import AgentConfig, Artifact, Kind, PackageRule
-from .base import AgentDoc, EnvReference, artifacts, from_home, read_mcp_file
+from .base import AgentDoc, EnvReference, artifacts, children, from_home, read_mcp_file
 
 NAME = "amp"
 SERVERS = "amp.mcpServers"
@@ -53,6 +53,18 @@ class Amp:
 
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         yield from artifacts(NAME, Kind.SETTINGS, *(root / ".amp" / name for name in _NAMES))
+
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # Plugins (TypeScript Amp runs: .amp/plugins/, ~/.config/amp/plugins/) and skills
+        # (~/.config/agents/skills/; a project's .agents/skills/ is read through Codex):
+        # https://ampcode.com/docs/customize/global-plugins-and-skills, read 2026-11-07.
+        paths: list[Path] = []
+        if home is not None:
+            config = home / ".config"
+            paths += children(config / "amp" / "plugins", config / "agents" / "skills")
+        if project is not None:
+            paths += children(project / ".amp" / "plugins")
+        return paths
 
     def pure_history(self, path: Path) -> bool:
         return False  # Amp keeps no history on disk

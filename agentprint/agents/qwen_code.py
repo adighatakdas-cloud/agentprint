@@ -27,6 +27,7 @@ from .base import (
     AgentDoc,
     EnvReference,
     artifacts,
+    children,
     from_home,
     hook_commands,
     matches_any,
@@ -57,6 +58,10 @@ DOC = AgentDoc(
     fix='masks keys in chats and history; MCP `env` keys become `"${NAME}"`',
     checked="docs and source, 2026-11-05",
 )
+
+
+# Folders of Qwen Code extensions, one per entry (extension_paths).
+_LOADED = ("commands", "agents", "skills")
 
 
 class QwenCode:
@@ -104,6 +109,23 @@ class QwenCode:
         yield from artifacts(NAME, Kind.SETTINGS, base / "settings.json")
         yield from artifacts(NAME, Kind.CREDENTIALS, base / ".env", personal=True)
         yield from artifacts(NAME, Kind.PERSONAL, base / "QWEN.local.md", personal=True)
+
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # QWEN.md context files, custom commands, subagents and skills (~/.qwen/ and a
+        # project's .qwen/ commands/, agents/, skills/; .agents/skills/ is read through Codex),
+        # and each extension in ~/.qwen/extensions/<name>/ (qwen-extension.json declares its
+        # MCP servers): docs/users/features/{memory,commands,sub-agents,skills}.md and
+        # docs/developers/extensions/extension.md, read 2026-11-07 and 2026-11-09. Hooks are in
+        # settings.json (read above).
+        paths: list[Path] = []
+        if home is not None:
+            base = home / ".qwen"
+            paths += [base / "QWEN.md", *children(*(base / name for name in _LOADED))]
+            paths += children(base / "extensions")
+        if project is not None:
+            base = project / ".qwen"
+            paths += [project / "QWEN.md", *children(*(base / name for name in _LOADED))]
+        return paths
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)

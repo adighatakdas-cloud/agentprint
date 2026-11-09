@@ -71,3 +71,32 @@ def test_snapshot(case, tmp_path, fake_home, fake_project, monkeypatch):
         path.write_text(output, encoding="utf-8")
         pytest.skip(f"wrote {filename}")
     assert output == path.read_text(encoding="utf-8")
+
+
+# AP010 and AP011 on a world of agent extensions: benign ones (never printed), each risky shape
+# once, and unpinned MCP servers. New files; the snapshots above stay as they were.
+EXTENSION_CASES = {
+    "agent": "scan-extensions.agent.txt",
+    "json": "scan-extensions.json",
+    "sarif": "scan-extensions.sarif",
+}
+
+
+@pytest.mark.posix_only
+@pytest.mark.parametrize("fmt", list(EXTENSION_CASES))
+def test_extension_snapshot(fmt, tmp_path, monkeypatch):
+    from tests.fixtures import extensions as ext
+
+    monkeypatch.chdir(tmp_path)
+    home, project = tmp_path / "home", tmp_path / "proj"
+    ext.benign(home, project)
+    ext.malicious(home, project)
+    ext.unpinned_servers(project)
+    result = runner.invoke(app, ["scan", str(project), "--home", str(home), "--format", fmt])
+    assert result.exit_code == 1
+    output = _normalise(result.output, tmp_path)
+    path = SNAPSHOTS / EXTENSION_CASES[fmt]
+    if os.environ.get("AGENTPRINT_UPDATE_SNAPSHOTS") == "1":
+        path.write_text(output, encoding="utf-8")
+        pytest.skip(f"wrote {path.name}")
+    assert output == path.read_text(encoding="utf-8")

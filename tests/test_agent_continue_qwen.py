@@ -108,6 +108,7 @@ def test_qwen_findings_and_config(tmp_path):
         ("AP002", "settings.json"),  # the plain-text env block
         ("AP004", "settings.json"),
         ("AP005", "settings.json"),
+        ("AP011", "settings.json"),  # npx -y with no version
     }
     config = QwenCode().read_config(
         Artifact("qwen-code", Kind.SETTINGS, home / ".qwen" / "settings.json")

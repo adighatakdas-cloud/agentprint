@@ -25,7 +25,15 @@ from typing import Any
 from .. import platform
 from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
-from .base import artifacts, from_home, hook_commands, is_blanket_command, matches_any, mcp_servers
+from .base import (
+    artifacts,
+    children,
+    from_home,
+    hook_commands,
+    is_blanket_command,
+    matches_any,
+    mcp_servers,
+)
 
 NAME = "windsurf"
 
@@ -89,6 +97,21 @@ class Windsurf:
 
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         yield from artifacts(NAME, Kind.SETTINGS, root / ".windsurf" / "hooks.json")
+
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # Global rules (memories/global_rules.md), skills/, a project's .windsurf/rules/,
+        # .windsurf/workflows/ and the legacy .windsurfrules; Devin Desktop's rules in
+        # ~/.devin/rules/ and .devin/rules/ (https://docs.devin.ai/cli/extensibility/rules).
+        paths: list[Path] = []
+        if home is not None:
+            base = home / ".codeium" / "windsurf"
+            paths += [base / "memories" / "global_rules.md", *children(base / "skills")]
+            paths += children(home / ".devin" / "rules")
+        if project is not None:
+            base = project / ".windsurf"
+            paths += [project / ".windsurfrules"]
+            paths += children(base / "rules", base / "workflows", project / ".devin" / "rules")
+        return paths
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)

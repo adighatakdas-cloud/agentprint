@@ -274,3 +274,38 @@ def test_plugins_page_is_in_the_reference_sidebar():
     reference = re.search(r'label: "Reference",\s*items: \[(.*?)\]', config, re.S).group(1)
     slugs = re.findall(r'slug: "([^"]+)"', reference)
     assert slugs[:2] == ["agents", "plugins"]
+
+
+def test_inside_your_agent_explains_the_protect_layer():
+    text = (DOCS / "inside-your-agent.md").read_text()
+    section = text.split("## A second layer: `agentprint protect`")[1].split("\n## ")[0]
+    for needed in (
+        "agentprint protect --undo",
+        "agentprint protect --strict",
+        "pre-push.agentprint-chained",
+        "core.hooksPath",
+        "prepublishOnly",
+        "--ignore-scripts",
+        "--no-verify",
+        "PyPI has no publish hook",
+        "Yarn 2+",
+        "Bun",
+        "pnpm",
+        "Windows",
+        "--global",
+        "--if-unavailable allow",
+        "AGENTPRINT_HOOK_TIMEOUT",
+        "prepack",
+        "teammate",
+        "$0",
+        "git reset --soft",
+        "Git LFS",
+        "--recurse-submodules",
+        "could not check all of this push",
+        "one ref",
+        "not yet tested",
+        "exits 3",
+    ):
+        assert needed in section, needed
+    readme = (gen_docs.ROOT / "README.md").read_text().split("## Inside your AI agent")[1]
+    assert "`agentprint protect`" in readme.split("\n## ")[0]

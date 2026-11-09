@@ -29,6 +29,11 @@ class Kind(StrEnum):
     # Keys are meant to be there, so the content is never scanned; only who can read the file
     # is checked (AP008).
     CREDENTIALS = "credentials"
+    # What an agent loads as instructions or runs as its tools: skills, commands, subagents,
+    # rules and instruction files, and the files of installed plugins and extensions (their
+    # hooks, scripts and MCP config). Read for risky content (AP010) and for MCP servers that
+    # run an unpinned package (AP011); never secret-scanned, never permission-checked.
+    EXTENSION = "extension"
 
 
 @dataclass(frozen=True)
@@ -95,11 +100,13 @@ class HookCommand:
 
 @dataclass(frozen=True)
 class McpServer:
-    """One MCP server entry, flattened to the text fields a key could hide in (AP005)."""
+    """One MCP server entry, flattened to the text fields a key could hide in (AP005), with the
+    command line that starts it (AP011)."""
 
     name: str
     fields: tuple[tuple[str, str], ...]  # (field, text), e.g. ("env.API_KEY", "API_KEY=...")
     secret_fix: str  # how to load a value from the environment instead; "<VAR>" = variable name
+    argv: tuple[str, ...] = ()  # the command and its arguments, as written (AP011)
 
 
 @dataclass(frozen=True)
@@ -109,6 +116,11 @@ class AgentConfig:
     grants: tuple[Grant, ...] = ()
     hooks: tuple[HookCommand, ...] = ()
     mcp_servers: tuple[McpServer, ...] = ()
+
+
+# Ends the detail of a key found in an older version of a file that a push would upload (in a
+# commit on the way out, though no longer in the newest one): " (in pushed commit 1a2b3c4d5e6f)".
+IN_PUSHED_COMMIT = " (in pushed commit "
 
 
 class CannotCheck(Exception):

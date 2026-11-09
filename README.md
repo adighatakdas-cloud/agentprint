@@ -81,6 +81,8 @@ For a team, a [project config and baseline](https://adighatakdas-cloud.github.io
 | [AP007](https://adighatakdas-cloud.github.io/agentprint/checks/ap007/) | A personal agent file, such as CLAUDE.local.md, is in a git repo but not gitignored, or is already committed. | low |
 | [AP008](https://adighatakdas-cloud.github.io/agentprint/checks/ap008/) | Agent history, settings or a key store can be read by other users on this machine (macOS, Linux and Windows). | medium; high for key stores |
 | [AP009](https://adighatakdas-cloud.github.io/agentprint/checks/ap009/) | Source maps, original source or AI instruction files in your package hand an AI your code. | high to low by licence; no licence, UNLICENSED, SEE LICENSE IN, proprietary or only LicenseRef- choices count as closed; low for a private registry |
+| [AP010](https://adighatakdas-cloud.github.io/agentprint/checks/ap010/) | A skill, rule, plugin or hook an agent loads has hidden characters, sends a credential out, pipes a download to a shell or hides a command. | high; critical for a credential sent out, medium for a piped download (low in install docs), low for a stray character or an unfinished read |
+| [AP011](https://adighatakdas-cloud.github.io/agentprint/checks/ap011/) | An MCP server runs a package or image with no fixed version (npx, uvx, pipx run, docker run): each start gets whatever was published last. | medium |
 <!-- checks:end -->
 
 Keys are found by pattern and are never used or sent anywhere: Anthropic, OpenAI, GitHub, AWS,
@@ -105,6 +107,8 @@ gitleaks and trufflehog the same way on a labelled corpus, with its method and l
 - It only ever blocks (BLOCK or CLEAR); your agent's own approval rules still apply.
 - Strict mode (`agentprint install --strict`) also blocks a publish or push agentprint can't check.
 - `agentprint uninstall` takes out exactly what `install` added.
+- `agentprint protect` adds a second check at git and npm themselves (a pre-push hook and
+  `prepublishOnly`), so a push hidden from the agent hook is still caught. `--undo` takes it out.
 - Rather add it as a plugin? Claude Code, Codex, Copilot CLI, Gemini CLI, Cursor, Antigravity
   and Hermes each have one: see [Plugins](https://adighatakdas-cloud.github.io/agentprint/plugins/).
 

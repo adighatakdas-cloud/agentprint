@@ -62,6 +62,11 @@ class ClaudeDesktop:
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         return iter(())
 
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # Desktop extensions (.mcpb) are unpacked into a folder Anthropic's docs do not name
+        # (read 2026-11-09): not read. The MCP servers in the config file are (AP011).
+        return []
+
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)
 

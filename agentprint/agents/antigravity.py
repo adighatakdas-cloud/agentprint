@@ -30,6 +30,7 @@ from ..models import AgentConfig, Artifact, Grant, HookCommand, Kind, PackageRul
 from ..structured import load
 from .base import (
     artifacts,
+    children,
     dig,
     from_home,
     gemini_folder,
@@ -97,6 +98,10 @@ _RECORDS = (
 )
 
 
+# A workspace's .agents/ folders of Antigravity extensions, one per entry (extension_paths).
+_LOADED = ("rules", "workflows", "skills", "plugins")
+
+
 class Antigravity:
     name = NAME
     package_rules = (
@@ -144,6 +149,19 @@ class Antigravity:
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         agents = root / ".agents"
         yield from artifacts(NAME, Kind.SETTINGS, agents / "hooks.json", agents / "mcp_config.json")
+
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # Global rules (~/.gemini/config/rules/), plugins (~/.gemini/config/plugins/<name>/),
+        # and a workspace's .agents/rules/, .agents/workflows/, .agents/skills/ and plugin
+        # folders in .agents/plugins/. https://antigravity.google/docs/rules/,
+        # https://antigravity.google/docs/plugins
+        paths: list[Path] = []
+        if home is not None:
+            config = gemini_folder(home) / "config"
+            paths += children(config / "rules", config / "plugins")
+        if project is not None:
+            paths += children(*(project / ".agents" / name for name in _LOADED))
+        return paths
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)

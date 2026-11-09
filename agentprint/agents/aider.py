@@ -96,6 +96,9 @@ class Aider:
         if _uses_aider(root):
             yield from artifacts(NAME, Kind.CREDENTIALS, root / ".env", personal=True)
 
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        return []  # Aider loads no instructions, hooks or plugins by itself
+
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)
 

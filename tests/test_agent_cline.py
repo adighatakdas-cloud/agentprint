@@ -66,6 +66,7 @@ def test_cline_keys_found_and_key_stores_not_read(tmp_path):
         ("AP001", "sessions.db"),
         ("AP001", "api_conversation_history.json"),
         ("AP005", "cline_mcp_settings.json"),
+        ("AP011", "cline_mcp_settings.json"),  # npx -y with no version
     }
     assert not {"secrets.json", "providers.json"} & {
         name for check, name in found if check != "AP008"

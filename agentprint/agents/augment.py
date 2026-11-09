@@ -22,7 +22,15 @@ from pathlib import Path
 
 from ..models import AgentConfig, Artifact, Kind, PackageRule, Severity
 from ..structured import load
-from .base import AgentDoc, EnvReference, artifacts, from_home, hook_commands, read_mcp_servers
+from .base import (
+    AgentDoc,
+    EnvReference,
+    artifacts,
+    children,
+    from_home,
+    hook_commands,
+    read_mcp_servers,
+)
 
 NAME = "augment"
 _NAMES = ("settings.json", "settings.local.json")
@@ -70,6 +78,24 @@ class Augment:
         base = root / ".augment"
         yield from artifacts(NAME, Kind.SETTINGS, base / "settings.json")
         yield from artifacts(NAME, Kind.SETTINGS, base / "settings.local.json", personal=True)
+
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # Rules (.augment/rules/, ~/.augment/rules/, .augment-guidelines), system prompt files
+        # (SYSTEM.md, APPEND_SYSTEM.md in .augment/), custom commands (.augment/commands/,
+        # .agents/commands/ and the home equivalents) and workspace skills (.augment/skills/):
+        # https://docs.augmentcode.com/cli/rules and .../cli/custom-commands, read 2026-11-07.
+        paths: list[Path] = []
+        for base in (home, project):
+            if base is None:
+                continue
+            augment = base / ".augment"
+            paths += [augment / "SYSTEM.md", augment / "APPEND_SYSTEM.md"]
+            paths += children(
+                augment / "rules", augment / "commands", base / ".agents" / "commands"
+            )
+        if project is not None:
+            paths += [project / ".augment-guidelines", *children(project / ".augment" / "skills")]
+        return paths
 
     def pure_history(self, path: Path) -> bool:
         return False  # no Augment history is read yet

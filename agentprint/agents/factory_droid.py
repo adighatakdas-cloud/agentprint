@@ -28,6 +28,7 @@ from .base import (
     AgentDoc,
     EnvReference,
     artifacts,
+    children,
     from_home,
     hook_commands,
     matches_any,
@@ -97,6 +98,18 @@ class FactoryDroid:
             NAME, Kind.SETTINGS, base / "settings.json", base / "mcp.json", base / "hooks.json"
         )
         yield from artifacts(NAME, Kind.SETTINGS, base / "settings.local.json", personal=True)
+
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # Custom droids (~/.factory/droids/, .factory/droids/), custom slash commands
+        # (~/.factory/commands/, .factory/commands/) and skills (~/.factory/skills/,
+        # .factory/skills/): docs.factory.com/cli/configuration/{custom-droids,
+        # custom-slash-commands,skills}, read 2026-11-07 and 2026-11-09. Hooks are config.
+        paths: list[Path] = []
+        for base in (home, project):
+            if base is not None:
+                factory = base / ".factory"
+                paths += children(factory / "droids", factory / "commands", factory / "skills")
+        return paths
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)

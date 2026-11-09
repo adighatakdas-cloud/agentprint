@@ -27,7 +27,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from ..models import AgentConfig, Artifact, Kind, PackageRule, Severity
-from .base import AgentDoc, app_dirs, artifacts, from_home, matches_any, read_mcp_file
+from .base import AgentDoc, app_dirs, artifacts, each, from_home, matches_any, read_mcp_file
 
 NAME = "cline"
 EXTENSION = "saoudrizwan.claude-dev"
@@ -104,6 +104,19 @@ class Cline:
 
     def discover_project(self, root: Path) -> Iterator[Artifact]:
         return iter(())
+
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # Rules (https://docs.cline.bot/features/cline-rules, read 2026-11-07): .clinerules/ or
+        # the .clinerules file, .cline/rules/, global ~/Documents/Cline/Rules, ~/.cline/rules,
+        # ~/Cline/Rules and ~/.agents/AGENTS.md. A .clinerules/ folder is read whole, so its
+        # workflows/ and hooks/ (executable hook files) are read too.
+        paths: list[Path] = []
+        if home is not None:
+            paths += each(home / "Documents" / "Cline" / "Rules", home / ".cline" / "rules")
+            paths += each(home / "Cline" / "Rules", home / ".agents" / "AGENTS.md")
+        if project is not None:
+            paths += each(project / ".clinerules", project / ".cline" / "rules")
+        return paths
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)

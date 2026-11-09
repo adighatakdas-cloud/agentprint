@@ -66,7 +66,12 @@ def _split(want: Want) -> tuple[Want, Want]:
 
 
 class PackError(Exception):
-    """The package file list could not be produced."""
+    """The package file list could not be produced. `unavailable`: because a tool agentprint
+    runs (npm, uv) is not installed, not because of the package."""
+
+    def __init__(self, message: str, *, unavailable: bool = False) -> None:
+        super().__init__(message)
+        self.unavailable = unavailable
 
 
 @dataclass(frozen=True)
@@ -222,7 +227,9 @@ def _run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess
 def read_npm_project(root: Path, want: Want) -> PackageListing:
     npm = shutil.which("npm")
     if npm is None:
-        raise PackError("npm not found. Install Node.js, or pass a built .tgz instead.")
+        raise PackError(
+            "npm not found. Install Node.js, or pass a built .tgz instead.", unavailable=True
+        )
     result = _run([npm, "pack", "--dry-run", "--json", "--ignore-scripts"], cwd=root)
     if result.returncode != 0:
         raise PackError(f"npm pack failed: {result.stderr.strip()[-500:]}")
@@ -267,7 +274,8 @@ def read_python_project(root: Path, want: Want) -> list[PackageListing]:
     if uv is None:
         raise PackError(
             "uv not found. Install it from https://docs.astral.sh/uv/, "
-            "or pass a built sdist/wheel instead."
+            "or pass a built sdist/wheel instead.",
+            unavailable=True,
         )
     with tempfile.TemporaryDirectory() as tmp:
         # Unlike npm --ignore-scripts, a Python build runs the project's build backend code.
@@ -281,17 +289,38 @@ def read_python_project(root: Path, want: Want) -> list[PackageListing]:
         return [read_archive(archive, want) for archive in archives]
 
 
-def collect(target: Path, want: Want) -> list[PackageListing]:
-    """Listings for a built archive, or for every package a project directory would publish."""
+def collect_each(
+    target: Path, want: Want, *, npm_only: bool = False
+) -> tuple[list[PackageListing], list[PackError]]:
+    """Listings for a built archive, or for every package a project directory would publish,
+    and what could not be listed. Each ecosystem is read on its own, so one that fails never
+    hides another's files. `npm_only`: leave a Python project in the same folder out."""
     if target.is_file():
-        return [read_archive(target, want)]
+        return [read_archive(target, want)], []
     if not target.is_dir():
         raise PackError(f"{target} does not exist")
     listings: list[PackageListing] = []
+    errors: list[PackError] = []
+    readers: list = []
     if (target / "package.json").is_file():
-        listings.append(read_npm_project(target, want))
-    if (target / "pyproject.toml").is_file() or (target / "setup.py").is_file():
-        listings.extend(read_python_project(target, want))
-    if not listings:
+        readers.append(lambda: [read_npm_project(target, want)])
+    python = (target / "pyproject.toml").is_file() or (target / "setup.py").is_file()
+    if python and not npm_only:
+        readers.append(lambda: read_python_project(target, want))
+    if not readers:
         raise PackError(f"no package.json or pyproject.toml in {target}")
+    for read in readers:
+        try:
+            listings.extend(read())
+        except PackError as exc:
+            errors.append(exc)
+    return listings, errors
+
+
+def collect(target: Path, want: Want) -> list[PackageListing]:
+    """Listings for a built archive, or for every package a project directory would publish.
+    Raises the first PackError when any part could not be listed."""
+    listings, errors = collect_each(target, want)
+    if errors:
+        raise errors[0]
     return listings

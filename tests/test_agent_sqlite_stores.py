@@ -54,6 +54,7 @@ def test_goose_findings(tmp_path):
         ("AP001", "llm_request.0.jsonl"),
         ("AP004", "hooks.json"),
         ("AP005", "config.yaml"),  # extensions.<name>.envs
+        ("AP011", "config.yaml"),  # cmd: npx with no version
     }
 
 
@@ -130,6 +131,7 @@ def test_kilo_home_and_project(tmp_path):
     assert _no_ap008(_found(scan(home, project), "kilo")) == {
         ("AP001", "kilo.db"),
         ("AP005", "kilo.jsonc"),  # once for the home file, once for the project's
+        ("AP011", "kilo.jsonc"),  # npx -y with no version
     }
     assert len([f for f in scan(home, project) if f.check_id == "AP005"]) == 2
 
@@ -179,6 +181,7 @@ def test_crush_home_and_project(tmp_path):
         ("AP002", "crushrc"),  # a literal --api-key
         ("AP004", "crush.json"),
         ("AP005", "crush.json"),
+        ("AP011", "crush.json"),  # npx -y with no version
     }
 
 
