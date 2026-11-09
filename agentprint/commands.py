@@ -349,6 +349,7 @@ class _Value:
     text: str | None  # None: only known at run time
     origins: tuple = ()
     built: bool = False  # unknown, but made only from literal text (`echo x | rev`)
+    unknown: str = ""  # the parts filled in only at run time (`$CMD`), and what they were set from
 
 
 _UNKNOWN = _Value(None)
@@ -857,6 +858,7 @@ def _simple_read(
 ) -> tuple[_Where, _Value]:
     before = len(ctx.found)
     seen: set[Action] = set()
+    where = _defaults_assigned(cmd, where)
     subs = _substitutions(cmd, where, ctx)
     redirected = _stdin(cmd, where, subs, ctx)
     stdin = redirected if redirected is not None else stdin
@@ -884,6 +886,41 @@ def _simple_read(
     out = _writes(cmd, child, out, subs)
     _account(cmd, ctx.found[before:], seen, used)
     return after, out
+
+
+_ASSIGN_DEFAULT = re.compile(r"\$\{([A-Za-z_]\w*)(:?)=(.*)\}\Z", re.S)
+_PLAIN_VALUE = re.compile(r"[^$`'\"\\]*\Z")
+
+
+def _defaults_assigned(cmd: Simple, where: _Where) -> _Where:
+    """`${X:=word}` / `${X=word}` set X when it is empty or unset (`: "${CMD:=npm publish}"`).
+    X is then the word when X was known to be empty, else only known at run time, set from
+    the word."""
+    items = None
+    for word in cmd.words:
+        for part in word.parts:
+            if part.kind != "var" or "=" not in part.text:
+                continue
+            match = _ASSIGN_DEFAULT.match(part.text)
+            if match is None:
+                continue
+            name, colon, text = match.groups()
+            old = where.vars.get(name)
+            if (
+                old is not None
+                and old.value is not None
+                and not old.unset
+                and (old.value or not colon)
+            ):
+                continue  # set already: nothing changes
+            known = old is not None and old.value is not None and _PLAIN_VALUE.match(text)
+            evidence = _bounded((old.evidence + "\n" if old else "") + part.text)
+            origins = (*(old.origins if old else ()), word)
+            var = _Var(text if known else None, origins, evidence, _exported(where, name))
+            items = items or dict(where.vars)
+            if name in items or len(items) < MAX_VALUES:
+                items[name] = var
+    return where if items is None else replace(where, vars=items)
 
 
 _OVERFLOW = "it runs more commands than agentprint follows, and one past that names `{verb}`"
@@ -970,22 +1007,62 @@ def _stdin(cmd: Simple, where: _Where, subs: dict, ctx: _Ctx) -> _Value | None:
             body = doc.body
             if doc.strip:
                 body = "\n".join(line.lstrip("\t") for line in body.split("\n"))
+            unknown = ""
             if not doc.quoted and ("$" in body or "`" in body):
                 parts = shell.body_parts(doc)
                 for part in parts:  # $(...) in an unquoted body runs, in this shell's subshell
                     if part.kind == "sub":
                         subs[id(part)] = _substitution(part, where, ctx)
                 body = _expand_text(parts, where, subs)
-            stdin = _Value(body, (doc,))
+                unknown = _unknown_parts(parts, where, subs)
+            stdin = _Value(body, (doc,), unknown=unknown)
         elif redirect.op == "<<<" and redirect.target is not None:
             args = _expand(redirect.target, where, subs, split=False)
             text = args[0].text if args else ""
-            stdin = _Value(text + "\n", (redirect.target, *(o for a in args for o in a.origins)))
+            origins = (redirect.target, *(o for a in args for o in a.origins))
+            unknown = _unknown_parts(redirect.target.parts, where, subs)
+            stdin = _Value(text + "\n", origins, unknown=unknown)
         elif redirect.op == "<" and redirect.target is not None:
             name = redirect.target.literal
             text = following.file_text(name, where.cwd) if name else None
             stdin = _Value(text) if text is not None else _UNKNOWN
     return stdin
+
+
+def _unknown_parts(parts: list[Part], where: _Where, subs: dict) -> str:
+    """The parameters and substitutions in `parts` only known at run time, with what their
+    variables were set from: "" when every one is known."""
+    out = []
+    for part in parts:
+        if part.kind == "var":
+            got = _param(part.text, where)
+            if got is None or isinstance(got[0], list):
+                out.append(part.text)
+                out += [where.vars[n].evidence for n in _names(Word([part])) if n in where.vars]
+        elif part.kind == "sub":
+            value = subs.get(id(part))
+            if value is None or value.text is None:
+                out.append("$(" + part.text + ")")
+    return _bounded("\n".join(out))
+
+
+def _unknown_input(stdin: _Value | None, program: str, where: _Where, ctx: _Ctx) -> None:
+    """Commands a shell reads from a here-document or here-string with a part only known at run
+    time (`bash <<< "$CMD"`): "could not check" when that part, or what it was set from, names a
+    publish or push."""
+    if stdin is None or not stdin.unknown:
+        return
+    match = EVIDENCE.search(stdin.unknown)
+    if match is None:
+        return
+    verb = match.group(1).lower()
+    why = _RUNTIME.format(what=program, verb=verb)
+    ctx.found.append(Risky(PUBLISH_VERBS[verb], "sh", where.cwd, unsure=why, label=program))
+    for origin in stdin.origins:
+        origin.flagged = True
+        for name in _names(origin) if isinstance(origin, Word) else ():
+            for source in where.vars[name].origins if name in where.vars else ():
+                source.flagged = True
 
 
 def _expand_text(parts: list[Part], where: _Where, subs: dict) -> str:
@@ -1451,20 +1528,23 @@ def _shift(args: list[_Arg], where: _Where, ctx: _Ctx, stdin) -> _Where:
 
 
 def _set(args: list[_Arg], where: _Where, ctx: _Ctx, stdin) -> _Where:
+    """`set`: allexport on or off (`-a`, `-ea`, `-o allexport`), and the positional parameters
+    after the options (`set -- a b`)."""
     allexport = where.allexport
-    for i, arg in enumerate(args):
-        text = arg.text
-        following_word = args[i + 1].text if i + 1 < len(args) else ""
-        if text == "-a" or (text == "-o" and following_word == "allexport"):
-            allexport = True
-        elif text == "+a":
-            allexport = False
-        if text == "--" or not text.startswith(("-", "+")):
-            rest = args[i + 1 :] if text == "--" else args[i:]
-            known = all(a.known for a in rest)
-            return replace(
-                where, args=tuple(a.text for a in rest) if known else None, allexport=allexport
-            )
+    i = 0
+    while i < len(args):
+        text = args[i].text
+        if text in {"--", "-"} or len(text) < 2 or not text.startswith(("-", "+")):
+            rest = args[i + 1 :] if text in {"--", "-"} else args[i:]
+            return replace(where, args=tuple(_texts(rest)), allexport=allexport)
+        letters = text[1:]
+        if "a" in letters:
+            allexport = text[0] == "-"
+        if "o" in letters and i + 1 < len(args):  # -o NAME, -euo pipefail
+            i += 1
+            if args[i].text == "allexport":
+                allexport = text[0] == "-"
+        i += 1
     return replace(where, allexport=allexport)
 
 
@@ -1622,6 +1702,7 @@ def _source(args: list[_Arg], where: _Where, ctx: _Ctx, stdin: _Value | None) ->
             origin.delegated = True
         inner, after = _read(stdin.text, where, ctx.depth + 1, sourced=True)
         ctx.found += inner
+        _unknown_input(stdin, "source", where, ctx)
         return replace(after, args=saved)
     got = following.sourced(name, where.cwd, ctx.depth, where.unknown)
     if isinstance(got, list):
@@ -1660,6 +1741,7 @@ def _shell(program: str, args: list[_Arg], where: _Where, ctx: _Ctx, stdin: _Val
         for origin in stdin.origins:
             origin.delegated = True
         ctx.found += _read(stdin.text, _child(where, []), ctx.depth + 1)[0]
+        _unknown_input(stdin, program, where, ctx)
     elif stdin.built:
         why = _BUILT_TEXT
         ctx.found.append(Risky(Action.publish, "sh", where.cwd, unsure=why, label=program))
@@ -1683,6 +1765,7 @@ def _interpret(
         text = stdin.text
         for origin in stdin.origins:
             origin.delegated = True
+        _unknown_input(stdin, program, where, ctx)
     ctx.found += following._interpreted(program, words, where.cwd, ctx.depth, text)
 
 
@@ -2104,7 +2187,7 @@ class _Scan:
             for word in args:
                 match = _assignment_name(word)
                 self.exported.add(match.group(1) if match else (word.literal or ""))
-        if program == "set" and any(w.literal in {"-a", "allexport"} for w in args):
+        if program == "set" and any(_sets_allexport(w.literal or "") for w in args):
             self.indirect = True
         live: list[Word] = []
         for word in lead:
@@ -2178,6 +2261,8 @@ class _Scan:
                 for part in shell.body_parts(doc):
                     if part.kind == "sub" and part.tokens is not None:
                         self.nodes(shell.nodes_of(part), False)
+                    elif part.kind == "var" and not quiet:  # `sh <<EOF⏎$CMD⏎EOF` runs $CMD
+                        self._refs(Word([part]))
             unit = _Unit([], cmd, doc=doc, needs=needs, file=file if quiet else "")
             unit.at = len(self.seen)
             self.units.append(unit)
@@ -2185,9 +2270,15 @@ class _Scan:
             self._subs(target, False)
             if quiet and not file:
                 return
+            if not quiet:  # `bash <<< "$CMD"` runs $CMD
+                self._refs(target)
             unit = _Unit([target], cmd, needs=needs, file=file if quiet else "")
             unit.at = len(self.seen)
             self.units.append(unit)
+
+
+def _sets_allexport(text: str) -> bool:
+    return text == "allexport" or (text[:1] == "-" and text[:2] != "--" and "a" in text[1:])
 
 
 def _static_args(words: list[Word]) -> list[Word]:

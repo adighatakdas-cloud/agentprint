@@ -631,3 +631,81 @@ def test_a_known_argument_still_picks_one_function(leaky):
     _files(leaky, {"tool.sh": TOOL})
     assert evaluate("./tool.sh build", leaky) is None
     assert evaluate("./tool.sh release", leaky).block
+
+
+# ---- reader round 4: allexport spellings, ${X:=word}, a shell fed an unknown variable --------
+
+RUN = {"run.sh": "#!/bin/sh\n$CMD\n"}
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "set -ae; CMD='npm publish demo-1.0.0.tgz'; ./run.sh",
+        "set -ea; CMD='npm publish demo-1.0.0.tgz'; sh run.sh",
+        "set -euo allexport; CMD='npm publish demo-1.0.0.tgz'; ./run.sh",
+    ],
+)
+def test_allexport_in_any_spelling_reaches_the_script(leaky, command):
+    _files(leaky, RUN)
+    assert evaluate(command, leaky).block
+
+
+def _backstop_only(text, cwd):
+    """What the backstop alone finds in `text`: nothing marked by the reader."""
+    from agentprint import commands, shell
+
+    nodes = shell.parse(shell.lex(text).tokens)
+    return [(r.action, r.tool) for r in commands._backstop(commands._Text(text, nodes, cwd))]
+
+
+def test_set_o_takes_its_option_name_not_a_positional_parameter(tmp_path):
+    text = "set -ea; CMD='npm publish x'; ./run.sh"
+    assert _backstop_only(text, tmp_path) == [(Action.publish, "npm")]
+    assert detect('set -euo pipefail; "cmd_$1"', tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ': "${CMD:=npm publish}"; $CMD demo-1.0.0.tgz',
+        ": ${CMD:=npm publish demo-1.0.0.tgz} && $CMD",
+        '[ -n "${CMD:=npm publish demo-1.0.0.tgz}" ] && $CMD',
+        'echo "${CMD:=npm publish demo-1.0.0.tgz}" >/dev/null; $CMD',
+    ],
+)
+def test_a_default_assignment_sets_the_variable(leaky, command):
+    assert _blocks(command, leaky)
+
+
+def test_a_default_assignment_to_a_known_empty_variable_is_checked_for_real(leaky):
+    assert evaluate('CMD=; : "${CMD:=npm publish demo-1.0.0.tgz}"; $CMD', leaky).block
+    assert evaluate(': "${VERSION:=1.0.0}"; echo $VERSION', leaky) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'CMD=\'npm publish demo-1.0.0.tgz\'; [ -n "$CI" ] || CMD=true; bash <<< "$CMD"',
+        "CMD='npm publish demo-1.0.0.tgz'; [ -n \"$CI\" ] || CMD=true; sh <<EOF\n$CMD\nEOF",
+        "CMD='npm publish demo-1.0.0.tgz'; [ -n \"$CI\" ] || CMD=true; bash -s <<EOF\nset -e\n"
+        "$CMD\nEOF",
+        "CMD='npm publish demo-1.0.0.tgz'; [ -n \"$CI\" ] || CMD=true; "
+        'source /dev/stdin <<< "$CMD"',
+    ],
+)
+def test_a_shell_fed_a_variable_known_only_at_run_time_is_could_not_check(leaky, command):
+    assert _blocks(command, leaky)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'CMD=\'npm publish x\'; [ -n "$CI" ] || CMD=true; bash <<< "$CMD"',
+        "CMD='npm publish x'; [ -n \"$CI\" ] || CMD=true; sh <<EOF\n$CMD\nEOF",
+    ],
+)
+def test_the_backstop_counts_a_variable_a_shell_reads_from_its_input(tmp_path, text):
+    assert _backstop_only(text, tmp_path) == [(Action.publish, "npm")]
+    quiet = 'MSG=\'hi\'; [ -n "$CI" ] || MSG=x; bash <<< "echo $MSG"'
+    assert detect(quiet, tmp_path) == [] and _backstop_only(quiet, tmp_path) == []
