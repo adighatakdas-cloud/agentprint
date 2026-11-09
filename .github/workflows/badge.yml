@@ -98,9 +98,12 @@ jobs:
           mkdir -p "$AP_BADGE_DIR"
           # Run from outside the checkout so no repository file can steer uv, and point at the
           # repository by absolute path. scan only reads files; it runs none of the repo's code.
+          # agentprint's own --no-config: a repository's .agentprint.toml or baseline must not be
+          # able to turn a badge signed by agentprint to CLEAR; every print counts here.
           cd "$RUNNER_TEMP" || exit 2
           uvx --no-config --from "agentprint==$AGENTPRINT_VERSION" agentprint scan --no-home \
-            --fail-on "$AP_FAIL_ON" --format table --badge "$AP_BADGE_DIR" -- "$GITHUB_WORKSPACE/$AP_PATH"
+            --no-config --fail-on "$AP_FAIL_ON" --format table --badge "$AP_BADGE_DIR" \
+            -- "$GITHUB_WORKSPACE/$AP_PATH"
           code=$?
           echo "exit-code=$code" >> "$GITHUB_OUTPUT"
           if [ "$code" -le 1 ] && [ -f "$AP_BADGE_DIR/badge.json" ] && [ -f "$AP_BADGE_DIR/verdict.json" ]; then

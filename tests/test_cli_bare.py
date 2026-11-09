@@ -18,7 +18,6 @@ from typer.testing import CliRunner
 
 from agentprint import __version__, cli
 from agentprint.cli import app
-from agentprint.report import FailOn
 from agentprint.ui import menu
 from agentprint.ui.welcome import mark_welcome, seen_welcome
 from tests.conftest import home_vars, set_home
@@ -114,7 +113,7 @@ def test_menu_scan_runs_the_scan_command(human, monkeypatch):
     monkeypatch.setattr(cli, "run_scan_command", lambda *a: calls.append(a) or 1)
     _pick(monkeypatch, "scan")
     r = runner.invoke(app, [])
-    assert calls == [(Path("."), None, False, None, FailOn.high, False)]
+    assert calls == [(Path("."), None, False, None, None, False)]  # fail_on: the config
     assert r.exit_code == 1  # the same exit code as `agentprint scan .`
 
 
@@ -123,7 +122,7 @@ def test_menu_pack_runs_the_pack_command(human, monkeypatch):
     monkeypatch.setattr(cli, "run_pack_command", lambda *a: calls.append(a) or 0)
     _pick(monkeypatch, "pack")
     r = runner.invoke(app, ["--plain"])
-    assert calls == [(Path("."), None, FailOn.high, True)]
+    assert calls == [(Path("."), None, None, True)]
     assert r.exit_code == 0
 
 
@@ -149,7 +148,7 @@ def test_menu_pack_of_a_python_project_yes_runs_it(human, monkeypatch, tmp_path)
     monkeypatch.setattr(cli, "run_pack_command", lambda *a: calls.append(a) or 1)
     _pick(monkeypatch, "pack")
     r = runner.invoke(app, [], input="y\n")
-    assert calls == [(Path("."), None, FailOn.high, False)]
+    assert calls == [(Path("."), None, None, False)]
     assert r.exit_code == 1
 
 

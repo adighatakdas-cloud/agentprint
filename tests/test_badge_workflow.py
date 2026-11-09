@@ -129,6 +129,12 @@ def test_agentprint_runs_isolated_from_the_repository_and_never_runs_its_code():
     assert '"$GITHUB_WORKSPACE/$AP_PATH"' in run
 
 
+def test_a_repositorys_own_config_or_baseline_cannot_soften_the_signed_badge():
+    run = _named("Run agentprint")["run"]
+    scan = run[run.index("agentprint scan") :]
+    assert "--no-config" in scan.split("--badge")[0]  # agentprint's flag, not only uv's
+
+
 def test_the_publish_script_is_cloned_outside_the_workspace():
     fetch = _named("Fetch the publish script")
     assert "uses" not in fetch
