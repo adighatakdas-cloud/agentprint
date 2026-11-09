@@ -82,6 +82,12 @@ def _ours_in_script(script: str) -> bool:
     return f"{NPM_WRAPPER}@" in script and " pack" in script
 
 
+# The command protect wrote, in any release: refreshed to this one when protect runs again.
+_OURS = re.compile(
+    rf"npx --yes {NPM_WRAPPER}@[^\s&|;]+ pack --fail-on \w+(?: --if-unavailable \w+)?"
+)
+
+
 # ---- the git hook -----------------------------------------------------------------------------
 
 
@@ -554,6 +560,8 @@ def _add_script(command: str) -> Callable[[dict], None]:
             raise Unsupported('its "scripts.prepublishOnly" value is not a command')
         elif not _ours_in_script(current):
             scripts["prepublishOnly"] = f"{current.rstrip()} && {command}"
+        else:  # an older release's pin (or the other strict setting): this one
+            scripts["prepublishOnly"] = _OURS.sub(lambda _: command, current, count=1)
 
     return add
 
@@ -591,11 +599,11 @@ def _protect_npm(package: Path, entries: dict[str, dict], echo: Echo, strict: bo
         _yarn_berry_note(package.parent, echo)
         return 0
     atomic_write(package, new)
-    entries[_key(package)] = {
-        "kind": "npm",
-        "before": old,
-        "sha256": _sha(new.encode("utf-8")),
-    }
+    entry: dict[str, object] | None = entries.get(_key(package))
+    if entry is None or entry.get("sha256") != _sha(old.encode("utf-8")):
+        entry = {"kind": "npm", "before": old}  # else: a refresh; undo still goes back to before
+    entry["sha256"] = _sha(new.encode("utf-8"))
+    entries[_key(package)] = entry
     echo("npm: package.json scripts.prepublishOnly now runs agentprint pack before npm publish:")
     for line in changes(old, new, [edit]):
         echo(line)

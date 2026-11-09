@@ -440,6 +440,22 @@ def test_an_existing_prepublish_only_is_kept_and_runs_first(package, home):
     assert path.read_text() == original + "\n"
 
 
+def test_protect_again_refreshes_an_older_pin_and_undo_still_restores(package, home, monkeypatch):
+    path = package / "package.json"
+    original = json.dumps({"name": "x", "scripts": {"prepublishOnly": "npm test"}}, indent=2)
+    path.write_text(original + "\n")
+    monkeypatch.setattr(protect, "__version__", "0.0.9")
+    run(package, home)
+    assert "agentprint-cli@0.0.9 pack" in path.read_text()
+    monkeypatch.undo()
+    code, text = run(package, home)
+    script = json.loads(path.read_text())["scripts"]["prepublishOnly"]
+    assert script == f"npm test && {npm_command()}"
+    assert code == 0 and "0.0.9" in text  # the diff shows the old pin going
+    assert undo(package, home)[0] == 0
+    assert path.read_text() == original + "\n"
+
+
 def test_undo_leaves_a_package_json_changed_since(package, home):
     path = package / "package.json"
     path.write_text(json.dumps({"name": "x"}, indent=2) + "\n")
