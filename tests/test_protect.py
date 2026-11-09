@@ -536,15 +536,85 @@ def test_the_shared_npm_script_lets_the_publish_go_where_agentprint_cannot_run(p
     assert "publish stops (strict)" in text
 
 
-def test_pack_if_unavailable_allow_exits_0_with_one_line(tmp_path):
+def test_allow_is_not_for_a_package_that_is_not_there(tmp_path):
+    """--if-unavailable allow covers agentprint's own tools missing, not the package."""
     missing = str(tmp_path / "no-such-package")
     blocked = CliRunner().invoke(app, ["pack", missing, "--format", "agent"])
     assert blocked.exit_code == 2
     allowed = CliRunner().invoke(
         app, ["pack", missing, "--format", "agent", "--if-unavailable", "allow"]
     )
-    assert allowed.exit_code == 0
-    assert "could not check this package" in allowed.output and "publish goes on" in allowed.output
+    assert allowed.exit_code == 4
+    assert "could not check this package" in allowed.output and "publish stops" in allowed.output
+
+
+needs_npm_uv = pytest.mark.skipif(
+    shutil.which("npm") is None or shutil.which("uv") is None, reason="needs npm and uv"
+)
+
+
+def _npm_package(folder, leaky):
+    files = ["index.js", ".claude"] if leaky else ["index.js"]
+    manifest = {"name": "x", "version": "1.0.0", "files": files}
+    (folder / "package.json").write_text(json.dumps(manifest))
+    (folder / "index.js").write_text("module.exports = 1;\n")
+    if leaky:
+        (folder / ".claude").mkdir()
+        allow = [f"Bash(export K={fakes.ANTHROPIC})"]
+        (folder / ".claude" / "settings.local.json").write_text(
+            json.dumps({"permissions": {"allow": allow}})
+        )
+    (folder / "pyproject.toml").write_text("this is [not toml\n")  # the Python half fails
+
+
+def _pack(folder, *extra, env=None):
+    args = ["pack", str(folder), "--format", "agent", *extra]
+    return CliRunner().invoke(app, args, env={"UV_OFFLINE": "1", **(env or {})})
+
+
+@needs_npm_uv
+def test_allow_never_hides_what_the_other_half_found(package):
+    """A broken pyproject.toml beside a leaky npm package used to turn BLOCK into exit 0."""
+    _npm_package(package, leaky=True)
+    result = _pack(package, "--if-unavailable", "allow")
+    assert result.exit_code == 3, result.output  # a BLOCK, told apart from uv failing (1, 2)
+    assert result.output.startswith("agentprint: BLOCK")
+    assert "not_checked: could not list part of it: uv build failed" in result.output
+    assert _pack(package).exit_code == 1  # without the flag: the usual 1
+
+
+@needs_npm_uv
+def test_allow_does_not_cover_a_package_that_cannot_be_checked(package):
+    _npm_package(package, leaky=False)
+    result = _pack(package, "--if-unavailable", "allow")
+    assert result.exit_code == 4
+    line = [ln for ln in result.output.splitlines() if "could not check this package" in ln]
+    assert line == ["agentprint: could not check this package (uv build failed: "
+                    + line[0].split("(uv build failed: ", 1)[1]]  # fmt: skip
+    assert "publish stops" in line[0] and "Failed to build" not in result.output
+
+
+@needs_npm_uv
+def test_inside_prepublish_only_only_the_npm_package_is_checked(package):
+    _npm_package(package, leaky=False)
+    env = {"npm_lifecycle_event": "prepublishOnly"}
+    assert _pack(package, "--if-unavailable", "allow", env=env).exit_code == 0
+
+
+@pytest.mark.skipif(shutil.which("npm") is None, reason="needs npm")
+def test_allow_covers_a_missing_tool_but_never_a_finding(package, monkeypatch):
+    from agentprint import pack as pack_module
+
+    real = pack_module.shutil.which
+    monkeypatch.setattr(pack_module.shutil, "which", lambda n: None if n == "uv" else real(n))
+    _npm_package(package, leaky=False)
+    (package / "pyproject.toml").write_text("[project]\nname = 'x'\nversion = '1'\n")
+    result = _pack(package, "--if-unavailable", "allow")
+    assert result.exit_code == 0
+    assert "could not check part of this package (uv not found" in result.output
+    _npm_package(package, leaky=True)
+    (package / "pyproject.toml").write_text("[project]\nname = 'x'\nversion = '1'\n")
+    assert _pack(package, "--if-unavailable", "allow").exit_code == 3
 
 
 FAKE_UVX = """#!/bin/sh
