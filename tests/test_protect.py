@@ -449,6 +449,85 @@ def test_undo_restores_package_json_byte_for_byte(package, home):
     assert path.read_bytes() == original.encode()
 
 
+def _runs(key, size=5):
+    return {key[i : i + size] for i in range(len(key) - size + 1)}
+
+
+def _state(home):
+    return (home / ".agentprint" / "protect.json").read_text(encoding="utf-8")
+
+
+ODD = {  # formats json.dumps would not write back the same: undo must still be exact
+    "compact": '{"name":"demo","scripts":{"deploy":"npm publish --//r/:_authToken=%s"}}',
+    "escapes": '{\n  "name": "d\\u00e9mo",\n  "scripts": {\n    "deploy": "echo %s \\/x"\n  }\n}\n',
+    "crlf-4": '{\r\n    "name": "demo",\r\n    "scripts": {\r\n        "deploy": "echo %s"\r\n'
+    "    }\r\n}\r\n",
+    "spaced": '{ "name" : "demo",\n\n  "scripts" : { "deploy" : "echo %s" } }\n',
+}
+
+
+@pytest.mark.parametrize("layout", ["2-space", *ODD])
+def test_protect_json_never_holds_a_key_from_package_json(package, home, layout):
+    """I2: the undo record is a patch of what changed plus digests, never the file, so a token
+    in another script is not copied into ~/.agentprint/protect.json. Undo stays exact."""
+    token = fakes.NEW["npm"]
+    if layout == "2-space":
+        data = {"name": "demo", "scripts": {"deploy": f"npm publish --token {token}"}}
+        original = json.dumps(data, indent=2) + "\n"
+    else:
+        original = ODD[layout] % token
+    path = package / "package.json"
+    path.write_bytes(original.encode())
+    code, text = run(package, home)
+    state = _state(home) if (home / ".agentprint" / "protect.json").exists() else ""
+    assert not [r for r in _runs(token) if r in state]
+    assert not [r for r in _runs(token) if r in text]
+    assert code == 0, text
+    assert path.read_bytes() != original.encode()
+    assert '"name"' not in state  # pieces of what changed, not a copy of the file
+    assert undo(package, home)[0] == 0
+    assert path.read_bytes() == original.encode()
+
+
+def test_package_json_is_left_alone_when_the_undo_would_hold_a_key(package, home, monkeypatch):
+    """When the way back can only be kept with the key's own text in it (here: changed blocks
+    kept whole, as for a huge re-indented file), protect refuses and changes nothing."""
+    monkeypatch.setattr(protect, "MAX_CHAR_DIFF", 0)
+    token = fakes.NEW["npm"]
+    original = ODD["compact"] % token
+    path = package / "package.json"
+    path.write_text(original, newline="")
+    code, text = run(package, home)
+    assert not [r for r in _runs(token) if r in text]
+    assert code == 1 and "left as is" in text and "holds a key" in text
+    assert path.read_text() == original
+    assert not (home / ".agentprint" / "protect.json").exists()
+
+
+def test_the_undo_patch_rebuilds_the_original_exactly():
+    for old in (*(t % "x" for t in ODD.values()), *(v for v, _ in VARIANTS.values())):
+        new = protect._through_edits(old, [protect._npm_edit(protect.Path("package.json"))])
+        assert new is not None
+        patch = protect._undo_patch(new, old)
+        assert patch is not None and protect._patched(new, patch) == old
+        assert "".join(piece[2] for piece in patch) != old  # pieces, not the file
+
+
+def test_undo_refuses_a_record_that_does_not_fit(package, home):
+    path = package / "package.json"
+    original = json.dumps({"name": "x"}, indent=2) + "\n"
+    path.write_text(original)
+    run(package, home)
+    state = json.loads(_state(home))
+    (entry,) = state["entries"].values()
+    entry["undo"] = [[[0, 10**6, ""]]]
+    (home / ".agentprint" / "protect.json").write_text(json.dumps(state))
+    edited = path.read_bytes()
+    code, text = undo(package, home)
+    assert code == 1 and "does not fit" in text
+    assert path.read_bytes() == edited
+
+
 def test_an_existing_prepublish_only_is_kept_and_runs_first(package, home):
     path = package / "package.json"
     original = json.dumps({"name": "x", "scripts": {"prepublishOnly": "npm test"}}, indent=2)
