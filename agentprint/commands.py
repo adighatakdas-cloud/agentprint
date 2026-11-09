@@ -1224,9 +1224,34 @@ def _param(text: str, where: _Where) -> tuple[str | list[str], tuple] | None:
         value = where.args[n - 1] if n <= len(where.args) else ""
         return None if isinstance(value, Unknown) else (value, ())
     var = where.vars.get(name)
+    if var is None and name == "PWD":  # the shell keeps it: the folder the command runs in
+        folder = _logical(where)
+        return (folder, ()) if folder is not None else None
     if var is None or var.value is None:
         return None
     return var.value, var.origins
+
+
+def _logical(where: _Where) -> str | None:
+    """The folder a command runs in, as `$PWD` and `pwd` give it; None when only known then."""
+    if where.unknown or where.alts:
+        return None
+    return os.path.normpath(os.path.abspath(where.cwd))
+
+
+def _toplevel(where: _Where) -> str | None:
+    """What `git rev-parse --show-toplevel` prints: the nearest folder up with a `.git`."""
+    folder = _logical(where)
+    if folder is None:
+        return None
+    here = Path(folder)
+    for candidate in (here, *here.parents):
+        try:
+            if (candidate / ".git").exists():
+                return str(candidate)
+        except OSError:
+            return None
+    return None
 
 
 def _expand(word: Word, where: _Where, subs: dict, split: bool = True) -> list[_Arg]:
@@ -1380,7 +1405,13 @@ def _segment(
     if first.known and words[0] in where.funcs and "/" not in words[0]:
         after = _call(where.funcs[words[0]], rest, run, ctx)
     elif program in {"cd", "pushd"} and chdir is None:
-        after, out = _chdir(where, _cd_target(rest)), _NOTHING
+        target = _cd_target(rest)
+        back = where.vars.get("OLDPWD")
+        if target == "-" and back is not None and back.value:
+            target = back.value
+        after, out = _chdir(where, target), _NOTHING
+        if (old := _logical(where)) is not None and (len(after.vars) < MAX_VALUES or back):
+            after = replace(after, vars={**after.vars, "OLDPWD": _Var(old, (), "", True)})
     elif program == "popd":
         after = replace(where, unknown=where.unknown or _BRANCH)
     elif program in _STATE:
@@ -1397,6 +1428,9 @@ def _segment(
         _xargs(args[1:], run, ctx, stdin, cmd, seen)
     elif program == "git":
         _git(rest, cwd, found, seen)
+        if [w for w in rest if w != "-q"] == ["rev-parse", "--show-toplevel"]:
+            top = _toplevel(run)
+            out = _Value(top + "\n") if top is not None else _UNKNOWN
     elif program in NODE:
         _node(program, rest, cwd, found, ctx.depth, seen)
     elif program in PYTHON_PUBLISH or program == "twine":
@@ -1864,6 +1898,9 @@ _TRANSFORMS = _FILTERS | {"rev", "base64"}
 
 
 def _prints(program: str, args: list[_Arg], stdin: _Value | None, where: _Where) -> _Value:
+    if program == "pwd":
+        folder = _logical(where)
+        return _Value(folder + "\n") if folder is not None else _UNKNOWN
     if program not in _PRINTERS and (stdin is None or program not in _TRANSFORMS):
         return _UNKNOWN
     words = [a.text for a in args]

@@ -709,3 +709,36 @@ def test_the_backstop_counts_a_variable_a_shell_reads_from_its_input(tmp_path, t
     assert _backstop_only(text, tmp_path) == [(Action.publish, "npm")]
     quiet = 'MSG=\'hi\'; [ -n "$CI" ] || MSG=x; bash <<< "echo $MSG"'
     assert detect(quiet, tmp_path) == [] and _backstop_only(quiet, tmp_path) == []
+
+
+# ---- reader round 4: a script path from the shell's own folder -------------------------------
+
+SCRIPTS = {
+    "scripts/release.sh": "#!/bin/sh\nnpm publish demo-1.0.0.tgz\n",
+    "scripts/up.sh": "#!/bin/sh\nnpm publish ../demo-1.0.0.tgz\n",
+}
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'bash "$PWD/scripts/release.sh"',
+        'bash "$(pwd)/scripts/release.sh"',
+        'source "$PWD/scripts/release.sh"',
+        'cd scripts && bash "$PWD/up.sh"',
+        'cd scripts; cd ..; cd "$OLDPWD" && sh ./up.sh',
+        "echo 'npm publish demo-1.0.0.tgz' > r.sh; sh \"$PWD/r.sh\"",
+        '"$(git rev-parse --show-toplevel)/scripts/release.sh"',
+        'ROOT=$(git rev-parse --show-toplevel); "$ROOT/scripts/release.sh"',
+    ],
+)
+def test_a_script_path_from_the_shells_own_folder_is_followed(leaky, command):
+    subprocess.run(["git", "init", "-q", str(leaky)], check=True)
+    _files(leaky, SCRIPTS)
+    assert evaluate(command, leaky).block  # followed and checked for real
+
+
+def test_a_computed_path_that_looks_like_a_release_is_could_not_check(tmp_path):
+    [risky] = detect('bash "$X/scripts/release.sh"', tmp_path)
+    assert risky.unsure and risky.label == "$X/scripts/release.sh"
+    assert detect('source "$HOME/.nvm/nvm.sh"; bash "$X/build.sh"', tmp_path) == []
