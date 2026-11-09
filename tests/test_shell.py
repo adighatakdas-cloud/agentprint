@@ -4,6 +4,7 @@ it, nothing cut out but blanks, comments and line continuations."""
 import pytest
 
 from agentprint import shell
+from agentprint.commands import Action, detect
 from agentprint.shell import Compound, Function, Op, Redirect, Word
 
 
@@ -172,3 +173,28 @@ def test_functions_end_where_their_braces_match():
     ]
     assert isinstance(unclosed, Function) and isinstance(unclosed.body, Compound)
     assert not unclosed.body.closed
+
+
+# ---- functions run only when called (was recipes.called_only) ---------------------------------
+
+
+@pytest.mark.parametrize(
+    ("script", "want"),
+    [
+        ('build() { make; }\nrelease() {\n  cd "$PKG"\n  npm publish\n}\n', []),
+        ('build() { make; }\nrelease() {\n  cd "$PKG"\n  npm publish\n}\nrelease\n', ["npm"]),
+        ("pub() { npm publish; }\nship() {\n  pub\n}\nship\n", ["npm"]),  # ship calls pub
+        ("f() { npm publish; }; f", ["npm"]),
+        ("function deploy {\n  git push\n}\nfunction other() { echo; }\ndeploy\n", ["git"]),
+        ("f() { npm publish\n", ["npm"]),  # no closing brace: never taken as unused
+    ],
+)
+def test_only_called_functions_run(tmp_path, script, want):
+    (tmp_path / "x.sh").write_text(script)
+    assert [r.tool for r in detect("bash x.sh", tmp_path)] == want
+
+
+def test_a_function_called_later_runs_in_the_folder_it_is_called_in(tmp_path):
+    (tmp_path / "pkg").mkdir()
+    found = detect("pub() { npm publish; }; cd pkg; pub", tmp_path)
+    assert [(r.action, r.cwd) for r in found] == [(Action.publish, tmp_path / "pkg")]

@@ -51,11 +51,11 @@ def large(what: str) -> str:
     return f"it is larger than 64 KB and names `{what}`, so agentprint did not follow it"
 
 
-# ---- the backstop word scan -----------------------------------------------------------------
+# ---- the backstop scan ----------------------------------------------------------------------
 
 
 def _backstop(text):
-    return [(r.action, r.tool) for r in commands._backstop(text, CWD)]
+    return commands.scan_hits(text)
 
 
 @pytest.mark.parametrize(
@@ -67,7 +67,7 @@ def _backstop(text):
         ("\n\n  \n\t  npm publish", [(Action.publish, "npm")]),  # after a run of blank lines
         ("(cd x)/npm publish", [(Action.publish, "npm")]),
         ("do  twine upload dist/*", [(Action.publish, "twine")]),
-        ("a=b;c npm publish", []),  # `c` is the program here, not npm
+        ("a=b;c npm publish", [(Action.publish, "npm")]),  # `c` may run it (like `chronic`)
         ("D=./bin/twine upload", []),  # an assignment, then a program called `upload`
         ("git -c a=b -C sub push origin", [(Action.push, "git")]),
         ("npm --access=public --provenance publish", [(Action.publish, "npm")]),
@@ -101,7 +101,7 @@ def test_backstop_reads_command_positions(text, want):
          "npm-option-semi", "git-value-semi", "twine-option-semi"],
 )  # fmt: skip
 def test_backstop_is_linear_on_a_64kb_script(text):
-    assert timing.best_of(lambda: commands._backstop(text, CWD)) < timing.bound(0.5)
+    assert timing.best_of(lambda: commands.scan_hits(text)) < timing.bound(0.5)
 
 
 # ---- (1) shell scripts ----------------------------------------------------------------------
@@ -678,11 +678,19 @@ def test_an_unreadable_script_is_could_not_check_only_when_it_looks_like_a_relea
 @pytest.mark.parametrize(
     "command",
     ["./missing.sh", "bash missing.sh", "make", "just", "task", "python missing.py",
-     '"$DIR"/release.sh', "bash $SCRIPT", "bash", "bash -s < release.sh", "./"],
+     '"$DIR"/release.sh', "bash $SCRIPT", "bash", "./"],
 )  # fmt: skip
 def test_nothing_to_read_is_not_a_publish(tmp_path, command):
     write(tmp_path, "release.sh", "npm publish\n", 0o755)
     assert detect(command, tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "command", ["bash -s < release.sh", "sh < release.sh", "cat release.sh | sh"]
+)
+def test_a_script_fed_to_a_shell_on_stdin_is_read(tmp_path, command):
+    write(tmp_path, "release.sh", "npm publish\n", 0o755)
+    assert found(command, tmp_path) == [(P, "npm", tmp_path, "")]
 
 
 def test_where_following_stops_it_looks_one_level_further(tmp_path):
@@ -963,11 +971,22 @@ def test_a_followed_script_fills_in_its_own_variables(tmp_path):
 
 @pytest.mark.parametrize(
     "command",
-    ['eval "$(cat release-cmd.txt)" # then publish', 'X=$(get-cmd); eval "$X"; echo push'],
+    ['eval "$(cat release-cmd.txt)" # then publish', 'X=$(get-cmd publish); eval "$X"'],
 )
 def test_eval_of_something_unknown_is_could_not_check_when_a_publish_is_named(command):
     [risky] = detect(command, CWD)
     assert risky.label == "eval" and risky.unsure
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'X=$(get-cmd); eval "$X"; echo push',  # "push" is elsewhere on the line, not in the eval
+        'eval "$(ssh-agent -s)" && ssh-add -l; echo publish',
+    ],
+)
+def test_eval_looks_only_at_what_it_runs(command):
+    assert detect(command, CWD) == []
 
 
 @pytest.mark.parametrize(

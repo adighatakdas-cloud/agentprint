@@ -155,9 +155,15 @@ class _Reading:
     peeking: bool = False  # reading once more without following anything
     results: dict[tuple, list] = field(default_factory=dict)  # a script's result, per call
     parsed: dict[tuple, object] = field(default_factory=dict)  # makefiles and justfiles
+    texts: list = field(default_factory=list)  # every text read: the backstop scans them all
+    funcs: list = field(default_factory=list)  # every shell function defined
+    calls: set = field(default_factory=set)  # function calls followed
+    dynamic: list = field(default_factory=list)  # (prefix, suffix) of commands named at run time
+    virtual: dict = field(default_factory=dict)  # files the command line writes: path -> value
 
 
 _READING: ContextVar[_Reading | None] = ContextVar("agentprint_reading", default=None)
+_NAMING: ContextVar[str] = ContextVar("agentprint_naming", default="")  # the file being read
 
 
 def _real(path: Path) -> Path:
@@ -191,6 +197,8 @@ def _read(arg: str, cwd: Path) -> _File | None:
     if not arg or c._UNKNOWABLE.search(arg):
         return None
     reading = _reading(cwd)
+    if reading.virtual and (virtual := _virtual_path(arg, cwd)) in reading.virtual:
+        return _virtual_file(reading, virtual)  # written earlier by this same command line
     try:
         real = (cwd / os.path.expanduser(arg)).resolve(strict=True)
     except (OSError, RuntimeError):
@@ -200,6 +208,47 @@ def _read(arg: str, cwd: Path) -> _File | None:
     if real not in reading.files:
         reading.files[real] = _load(real, real.relative_to(reading.root).as_posix())
     return reading.files[real]
+
+
+def _virtual_path(arg: str, cwd: Path) -> Path:
+    return Path(os.path.normpath(_real(cwd) / os.path.expanduser(arg)))
+
+
+def _virtual_file(reading: _Reading, path: Path) -> _File | None:
+    value = reading.virtual[path]
+    for origin in value.origins:  # what was written is read again: the backstop counts it there
+        origin.delegated = True
+    if reading.root not in path.parents:
+        return None
+    name = path.relative_to(reading.root).as_posix()
+    if value.text is None:
+        return _File(path, name, None, "unreadable")
+    return _File(path, name, value.text)
+
+
+def write_virtual(arg: str, cwd: Path, value, append: bool = False) -> None:
+    """A file the command line writes (`cat > x.sh <<EOF`, `echo ... > x`, `tee x`): what a later
+    command in the same line reads or runs from it is this text, not what is on disk now."""
+    reading = _READING.get()
+    if reading is None or not arg or c._UNKNOWABLE.search(arg):
+        return
+    path = _virtual_path(arg, cwd)
+    if append:
+        old = reading.virtual.get(path)
+        before = old.text if old is not None else file_text(arg, cwd)
+        if before is None or value.text is None:
+            value = type(value)(None, (*(old.origins if old else ()), *value.origins))
+        else:
+            value = type(value)(
+                before + value.text, (*(old.origins if old else ()), *value.origins)
+            )
+    reading.virtual[path] = value
+
+
+def file_text(arg: str, cwd: Path) -> str | None:
+    """A file's text when it is inside the folder and at most 64 KB (`cat file`, `< file`)."""
+    file = _read(arg, cwd)
+    return file.text if file is not None else None
 
 
 def _is_file(path: Path) -> bool:
@@ -590,11 +639,12 @@ def _decoded(code: str) -> str:
 
 
 def _hits(text: str, cwd: Path) -> list[Hit]:
-    """Shell text only scanned, not read as commands: named publishes and backstop hits."""
+    """Shell text only scanned, not read as commands: named publishes and the publish and push
+    commands written in it."""
     hits = _named(text)
-    for risky in c._backstop(_without_dry_runs(text), cwd):
-        if (risky.action, risky.tool) not in hits:
-            hits.append((risky.action, risky.tool))
+    for hit in c.scan_hits(text):
+        if hit not in hits:
+            hits.append(hit)
     return hits
 
 
@@ -631,22 +681,32 @@ def _unread(file: _File, cwd: Path, runner: str, shell: bool) -> list[c.Risky]:
 # ---- following ------------------------------------------------------------------------------
 
 
-def _step(step: recipes.Step, name: str, cwd: Path, depth: int) -> list[c.Risky]:
-    """One script or recipe line from file `name`. Shell is read as commands; other languages
-    are only scanned for a publish or push they name."""
+def _step(
+    step: recipes.Step,
+    name: str,
+    cwd: Path,
+    depth: int,
+    args: list[str] | None = None,
+    env: dict | None = None,
+) -> list[c.Risky]:
+    """One script or recipe line from file `name`. Shell is read as commands (with the arguments
+    and exported variables it is given); other languages are only scanned for a publish or push
+    they name or build."""
     if not _is_shell(step.program):
-        return _code_flags(step.text, name, cwd, step.program)
-    text, other = recipes.shell_text(step.text)
-    text = recipes.called_only(text)  # a function's body runs only when it is called
-    found = [risky for body in other for risky in _code_flags(body, name, cwd)]
+        return _code_flags(step.text, name, cwd, step.program, args or [])
+    text = step.text
     reading = _reading(cwd)
     if reading.peeking or reading.bytes + len(text) > MAX_BYTES:  # charged before it is read
-        return found + _flag(_hits(text, cwd), name, cwd, _DEEP)
+        return _flag(_hits(text, cwd), name, cwd, _DEEP)
     if depth >= c.MAX_DEPTH or reading.steps >= MAX_STEPS:
-        return found + _peek(text, cwd, min(depth, c.MAX_DEPTH))
+        return _peek(text, cwd, min(depth, c.MAX_DEPTH))
     reading.steps += 1
     reading.bytes += len(text)
-    return found + c.detect(text, cwd, depth + 1)
+    token = _NAMING.set(name)
+    try:
+        return c.read_script(text, cwd, depth + 1, args, env)
+    finally:
+        _NAMING.reset(token)
 
 
 def _peek(text: str, cwd: Path, depth: int) -> list[c.Risky]:
@@ -659,16 +719,6 @@ def _peek(text: str, cwd: Path, depth: int) -> list[c.Risky]:
         return c._detect(text, cwd, depth)
     finally:
         reading.peeking = False
-
-
-def command_line(command: str, cwd: Path) -> tuple[str, list[c.Risky]]:
-    """The agent's own command line with its here-document bodies sorted out: a body fed to a
-    shell (`bash <<EOF`, `<<EOF | sh`) stays as commands; one fed to another language is only
-    scanned; one fed to anything else (`cat > notes.md <<EOF`) is data, not a publish."""
-    if "<<" not in command or "\n" not in command:
-        return command, []
-    text, other = recipes.shell_text(command)
-    return text, [r for body in other for r in _code_flags(body, "here-document", cwd)]
 
 
 def too_deep(text: str, cwd: Path) -> list[c.Risky]:
@@ -708,11 +758,13 @@ def _script(
     runner: str | None = None,
     unknown: str = "",
     argv: list[str] | None = None,
+    env: dict | None = None,
 ) -> list[c.Risky]:
     """`./release.sh`, `bash scripts/release.sh`, `python release.py`: what the file runs.
 
     `unknown` is set when an earlier `cd` went somewhere only known at run time; `argv` is what
-    the script is given, filled in for "$@", $1... (a wrapper: `./with-env.sh npm publish`)."""
+    the script is given: its "$@", $1... (a wrapper: `./with-env.sh npm publish`); `env` the
+    variables and functions it inherits."""
     file = _read(arg, cwd)
     if file is None:
         return _lost(arg, cwd, depth, unknown)
@@ -723,80 +775,40 @@ def _script(
         return _unread(file, cwd, program, _is_shell(program))
     reading = _reading(cwd)
     argv = argv or []
-    key = (file.path, cwd, program, depth, reading.peeking, tuple(argv))
+    key = (file.path, cwd, program, depth, reading.peeking, tuple(argv), _env_key(env))
     if key not in reading.results:
         text = file.text
         if _is_shell(program):
-            text = _with_args(_own_folder(text, file.path.parent), argv)
-        reading.results[key] = _step(recipes.Step(text, program), file.name, cwd, depth)
+            text = _own_folder(text, file.path.parent)
+        step = recipes.Step(text, program)
+        reading.results[key] = _step(step, file.name, cwd, depth, argv, env)
     return list(reading.results[key])
 
 
-# A positional parameter that is a whole word: "$@", "${1}", $*, $2. Only these are filled in;
-# inside a quoted string ("Releasing $1") an argument could open or close a quote.
-_ARG_WORD = re.compile(r'"\$(?:\{([@*1-9])\}|([@*1-9]))"|\$(?:\{([@*1-9])\}|([@*1-9]))')
-_SHIFT = re.compile(r"shift(?:[ \t]+([0-9]+))?(?=[ \t]*(?:$|[;&|\n]))")
-_STARTS_WORD = set(" \t\n;&|(=")
-_ENDS_WORD = set(" \t\n;&|)")
-MAX_ARGS_TEXT = 4096  # what a wrapper's "$@" may grow into, per use
+def _env_key(env: dict | None) -> tuple:
+    if not env:
+        return ()
+    values = tuple(sorted((k, v.value) for k, v in env.get("vars", {}).items()))
+    return values, tuple(sorted(env.get("funcs", {})))
 
 
-def _with_args(text: str, argv: list[str]) -> str:
-    """A shell script with "$@", "$*", $1..$9 and $# filled in from the arguments it was run
-    with, so a wrapper that forwards them is read as what it runs.
-
-    Only whole words outside quotes are filled in (`npm "$@"`, `cd $1`, `cmd=$1`), never text
-    inside a quoted string, where an argument holding a quote could open a fake `cd` or hide a
-    publish. `shift [N]` drops arguments for what follows. In all, at most 64 KB is added.
-    Left alone with no arguments (inside a function they mean the function's, a best effort)."""
-    if not argv or len(shlex.join(argv)) > MAX_ARGS_TEXT:
-        return text
-    out: list[str] = []
-    quote, added, i = "", 0, 0
-    while i < len(text):
-        char = text[i]
-        if quote:
-            if char == "\\" and quote == '"':
-                out.append(text[i : i + 2])
-                i += 2
-                continue
-            quote = "" if char == quote else quote
-        elif char == "\\":
-            out.append(text[i : i + 2])
-            i += 2
-            continue
-        elif text.startswith("$#", i):
-            out.append(str(len(argv)))
-            i += 2
-            continue
-        elif char in '"$' and (i == 0 or text[i - 1] in _STARTS_WORD):
-            match = _ARG_WORD.match(text, i)
-            if match and (match.end() == len(text) or text[match.end()] in _ENDS_WORD):
-                which = next(group for group in match.groups() if group)
-                if which in "@*":
-                    value = shlex.join(argv)
-                else:
-                    index = int(which) - 1
-                    value = shlex.quote(argv[index]) if index < len(argv) else "''"
-                if added + len(value) <= MAX_FILE_BYTES:
-                    out.append(value)
-                    added += len(value)
-                    i = match.end()
-                    continue
-            quote = '"' if char == '"' else ""
-        elif char == "'" or char == '"':
-            quote = char
-        elif char == "s" and (shift := _SHIFT.match(text, i)) and _at_command_start(text, i):
-            argv = argv[int(shift.group(1) or 1) :]
-        out.append(char)
-        i += 1
-    return "".join(out)
-
-
-def _at_command_start(text: str, at: int) -> bool:
-    """Is `at` where a command starts: the line's start, or after `;`, `&&` or `|`?"""
-    before = text[text.rfind("\n", 0, at) + 1 : at].rstrip(" \t")
-    return before == "" or before[-1] in ";&|"
+def sourced(arg: str, cwd: Path, depth: int, unknown: str = "") -> str | list[c.Risky]:
+    """`source file`: its text (read in the caller's shell), or what to report instead when it
+    can't be read whole."""
+    file = _read(arg, cwd)
+    if file is None:
+        return _lost(arg, cwd, depth, unknown)
+    if file.text is None:
+        return _unread(file, cwd, "sh", True)
+    reading = _reading(cwd)
+    text = _own_folder(file.text, file.path.parent)
+    if reading.peeking or reading.bytes + len(text) > MAX_BYTES:
+        return _flag(_hits(text, cwd), file.name, cwd, _DEEP)
+    if depth >= c.MAX_DEPTH or reading.steps >= MAX_STEPS:
+        return _peek(text, cwd, min(depth, c.MAX_DEPTH))
+    reading.steps += 1
+    reading.bytes += len(text)
+    return text
 
 
 def _lost(arg: str, cwd: Path, depth: int, unknown: str) -> list[c.Risky]:
@@ -832,26 +844,27 @@ def _interpreter(program: str) -> bool:
     return bool(c._PYTHON.match(program)) or program in INTERPRETERS or program == "nodejs"
 
 
-def _interpreted(program: str, args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
-    """`python scripts/release.py`, `node -e '...'`, `python -u -m twine upload`."""
+def interpreter_input(program: str, args: list[str]) -> tuple[str, int | None]:
+    """What `python ...`, `node ...` runs: ("code", i) inline code at args[i], ("module", i) a
+    `python -m` module, ("file", i) a script, ("stdin", i) code from stdin (`python3 -`, no
+    script), or ("none", None)."""
     key = "python" if c._PYTHON.match(program) else "node" if program == "nodejs" else program
     code, values = INTERPRETERS[key]
+    start = 0
     if key == "deno":
         if args[:1] == ["eval"]:
-            return _code_flags(" ".join(args[1:]), "deno eval", cwd, "deno")
+            return ("code", 1) if len(args) > 1 else ("none", None)
         if args[:1] != ["run"]:
-            return []
-        args = args[1:]
-    i = 0
+            return "none", None
+        start = 1
+    i = start
     while i < len(args):
         arg = args[i]
-        flag, eq, inline = arg.partition("=")
+        flag, eq, _ = arg.partition("=")
         if key == "python" and arg == "-m":
-            return c.detect(shlex.join(args[i + 1 :]), cwd, depth + 1)
+            return "module", i + 1
         if flag in code:
-            text = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
-            given = args[i + 1 :] if eq else args[i + 2 :]  # what the code gets as its argv
-            return _code_flags(text, f"{program} {flag}", cwd, program, given)
+            return ("code", i) if eq else ("code", i + 1)  # the word that holds the code
         if arg == "--":
             i += 1
             break
@@ -859,8 +872,37 @@ def _interpreted(program: str, args: list[str], cwd: Path, depth: int) -> list[c
             break
         i += 2 if flag in values and not eq else 1
     if i >= len(args) or args[i] == "-":
-        return []  # a prompt, or code from stdin
-    return _script(args[i], cwd, depth, runner=program)
+        return "stdin", i
+    return "file", i
+
+
+def _interpreted(
+    program: str, args: list[str], cwd: Path, depth: int, stdin: str | None = None
+) -> list[c.Risky]:
+    """`python scripts/release.py`, `node -e '...'`, `python -u -m twine upload`, and code fed
+    on stdin (`python3 - <<EOF`). What the code is given on its command line counts too."""
+    kind, i = interpreter_input(program, args)
+    if kind == "module" and i is not None:
+        return c.detect(shlex.join(args[i:]), cwd, depth + 1)
+    if kind == "code" and i is not None:
+        word = args[i] if i < len(args) else ""
+        if word.startswith("-") and "=" in word:  # --eval=CODE
+            flag, _, text = word.partition("=")
+        else:
+            flag, text = (args[i - 1] if i else ""), word
+        return _code_flags(text, f"{program} {flag}".strip(), cwd, program, args[i + 1 :])
+    if kind == "stdin":
+        if stdin is None:
+            return []  # a prompt, or code from somewhere agentprint can't see
+        rest = args[(i or 0) + 1 :] if i is not None and i < len(args) else []
+        return _code_flags(stdin, _stdin_label(), cwd, program, rest)
+    if kind == "file" and i is not None:
+        return _script(args[i], cwd, depth, runner=program, argv=args[i + 1 :])
+    return []
+
+
+def _stdin_label() -> str:
+    return _NAMING.get() or "here-document"
 
 
 def _find_up(start: Path, wanted: tuple[str, ...]) -> Path | None:
@@ -884,8 +926,9 @@ def _find_up(start: Path, wanted: tuple[str, ...]) -> Path | None:
 # ---- make, just, task -----------------------------------------------------------------------
 
 
-def _make(args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
-    """`make [target ...]`: the targets' recipes and their prerequisites', from the makefile."""
+def _make(args: list[str], cwd: Path, depth: int, stdin: str | None = None) -> list[c.Risky]:
+    """`make [target ...]`: the targets' recipes and their prerequisites', from the makefile
+    (`make -f -` reads it from stdin: a here-document typed on the command line)."""
     dirs: list[str] = []
     files: list[str] = []
     goals: list[str] = []
@@ -928,6 +971,8 @@ def _make(args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
         if not folder or c._UNKNOWABLE.search(folder):
             return []
         cwd = cwd / os.path.expanduser(folder)
+    if "-" in files and stdin is not None:
+        write_virtual("-", cwd, c._Value(stdin))
     if not files:
         try:
             present = set(os.listdir(cwd))

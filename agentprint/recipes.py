@@ -1,8 +1,9 @@
-"""Read the files a command hands its work to: shell scripts, Makefiles, justfiles, Taskfiles.
+"""Read the files a command hands its work to: Makefiles, justfiles, Taskfiles, and which
+program runs a script.
 
 Pure text functions with no file access and nothing run: `commands` reads the files (inside the
 folder the agent's command runs in, 64 KB at most) and sends what these return back through its
-own command reader.
+own command reader. Shell text itself is read by `shell` (a tokenizer), never cut down here.
 """
 
 from __future__ import annotations
@@ -16,14 +17,7 @@ import yaml
 
 # ---- shell scripts --------------------------------------------------------------------------
 
-_HEREDOC = re.compile(r"<<(-?)[ \t]*(?:'([^'\n]*)'|\"([^\"\n]*)\"|\\?([A-Za-z0-9_.@+-]+))")
-_HEREDOC_SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "ssh"}  # their stdin is commands
-_INTERPRETER = re.compile(
-    r"^(?:python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|tsx|ts-node|ruby|perl|php|lua|pwsh"
-    r"|powershell)$"
-)
 _SHEBANG = re.compile(r"#!\s*(\S+)(.*)")
-_SPECIAL = re.compile(r"[#'\"\\<]")  # what _scan has to look at: comments, quotes, heredocs
 _BY_EXTENSION = {
     ".py": "python3",
     ".js": "node",
@@ -61,209 +55,6 @@ def interpreter(text: str, name: str) -> str:
             program = PurePosixPath(words[0]).name if words else program
         return program
     return _BY_EXTENSION.get(PurePosixPath(name).suffix.lower(), "sh")
-
-
-def shell_text(text: str) -> tuple[str, list[str]]:
-    """A shell script's commands, without its comments and here-document bodies.
-
-    Also returns the bodies of here-documents fed to another language (`python3 - <<EOF`):
-    code, but not shell. A body fed to a shell (`bash <<EOF`, `ssh host <<EOF`) stays in the
-    commands; a body fed to anything else (`cat > ci.yml <<EOF`) is data and is dropped."""
-    lines = text.splitlines()
-    kept: list[str] = []
-    other: list[str] = []
-    quote = ""
-    i = 0
-    while i < len(lines):
-        line, quote, heredocs = _scan(lines[i], quote)
-        kept.append(line)
-        i += 1
-        fed_to = _fed_to(line) if heredocs else ""
-        for strip_tabs, word in heredocs:
-            body: list[str] = []
-            while i < len(lines):
-                end = lines[i].lstrip("\t") if strip_tabs else lines[i]
-                i += 1
-                if end == word:
-                    break
-                body.append(lines[i - 1])
-            if fed_to == "shell":
-                inner, more = shell_text("\n".join(body))
-                kept.append(inner)
-                other += more
-            elif fed_to == "other":
-                other.append("\n".join(body))
-    return "\n".join(kept), other
-
-
-def _scan(line: str, quote: str) -> tuple[str, str, list[tuple[bool, str]]]:
-    """One line without its comment; the quote still open after it; here-documents it opens."""
-    if not quote and not _SPECIAL.search(line):
-        return line.rstrip(), "", []  # nothing to take out: most lines
-    out: list[str] = []
-    heredocs: list[tuple[bool, str]] = []
-    arithmetic = 0  # open `((`: a `<<` inside $(( 1 << 2 )) is a shift, not a here-document
-    i = 0
-    while i < len(line):
-        char = line[i]
-        if quote:
-            if char == "\\" and quote == '"':
-                out.append(line[i : i + 2])
-                i += 2
-                continue
-            if char == quote:
-                quote = ""
-        elif char == "\\":
-            out.append(line[i : i + 2])
-            i += 2
-            continue
-        elif line.startswith("$'", i):  # an ANSI-C string: \\' inside it doesn't end it
-            end = i + 2
-            while end < len(line) and line[end] != "'":
-                end += 2 if line[end] == "\\" else 1
-            out.append(line[i : end + 1])
-            i = end + 1
-            continue
-        elif char in "'\"":
-            quote = char
-        elif char == "#" and (i == 0 or line[i - 1] in " \t;&|()"):
-            break
-        elif line.startswith("((", i) or line.startswith("))", i):
-            arithmetic += 1 if char == "(" else -1
-            out.append(line[i : i + 2])
-            i += 2
-            continue
-        elif line.startswith("<<<", i):  # a here-string: its word is on this line
-            out.append("<<<")
-            i += 3
-            continue
-        elif line.startswith("<<", i) and arithmetic <= 0:
-            match = _HEREDOC.match(line, i)
-            if match:
-                word = next(g for g in match.groups()[1:] if g is not None)
-                heredocs.append((match.group(1) == "-", word))
-                out.append(match.group(0))
-                i = match.end()
-                continue
-        out.append(char)
-        i += 1
-    return "".join(out).rstrip(), quote, heredocs
-
-
-def _fed_to(line: str) -> str:
-    names = {PurePosixPath(w).name for w in re.findall(r"[^\s;&|()<>]+", line)}
-    if names & _HEREDOC_SHELLS:
-        return "shell"
-    if any(_INTERPRETER.match(name) for name in names):
-        return "other"
-    return "data"
-
-
-_FUNCTION = re.compile(
-    r"(?m)^[ \t]*(?:function[ \t]+([A-Za-z_][\w.:-]*)(?:[ \t]*\(\s*\))?"
-    r"|([A-Za-z_][\w.:-]*)[ \t]*\(\s*\))\s*\{"
-)
-MAX_FUNCTIONS = 200
-
-
-def called_only(text: str) -> str:
-    """Shell text without the functions it defines but never calls: a function's body runs only
-    when it is called, so `source lib.sh` reads only the lib's top-level lines. A function
-    called anywhere outside its own body is kept where it is, and so are the ones it calls."""
-    if _DYNAMIC_CALL.search(text):
-        return text  # `$TASK`, "$cmd", for s in ...; do $s: any function may run
-    spans: dict[str, tuple[int, int]] = {}
-    end = 0
-    for match in _FUNCTION.finditer(text):
-        if match.start() < end or len(spans) >= MAX_FUNCTIONS:
-            continue  # nested in the one before
-        close = _function_end(text, match)
-        if close < 0:
-            return text  # a body agentprint can't delimit: keep every function
-        spans[match.group(1) or match.group(2)] = (match.start(), close + 1)
-        end = close + 1
-    if not spans:
-        return text
-    outside = "\n".join(text[a:b] for a, b in _gaps(sorted(spans.values()), len(text)))
-    called: set[str] = set()
-    todo = [name for name in spans if _calls(outside, name)]
-    while todo:
-        name = todo.pop()
-        if name in called:
-            continue
-        called.add(name)
-        start, stop = spans[name]
-        body = text[start:stop]
-        todo += [other for other in spans if other not in called and _calls(body, other)]
-    out, at = [], 0
-    for name, (start, stop) in sorted(spans.items(), key=lambda item: item[1]):
-        if name not in called:
-            out += [text[at:start], "\n" * text.count("\n", start, stop)]
-            at = stop
-    return "".join([*out, text[at:]])
-
-
-# A command whose name is a variable: `$TASK`, `"$cmd" "$@"`, `"${@:-release}"`, `do $step`.
-_DYNAMIC_CALL = re.compile(
-    r"(?m)(?:^|[;&|({]|\b(?:do|then|else|elif|if|while|until|time|exec|eval|command)[ \t])"
-    r"[ \t]*\"?\$\{?[A-Za-z_@*0-9]"
-)
-
-
-def _function_end(text: str, header: re.Match[str]) -> int:
-    """Where the body that `header` opens ends: on the header's own line (`f() { ...; }`), or
-    at the first later line that is a `}` indented no deeper than the header. -1 if neither.
-    Not by counting braces: a `[{]` in a regex or a `${x}` would throw that off."""
-    brace = header.end() - 1
-    line_end = text.find("\n", brace)
-    line_end = len(text) if line_end < 0 else line_end
-    close = _matching_brace(text[:line_end], brace)
-    if close >= 0:
-        return close
-    line_start = text.rfind("\n", 0, header.start()) + 1
-    indent = len(text[line_start : header.start()]) + (
-        len(text[header.start() :]) - len(text[header.start() :].lstrip(" \t"))
-    )
-    closing = re.compile(rf"(?m)^[ \t]{{0,{indent}}}\}}[ \t]*(?:[;&|#].*)?$")
-    found = closing.search(text, line_end)
-    return found.start() + found.group(0).index("}") if found else -1
-
-
-def _calls(text: str, name: str) -> bool:
-    return re.search(rf"(?<![\w.:$/-]){re.escape(name)}(?![\w.:/=(-])", text) is not None
-
-
-def _gaps(spans: list[tuple[int, int]], size: int) -> list[tuple[int, int]]:
-    gaps, at = [], 0
-    for start, stop in spans:
-        gaps.append((at, start))
-        at = stop
-    return [*gaps, (at, size)]
-
-
-def _matching_brace(text: str, start: int) -> int:
-    """The `}` that closes the `{` at `start`, outside quotes; -1 when there is none."""
-    level, quote, i = 0, "", start
-    while i < len(text):
-        char = text[i]
-        if quote:
-            if char == "\\" and quote == '"':
-                i += 2
-                continue
-            quote = "" if char == quote else quote
-        elif char == "\\":
-            i += 2
-            continue
-        elif char in "'\"":
-            quote = char
-        elif char == "{":
-            level += 1
-        elif char == "}":
-            level -= 1
-            if level == 0:
-                return i
-        i += 1
-    return -1
 
 
 # ---- Makefiles ------------------------------------------------------------------------------

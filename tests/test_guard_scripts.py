@@ -603,7 +603,7 @@ RELEASE_FN = f"release() {{\n  {P1}\n}}\n"
 )
 def test_a_function_called_through_a_variable_is_read(leaky, dispatch):
     _repo(leaky, {"tasks.sh": "#!/bin/bash\n" + RELEASE_FN + dispatch})
-    assert evaluate("./tasks.sh", leaky).block
+    assert evaluate("./tasks.sh release", leaky).block  # (with no argument, "$cmd" runs nothing)
 
 
 def test_a_brace_in_a_regex_does_not_hide_what_follows_a_function(leaky):
