@@ -878,3 +878,21 @@ def test_a_dry_run_found_by_a_scan_is_not_could_not_check(tmp_path):
     assert labelled("./s1.sh", tmp_path) == [(P, "npm", deep("npm publish"), "s6.sh")]
     write(tmp_path, "check.py", "subprocess.run(['npm', 'publish', '--dry-run'])\n")
     assert detect("python check.py", tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("command", "files"),
+    [
+        ("node release.js", {"release.js": "const dry = process.argv.includes('-n');\n"
+                             "execSync(`npm publish ${dry ? '--dry-run' : ''}`);\n"}),
+        ("python release.py", {"release.py": "import subprocess, sys\nsubprocess.run(['npm', "
+                               "'publish'] + (['--dry-run'] if '-n' in sys.argv else []))\n"}),
+        ("./s1.sh", {**{f"s{i}.sh": f"./s{i + 1}.sh\n" for i in range(1, 6)},
+                     "s6.sh": "npm publish ${DRY_RUN:+--dry-run}\n"}),
+    ],
+    ids=["node-ternary", "python-conditional", "shell-parameter"],
+)  # fmt: skip
+def test_a_conditional_dry_run_does_not_silence_a_publish(tmp_path, command, files):
+    for rel, text in files.items():
+        write(tmp_path, rel, text, 0o755)
+    assert tools(command, tmp_path) == [(P, "npm")]

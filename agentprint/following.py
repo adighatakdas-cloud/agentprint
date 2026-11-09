@@ -266,16 +266,22 @@ _DRY_RUN = re.compile(r"(?<![\w-])(?:--dry-run|--preview)(?![\w-])")
 _GIT_PUSH_N = re.compile(r"(?<![\w.-])git(?![\w-]).*(?<![\w-])push(?![\w-]).*(?<![\w-])-n(?![\w-])")
 
 
+# A dry-run flag that depends on something: ${DRY:+--dry-run}, `dry ? '--dry-run' : ''`,
+# `+ (['--dry-run'] if '-n' in sys.argv else [])`. Such a command may well publish.
+_CONDITIONAL = re.compile(r"\$\{|\?|\bif\b|\bunless\b|argv|environ|getenv|process\.env|ENV\[")
+
+
 def _without_dry_runs(text: str) -> str:
     """Scanned text without the commands that are dry runs (`npm publish --dry-run`, `git push
-    -n`): those upload nothing, so naming one is not a reason to say "could not check"."""
-    parts = _PARTS.split(text)
-    return "".join(
-        " "
-        if not _PARTS.fullmatch(part) and (_DRY_RUN.search(part) or _GIT_PUSH_N.search(part))
-        else part
-        for part in parts
-    )
+    -n`): those upload nothing, so naming one is not a reason to say "could not check". Only a
+    literal, unconditional dry run counts; one that depends on a variable or a test does not."""
+
+    def dry(part: str) -> bool:
+        if _PARTS.fullmatch(part) or _CONDITIONAL.search(part):
+            return False
+        return bool(_DRY_RUN.search(part) or _GIT_PUSH_N.search(part))
+
+    return "".join(" " if dry(part) else part for part in _PARTS.split(text))
 
 
 def _named(text: str) -> list[Hit]:
