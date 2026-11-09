@@ -21,23 +21,7 @@ them, but in `pack --format json` and `--format sarif` a `high` finding can sit 
 - **Done when:** the JSON and SARIF output of `pack` are sorted like `scan`, with a test (the
   output snapshots in `tests/data/snapshots/` change on purpose).
 
-## 2. Understand heredocs when spotting a publish
-
-`commands.py` reads the command an agent is about to run, but not the body of a heredoc, so
-this publish is not checked:
-
-```bash
-bash <<'EOF'
-cd packages/core && npm publish
-EOF
-```
-
-- **Where:** `agentprint/commands.py` (its docstring lists what it follows today).
-- **Done when:** a heredoc fed to `bash`, `sh` or `zsh` is read like `bash -c`, and tests cover
-  quoted and unquoted delimiters and `<<-`. Anything it can't read stays "could not check",
-  never "OK".
-
-## 3. Hooks on Windows
+## 2. Hooks on Windows
 
 The hook launcher is a POSIX shell script (`~/.agentprint/bin/agentprint-hook`), so on Windows
 `install` adds only the MCP server and the instructions note (enforced in `install.py` through
@@ -50,7 +34,7 @@ The hook launcher is a POSIX shell script (`~/.agentprint/bin/agentprint-hook`),
   agent whose Windows hook format is documented (Claude Code or Codex), and keep the POSIX path
   unchanged.
 
-## 4. Qwen Code integration
+## 3. Qwen Code integration
 
 A sweep already reads Qwen Code in full (`agentprint/agents/qwen_code.py`). Its docs describe
 Claude-style hooks, so `install` can arm it the way it arms Claude Code.
@@ -59,7 +43,7 @@ Claude-style hooks, so `install` can arm it the way it arms Claude Code.
 - **Done when:** `agentprint/integrations/qwen_code.py` exists with tests, and
   `site/src/content/docs/agents.md` is updated (then run `uv run python -m tools.gen_docs`).
 
-## 5. Goose integration
+## 4. Goose integration
 
 A sweep already reads Goose in full (`agentprint/agents/goose.py`). Per its docs it supports a
 blocking pre-tool hook (exit 2) in plugin folders, MCP servers as `extensions:` in
@@ -70,7 +54,7 @@ blocking pre-tool hook (exit 2) in plugin folders, MCP servers as `extensions:` 
 - **Done when:** `agentprint/integrations/goose.py` exists with tests; mark it "docs-verified" in
   `site/src/content/docs/agents.md`.
 
-## 6. Kilo Code: reuse the OpenCode plugin
+## 5. Kilo Code: reuse the OpenCode plugin
 
 Kilo Code is built on OpenCode's core, and its plugin API (`tool.execute.before`, throw to
 block) matches the plugin agentprint already installs for OpenCode.
@@ -81,7 +65,7 @@ block) matches the plugin agentprint already installs for OpenCode.
 - **Done when:** `install --agent kilo` works with tests, sharing code with OpenCode rather
   than copying it.
 
-## 7. Scan Devin Desktop's new folders
+## 6. Scan Devin Desktop's new folders
 
 `install` already supports Devin Desktop and the Devin CLI, but `scan` reads only the older
 Windsurf paths. Devin's own files live in `.devin/` (projects) and `~/.config/devin/` (home).
@@ -91,7 +75,7 @@ Windsurf paths. Devin's own files live in `.devin/` (projects) and `~/.config/de
   personal files are covered by AP007/AP008, and package rules cover `.devin/` files that must
   not ship.
 
-## 8. Cline integration
+## 7. Cline integration
 
 A sweep already reads Cline in full (`agentprint/agents/cline.py`), including its plain-text
 `secrets.json` (permission check only). Cline runs hook files named after the event:

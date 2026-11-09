@@ -83,10 +83,14 @@ integrations' own edits, so a plugin hook is the entry `install` writes with a p
 tells `status` where each agent keeps installed plugins.
 
 **`commands.py` and `guard.py` (is this a publish?).** `commands.py` reads the shell command an
-agent is about to run and spots publishes and pushes. It is a careful reader, not a shell: it
-follows `cd`, `&&`, `bash -c`, `npm run release` (by reading `package.json`), workspaces and
-release tools. `guard.py` then works out what would be uploaded and checks it. Everything that
-isn't a publish or a push passes straight through without any check.
+agent is about to run and spots publishes and pushes. It is a careful reader, not a shell: a real
+tokenizer (`shell.py`) reads quotes, `$'...'`, here-documents and substitutions the way bash
+does, and the reader follows `cd`, `&&`, `bash -c`, `eval`, functions, variables, `npm run
+release` (by reading `package.json`), workspaces and release tools, and the files a command
+runs (`following.py`, `recipes.py`). The reader can only add risk: at the end a backstop looks
+over every text it read, as written, and any publish or push the reader did not account for is
+"could not check". `guard.py` then works out what would be uploaded and checks it. Everything
+that isn't a publish or a push passes straight through without any check.
 
 **`mcp_server.py`.** An MCP server (official MCP Python SDK) with four tools:
 `check_package`, `check_push`, `scan_secrets`, `explain_finding`. Same checks, agent format.
