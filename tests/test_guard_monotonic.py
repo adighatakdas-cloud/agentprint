@@ -602,3 +602,32 @@ def test_a_script_run_again_with_other_inherited_text_is_read_again(leaky):
     command = 'export CMD="$(git config x) test"; ./run.sh; '
     command += 'export CMD="$(git config x) publish"; ./run.sh'
     assert _blocks(command, leaky, {"run.sh": "#!/bin/sh\n$CMD\n"})
+
+
+# ---- reader round 4: an argument known only at run time stays unknown ------------------------
+
+TOOL = (
+    "#!/bin/bash\ncmd_build() { echo b; }\ncmd_release() { npm publish demo-1.0.0.tgz; }\n"
+    '"cmd_$1" "$@"\n'
+)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "for t in build release; do ./tool.sh $t; done",
+        'MODE=release; [ -n "$DRY" ] && MODE=build; ./tool.sh "$MODE"',
+        './tool.sh "$X"',
+        "bash tool.sh $(git config x)",
+        'f() { "cmd_$1"; }; cmd_release() { npm publish demo-1.0.0.tgz; }; f "$X"',
+        'cmd_release() { npm publish demo-1.0.0.tgz; }; "cmd_$1" "$@"',  # the agent's own "$1"
+    ],
+)
+def test_an_argument_known_only_at_run_time_stays_unknown_inside(leaky, command):
+    assert _blocks(command, leaky, {"tool.sh": TOOL})
+
+
+def test_a_known_argument_still_picks_one_function(leaky):
+    _files(leaky, {"tool.sh": TOOL})
+    assert evaluate("./tool.sh build", leaky) is None
+    assert evaluate("./tool.sh release", leaky).block

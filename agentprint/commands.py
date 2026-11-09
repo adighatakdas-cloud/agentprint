@@ -406,6 +406,17 @@ class _Arg:
     known: bool = True
 
 
+class Unknown(str):
+    """An argument only known at run time (`./tool.sh $t`), as written: inside the script or
+    function it is given to, "$1" stays unknown instead of becoming the text `$t`."""
+
+    __slots__ = ()
+
+
+def _texts(args: list[_Arg]) -> list[str]:
+    return [a.text if a.known else Unknown(a.text) for a in args]
+
+
 # ---- entry points ---------------------------------------------------------------------------
 
 
@@ -414,8 +425,8 @@ def detect(command: str, cwd: Path, _depth: int = 0) -> list[Risky]:
     if following._READING.get() is None:  # the agent's own command line: files stay in cwd
         reading = following._Reading(following._real(cwd), command)
         token = following._READING.set(reading)
-        try:
-            found, _ = _read(command, _Where(cwd), _depth)
+        try:  # the agent's shell: its "$1", "$@" are only known when the command runs
+            found, _ = _read(command, _Where(cwd, args=None), _depth)
             found += _reach_dynamic(reading)
             found += _overflow(reading)
             found += _backstops(reading)
@@ -701,8 +712,8 @@ def _call(func: _Func, args: list[str] | None, where: _Where, ctx: _Ctx) -> _Whe
     reading = following._READING.get()
     if reading is None:
         return where
-    key = (id(func), None if args is None else tuple(args), id(where), ctx.depth, ctx.label,
-           reading.writes, reading.peeking)  # fmt: skip
+    given = None if args is None else tuple((a, isinstance(a, Unknown)) for a in args)
+    key = (id(func), given, id(where), ctx.depth, ctx.label, reading.writes, reading.peeking)
     hit = reading.calls.get(key)
     if hit is not None and hit[0] is where:  # `where` is kept in the value: its id stays its own
         ctx.found += hit[2]
@@ -1124,14 +1135,17 @@ def _param(text: str, where: _Where) -> tuple[str | list[str], tuple] | None:
     if name in {"@", "*", "#"} or name.isdigit():
         if where.args is None:
             return None
-        if name in {"@", "*"}:
-            return list(where.args), ()
         if name == "#":
             return str(len(where.args)), ()
+        if name in {"@", "*"}:
+            if any(isinstance(arg, Unknown) for arg in where.args):
+                return None
+            return list(where.args), ()
         n = int(name)
         if n == 0:
             return None
-        return (where.args[n - 1] if n <= len(where.args) else ""), ()
+        value = where.args[n - 1] if n <= len(where.args) else ""
+        return None if isinstance(value, Unknown) else (value, ())
     var = where.vars.get(name)
     if var is None or var.value is None:
         return None
@@ -1175,7 +1189,8 @@ def _expand(word: Word, where: _Where, subs: dict, split: bool = True) -> list[_
         and where.args is not None
         and _budget(_size(where.args))
     ):
-        return [_Arg(arg, word) for arg in where.args]  # "$@": each argument one word
+        # "$@": each argument one word, known or not
+        return [_Arg(arg, word, known=not isinstance(arg, Unknown)) for arg in where.args]
     for part in word.parts:
         quoted = quoted or part.quoted
         if part.kind == "lit":
@@ -1279,15 +1294,14 @@ def _segment(
     run = _chdir(where, chdir) if chdir is not None else where
     if (default := _DEFAULTED.fullmatch(args[0].text)) is not None:
         args = [replace(args[0], text=default.group(1), known=True), *args[1:]]
-    words = [a.text for a in args]
+    words = _texts(args)
     first = args[0]
     program, rest = _base(words[0]), words[1:]
     cwd = run.cwd
     before = len(found)
     after, out = where, _UNKNOWN
     if first.known and words[0] in where.funcs and "/" not in words[0]:
-        after = _call(where.funcs[words[0]], rest if all(a.known for a in args[1:]) else None,
-                      run, ctx)  # fmt: skip
+        after = _call(where.funcs[words[0]], rest, run, ctx)
     elif program in {"cd", "pushd"} and chdir is None:
         after, out = _chdir(where, _cd_target(rest)), _NOTHING
     elif program == "popd":
@@ -1600,7 +1614,7 @@ def _source(args: list[_Arg], where: _Where, ctx: _Ctx, stdin: _Value | None) ->
     name = args[0].text
     saved = where.args
     if len(args) > 1:
-        where = replace(where, args=tuple(a.text for a in args[1:]))
+        where = replace(where, args=tuple(_texts(args[1:])))
     if name in {"/dev/stdin", "-", "/dev/fd/0"}:
         if stdin is None or stdin.text is None:
             return replace(where, args=saved)
@@ -1619,7 +1633,7 @@ def _source(args: list[_Arg], where: _Where, ctx: _Ctx, stdin: _Value | None) ->
 
 
 def _shell(program: str, args: list[_Arg], where: _Where, ctx: _Ctx, stdin: _Value | None) -> None:
-    words = [a.text for a in args]
+    words = _texts(args)
     index = _shell_script(words)
     if index is not None:  # bash -c 'script' [name args...]
         if index >= len(args):
@@ -1654,7 +1668,7 @@ def _shell(program: str, args: list[_Arg], where: _Where, ctx: _Ctx, stdin: _Val
 def _interpret(
     program: str, args: list[_Arg], where: _Where, ctx: _Ctx, stdin: _Value | None
 ) -> None:
-    words = [a.text for a in args]
+    words = _texts(args)
     kind, index = following.interpreter_input(program, words)
     if kind == "code" and index is not None and index < len(args):
         code = args[index]
