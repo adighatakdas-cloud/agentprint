@@ -81,7 +81,7 @@ For a team, a [project config and baseline](https://adighatakdas-cloud.github.io
 | [AP007](https://adighatakdas-cloud.github.io/agentprint/checks/ap007/) | A personal agent file, such as CLAUDE.local.md, is in a git repo but not gitignored, or is already committed. | low |
 | [AP008](https://adighatakdas-cloud.github.io/agentprint/checks/ap008/) | Agent history, settings or a key store can be read by other users on this machine (macOS, Linux and Windows). | medium; high for key stores |
 | [AP009](https://adighatakdas-cloud.github.io/agentprint/checks/ap009/) | Source maps, original source or AI instruction files in your package hand an AI your code. | high to low by licence; no licence, UNLICENSED, SEE LICENSE IN, proprietary or only LicenseRef- choices count as closed; low for a private registry |
-| [AP010](https://adighatakdas-cloud.github.io/agentprint/checks/ap010/) | A skill, rule, plugin or hook an agent loads has hidden characters, sends a credential out, pipes a download to a shell or hides a command. | high; critical for a credential sent out, medium for a piped download |
+| [AP010](https://adighatakdas-cloud.github.io/agentprint/checks/ap010/) | A skill, rule, plugin or hook an agent loads has hidden characters, sends a credential out, pipes a download to a shell or hides a command. | high; critical for a credential sent out, medium for a piped download (low in install docs), low for a stray character or an unfinished read |
 | [AP011](https://adighatakdas-cloud.github.io/agentprint/checks/ap011/) | An MCP server runs a package or image with no fixed version (npx, uvx, pipx run, docker run): each start gets whatever was published last. | medium |
 <!-- checks:end -->
 

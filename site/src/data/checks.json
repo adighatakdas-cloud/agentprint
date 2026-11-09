@@ -65,7 +65,7 @@
   {
     "id": "AP010",
     "title": "Risky agent extension",
-    "severity": "high; critical for a credential sent out, medium for a piped download",
+    "severity": "high; critical for a credential sent out, medium for a piped download (low in install docs), low for a stray character or an unfinished read",
     "summary": "A skill, rule, plugin or hook an agent loads has hidden characters, sends a credential out, pipes a download to a shell or hides a command.",
     "slug": "ap010"
   },

@@ -878,12 +878,15 @@ def _base64_tokens(
             yield start, end + pad
 
 
-def base64_texts(text: str, budget: Budget) -> Iterator[tuple[int, int, str]]:
-    """(start, end, decoded) for each base64 token of `text` that decodes to text, within the
-    limits of the hidden-key search: MAX_RUNS tokens looked at, budget.blobs of them decoded,
-    each to at most MAX_BLOB_CHARS characters of base64 (AP010 reads the same blobs)."""
+def base64_texts(
+    text: str, budget: Budget, shortest: int = _MIN_BASE64, longest: int | None = None
+) -> Iterator[tuple[int, int, str]]:
+    """(start, end, decoded) for each base64 token of `text` (`shortest` characters or more,
+    fewer than `longest`) that decodes to text, within the limits of the hidden-key search:
+    MAX_RUNS tokens looked at, budget.blobs of them decoded, each to at most MAX_BLOB_CHARS
+    characters of base64 (AP010 reads the same blobs)."""
     mask = text.encode("ascii", "replace").translate(_BASE64_MASK)
-    for start, end in _base64_tokens(text, mask):
+    for start, end in _base64_tokens(text, mask, shortest, longest):
         if budget.blobs <= 0:
             return
         head = text[start : min(end, start + MAX_BLOB_CHARS + 2)]
