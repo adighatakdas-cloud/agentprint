@@ -268,8 +268,13 @@ def _hook_folder(repo: Repo, shared: bool = False) -> tuple[Path | None, str]:
 
 
 # A pre-push hook that a hook manager wrote, or that finds out which hook it is from its own file
-# name ($0, as husky 4 and overcommit do), breaks when renamed: it is never chained.
-_DISPATCH = re.compile(rb"\$\{?0(?![0-9])")
+# name, breaks when renamed: it is never chained. Its own name: $0 / ${0} (sh, husky 4,
+# overcommit), ${BASH_SOURCE[0]} (bash), sys.argv[0] or __file__ (Python), __filename or
+# process.argv[1] (Node, as ghooks does), $PROGRAM_NAME (Ruby).
+_DISPATCH = re.compile(
+    rb"\$\{?0(?![0-9])|BASH_SOURCE|sys\.argv\[0\]|__file__|__filename|process\.argv\[1\]"
+    rb"|\$PROGRAM_NAME"
+)
 _MANAGERS = ("husky", "lefthook", "pre-commit", "overcommit")
 
 
