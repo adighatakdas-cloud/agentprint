@@ -549,3 +549,38 @@ def test_an_ansi_c_string_does_not_hide_a_cd(tmp_path, command, files):
     )
     _repo(tmp_path, files)
     assert evaluate(command, tmp_path).block
+
+
+# ---- a wrapper's arguments: whole words only, bounded, shift ---------------------------------
+
+
+@pytest.mark.parametrize(
+    ("command", "script"),
+    [
+        ("./r.sh 'a\"b'", f'#!/bin/sh\necho "Releasing $@"\n{P1}\n# don\'t\n'),
+        ("./r.sh 'a\"b'", f'#!/bin/sh\necho "Releasing $1"\n{P1}\n# don\'t\n'),
+        ("./r.sh '\"; cd decoy; echo \"'", f'#!/bin/sh\necho "Releasing $1"\n{P1}\n'),
+    ],
+    ids=["quote-in-all-args", "quote-in-first-arg", "fake-cd"],
+)
+def test_an_argument_inside_a_quoted_string_is_not_filled_in(leaky, command, script):
+    (leaky / "decoy").mkdir()
+    _tgz(leaky / "decoy" / "demo-1.0.0.tgz", CLEAN)
+    _repo(leaky, {"r.sh": script})
+    assert evaluate(command, leaky).block
+
+
+def test_shift_drops_the_arguments_a_wrapper_forwards(tmp_path):
+    _repo(tmp_path, {"w.sh": '#!/bin/sh\nshift\nnpm "$@"\n'})
+    assert evaluate("./w.sh publish test", tmp_path) is None  # runs `npm test`
+    assert evaluate("./w.sh x publish", tmp_path).warning  # runs `npm publish`: checked
+
+
+def test_filling_in_arguments_is_bounded(leaky):
+    from tests import timing
+
+    body = "#!/bin/sh\n" + "echo $@\n" * 6000 + P1 + "\n"
+    _repo(leaky, {"big.sh": body})
+    command = "./big.sh " + "a" * 4000
+    assert timing.best_of(lambda: evaluate(command, leaky), times=1) < timing.bound(2.0)
+    assert evaluate(command, leaky).warning or evaluate(command, leaky).block

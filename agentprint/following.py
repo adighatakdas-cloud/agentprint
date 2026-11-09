@@ -424,32 +424,71 @@ def _script(
     return list(reading.results[key])
 
 
-_POSITIONAL = re.compile(
-    r'"\$[@*]"|"\$\{[@*]\}"|\$\{[@*]\}|\$[@*]|"\$\{?([1-9])\}?"|\$\{?([1-9])\}?|\$#'
-)
+# A positional parameter that is a whole word: "$@", "${1}", $*, $2. Only these are filled in;
+# inside a quoted string ("Releasing $1") an argument could open or close a quote.
+_ARG_WORD = re.compile(r'"\$(?:\{([@*1-9])\}|([@*1-9]))"|\$(?:\{([@*1-9])\}|([@*1-9]))')
+_SHIFT = re.compile(r"shift(?:[ \t]+([0-9]+))?(?=[ \t]*(?:$|[;&|\n]))")
+_STARTS_WORD = set(" \t\n;&|(=")
+_ENDS_WORD = set(" \t\n;&|)")
 MAX_ARGS_TEXT = 4096  # what a wrapper's "$@" may grow into, per use
 
 
 def _with_args(text: str, argv: list[str]) -> str:
     """A shell script with "$@", "$*", $1..$9 and $# filled in from the arguments it was run
-    with, so a wrapper that forwards them is read as what it runs. Left alone with no
-    arguments (and inside a function they'd mean something else, so this is a best effort)."""
-    if not argv:
-        return text
-    everything = shlex.join(argv)
-    if len(everything) > MAX_ARGS_TEXT:
-        return text
+    with, so a wrapper that forwards them is read as what it runs.
 
-    def fill(match: re.Match[str]) -> str:
-        if match.group(0) == "$#":
-            return str(len(argv))
-        number = match.group(1) or match.group(2)
-        if number is None:
-            return everything
-        index = int(number) - 1
-        return shlex.quote(argv[index]) if index < len(argv) else "''"
+    Only whole words outside quotes are filled in (`npm "$@"`, `cd $1`, `cmd=$1`), never text
+    inside a quoted string, where an argument holding a quote could open a fake `cd` or hide a
+    publish. `shift [N]` drops arguments for what follows. In all, at most 64 KB is added.
+    Left alone with no arguments (inside a function they mean the function's, a best effort)."""
+    if not argv or len(shlex.join(argv)) > MAX_ARGS_TEXT:
+        return text
+    out: list[str] = []
+    quote, added, i = "", 0, 0
+    while i < len(text):
+        char = text[i]
+        if quote:
+            if char == "\\" and quote == '"':
+                out.append(text[i : i + 2])
+                i += 2
+                continue
+            quote = "" if char == quote else quote
+        elif char == "\\":
+            out.append(text[i : i + 2])
+            i += 2
+            continue
+        elif text.startswith("$#", i):
+            out.append(str(len(argv)))
+            i += 2
+            continue
+        elif char in '"$' and (i == 0 or text[i - 1] in _STARTS_WORD):
+            match = _ARG_WORD.match(text, i)
+            if match and (match.end() == len(text) or text[match.end()] in _ENDS_WORD):
+                which = next(group for group in match.groups() if group)
+                if which in "@*":
+                    value = shlex.join(argv)
+                else:
+                    index = int(which) - 1
+                    value = shlex.quote(argv[index]) if index < len(argv) else "''"
+                if added + len(value) <= MAX_FILE_BYTES:
+                    out.append(value)
+                    added += len(value)
+                    i = match.end()
+                    continue
+            quote = '"' if char == '"' else ""
+        elif char == "'" or char == '"':
+            quote = char
+        elif char == "s" and (shift := _SHIFT.match(text, i)) and _at_command_start(text, i):
+            argv = argv[int(shift.group(1) or 1) :]
+        out.append(char)
+        i += 1
+    return "".join(out)
 
-    return _POSITIONAL.sub(fill, text)
+
+def _at_command_start(text: str, at: int) -> bool:
+    """Is `at` where a command starts: the line's start, or after `;`, `&&` or `|`?"""
+    before = text[text.rfind("\n", 0, at) + 1 : at].rstrip(" \t")
+    return before == "" or before[-1] in ";&|"
 
 
 def _lost(arg: str, cwd: Path, depth: int, unknown: str) -> list[c.Risky]:
