@@ -69,9 +69,12 @@ PUSH_CHECK_SINCE = (0, 1, 1)  # the first agentprint with `push-check`
 OK = "agentprint: OK"
 
 
-def npm_command() -> str:
-    """The prepublishOnly command protect adds, pinned to this release."""
-    return f"npx --yes {NPM_WRAPPER}@{__version__} pack --fail-on high"
+def npm_command(strict: bool = False) -> str:
+    """The prepublishOnly command protect adds, pinned to this release. package.json is shared
+    (teammates, CI), so by default a machine where agentprint can't run (no uv or pipx) lets the
+    publish go with one line; strict keeps it closed."""
+    allow = "" if strict else " --if-unavailable allow"
+    return f"npx --yes {NPM_WRAPPER}@{__version__} pack --fail-on high{allow}"
 
 
 def _ours_in_script(script: str) -> bool:
@@ -138,6 +141,21 @@ exit 0
 def manual_line(strict: bool) -> str:
     """The command to add to a hook manager's pre-push hook by hand (portable: no local paths)."""
     return f"uvx agentprint=={__version__} push-check" + (" --strict" if strict else "")
+
+
+def guarded_snippet(strict: bool) -> list[str]:
+    """sh lines that run `manual_line` the way protect's own hook does: a BLOCK stops the push;
+    if agentprint can't run (no uv on a teammate's machine), one line and the push goes on,
+    unless strict. Safe under `sh -e` (husky): no command here fails unless it should."""
+    if strict:
+        last = 'echo "agentprint: the push check could not run (exit $s); push blocked" >&2; exit 1'
+    else:
+        last = 'echo "agentprint: the push check could not run (exit $s); push allowed" >&2'
+    return [
+        f"s=0; out=$({manual_line(strict)}) || s=$?",
+        f'case "$s:$out" in 0:|"0:{OK}") ;; *) printf \'%s\\n\' "$out" >&2 ;; esac',
+        f'case "$s:$out" in 0:*) ;; "1:agentprint: BLOCK"*) exit 1 ;; *) {last} ;; esac',
+    ]
 
 
 @dataclass(frozen=True)
@@ -214,9 +232,18 @@ def _run_by(hook: bytes) -> str | None:
     return "$0" if _DISPATCH.search(hook) else None
 
 
+SHARED = "  That file is usually committed, so this check then runs for every teammate and in CI."
+
+
 def _by_hand(repo: Repo, manager: str | None, strict: bool) -> list[str]:
-    """Where and what to add by hand for `manager`, indented under the explanation."""
-    line = manual_line(strict)
+    """Where and what to add by hand for `manager`, indented under the explanation. Hook
+    manager files are shared, so what they run fails open (one line) unless strict."""
+    snippet = guarded_snippet(strict)
+    unavailable = (
+        "  Where agentprint can't run (no uv), the push is blocked (strict)."
+        if strict
+        else "  Where agentprint can't run (no uv), the push goes on with one line."
+    )
     lefthook = [n for n in ("lefthook.yml", ".lefthook.yml") if (repo.root / n).is_file()]
     if manager == "lefthook" or (manager is None and lefthook):
         name = lefthook[0] if lefthook else "lefthook.yml"
@@ -226,30 +253,42 @@ def _by_hand(repo: Repo, manager: str | None, strict: bool) -> list[str]:
             "      commands:",
             "        agentprint:",
             "          use_stdin: true",
-            f"          run: {line}",
+            "          run: |",
+            *(f"            {line}" for line in snippet),
+            SHARED,
+            unavailable,
         ]
     if manager == "pre-commit":
+        strict_args = '\n          args: ["--strict"]' if strict else ""
         return [
             "  To check every push, add this under `repos:` in .pre-commit-config.yaml, then run "
-            "`pre-commit install --hook-type pre-push`:",
+            "`pre-commit install --hook-type pre-push` (pre-commit installs agentprint itself):",
             "    - repo: local",
             "      hooks:",
             "        - id: agentprint-push-check",
             "          name: agentprint push-check",
-            f"          entry: {line}",
-            "          language: system",
+            "          entry: agentprint push-check",
+            "          language: python",
+            f'          additional_dependencies: ["agentprint=={__version__}"]',
             "          stages: [pre-push]",
             "          pass_filenames: false",
-            "          always_run: true",
+            "          always_run: true" + strict_args,
+            SHARED,
         ]
     if manager == "husky":
         husky = _short(str(repo.root / ".husky" / HOOK))
         return [
-            f"  To check every push, add this line to {husky} (husky 4: to the pre-push command "
-            "in package.json's husky.hooks):",
-            f"    {line}",
+            f"  To check every push, add these lines to {husky} (husky 4: put them in a script "
+            "and run it from the pre-push command in package.json's husky.hooks):",
+            *(f"    {line}" for line in snippet),
+            SHARED,
+            unavailable,
         ]
-    return [f"  To check every push, add this line to that {HOOK} hook:", f"    {line}"]
+    return [
+        f"  To check every push, add these lines to that {HOOK} hook:",
+        *(f"    {line}" for line in snippet),
+        unavailable,
+    ]
 
 
 def _manager_advice(repo: Repo, why: str, strict: bool) -> list[str]:
@@ -344,7 +383,7 @@ def protect(
         else:
             echo("git: not a git repository, so no pre-push hook was added.")
         if package.is_file():
-            needs_you += _layer("npm", echo, _protect_npm, package, entries, echo)
+            needs_you += _layer("npm", echo, _protect_npm, package, entries, echo, strict)
     finally:
         _save(home, entries)
     _python_note(path, echo)
@@ -430,6 +469,7 @@ def _protect_git(
         "created_dirs": created,
     }
     echo(f"git: added a pre-push hook: {shown}" + (" (strict mode)" if strict else ""))
+    echo("  It is local to this clone (git never shares hooks): teammates and CI are not changed.")
     echo("  Every git push from this repository now runs agentprint push-check first, however")
     echo("  the push is started (typed, from a script, or hidden from the agent hook).")
     if keep:
@@ -455,36 +495,39 @@ def _make_dirs(folder: Path) -> list[str]:
     return created
 
 
-def _add_script(data: dict) -> None:
-    scripts = data.setdefault("scripts", {})
-    if not isinstance(scripts, dict):
-        raise Unsupported('its "scripts" value is not a set of named scripts')
-    current = scripts.get("prepublishOnly")
-    if current is None or (isinstance(current, str) and not current.strip()):
-        scripts["prepublishOnly"] = npm_command()
-    elif not isinstance(current, str):
-        raise Unsupported('its "scripts.prepublishOnly" value is not a command')
-    elif not _ours_in_script(current):
-        scripts["prepublishOnly"] = f"{current.rstrip()} && {npm_command()}"
+def _add_script(command: str) -> Callable[[dict], None]:
+    def add(data: dict) -> None:
+        scripts = data.setdefault("scripts", {})
+        if not isinstance(scripts, dict):
+            raise Unsupported('its "scripts" value is not a set of named scripts')
+        current = scripts.get("prepublishOnly")
+        if current is None or (isinstance(current, str) and not current.strip()):
+            scripts["prepublishOnly"] = command
+        elif not isinstance(current, str):
+            raise Unsupported('its "scripts.prepublishOnly" value is not a command')
+        elif not _ours_in_script(current):
+            scripts["prepublishOnly"] = f"{current.rstrip()} && {command}"
+
+    return add
 
 
 def _drop_script(data: dict) -> None:  # JsonEdit needs one; undo restores the saved bytes
     pass
 
 
-def _npm_edit(package: Path) -> JsonEdit:
-    return JsonEdit(package, "prepublishOnly", _add_script, _drop_script)
+def _npm_edit(package: Path, strict: bool = False) -> JsonEdit:
+    return JsonEdit(package, "prepublishOnly", _add_script(npm_command(strict)), _drop_script)
 
 
 def _by_hand_npm() -> str:
     return (
-        f'In package.json, take " && {npm_command()}" out of scripts.prepublishOnly (or the '
-        "whole prepublishOnly script, if that is all it runs)."
+        f'In package.json, take the " && npx --yes {NPM_WRAPPER}@... pack ..." part out of '
+        "scripts.prepublishOnly (or the whole prepublishOnly script, if that is all it runs)."
     )
 
 
-def _protect_npm(package: Path, entries: dict[str, dict], echo: Echo) -> int:
-    edit = _npm_edit(package)
+def _protect_npm(package: Path, entries: dict[str, dict], echo: Echo, strict: bool) -> int:
+    edit = _npm_edit(package, strict)
     try:
         old = _read(package)
         new = _through_edits(old, [edit])
@@ -492,7 +535,7 @@ def _protect_npm(package: Path, entries: dict[str, dict], echo: Echo) -> int:
             raise Unsupported("it is read-only")
     except Unsupported as exc:
         echo(f"npm: package.json left as is because {exc}. To check every npm publish, add:")
-        echo(f'  "scripts": {{ "prepublishOnly": "{npm_command()}" }}')
+        echo(f'  "scripts": {{ "prepublishOnly": "{npm_command(strict)}" }}')
         return 1
     if old is None or new is None:
         return 0
@@ -509,6 +552,13 @@ def _protect_npm(package: Path, entries: dict[str, dict], echo: Echo) -> int:
     echo("npm: package.json scripts.prepublishOnly now runs agentprint pack before npm publish:")
     for line in changes(old, new, [edit]):
         echo(line)
+    echo("  package.json is shared: once you commit this, every npm publish runs the check,")
+    echo("  your teammates' and CI's too. It needs npx, plus uv or pipx; where agentprint can't")
+    echo(
+        "  run, the publish stops (strict)."
+        if strict
+        else "  run, the publish goes on with one line (--if-unavailable allow)."
+    )
     _yarn_berry_note(package.parent, echo)
     return 0
 

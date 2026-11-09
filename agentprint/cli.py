@@ -413,6 +413,11 @@ def scan(
     )
 
 
+class IfUnavailable(StrEnum):
+    block = "block"
+    allow = "allow"
+
+
 def run_pack_command(
     target: Path,
     fmt: Format | None,
@@ -420,10 +425,12 @@ def run_pack_command(
     plain: bool,
     badge_dir: Path | None = None,
     sources: Sources | None = None,
+    if_unavailable: IfUnavailable = IfUnavailable.block,
 ) -> int:
     """`agentprint pack`, returning the exit code (the menu runs it too). The project config is
     read from the target folder (for a built file, from the current folder); `fail_on` None:
-    the config's, else high."""
+    the config's, else high. With `if_unavailable` allow, a package it cannot check exits 0
+    with one line instead of 2 (what `agentprint protect` puts in a shared prepublishOnly)."""
     from .baseline import settle
 
     fmt = _auto_format(fmt, Format.agent, Format.table)
@@ -434,6 +441,15 @@ def run_pack_command(
         with _working(out, plain, "preflighting…"):
             listings = collect(target, PACKAGE_WANT)
     except PackError as exc:
+        if if_unavailable is IfUnavailable.allow:
+            from .guard import _masked
+
+            typer.echo(
+                f"agentprint: could not check this package ({_masked(str(exc))}); the publish "
+                "goes on (--if-unavailable allow).",
+                err=True,
+            )
+            return 0
         typer.secho(f"error: {exc}", err=True, fg=typer.colors.RED)
         return 2
     secs = time.perf_counter() - started
@@ -472,6 +488,13 @@ def pack(
     config: ConfigOpt = None,
     no_config: NoConfigOpt = False,
     baseline_file: BaselineOpt = None,
+    if_unavailable: Annotated[
+        IfUnavailable,
+        typer.Option(
+            "--if-unavailable",
+            help="When the package can't be checked: block (exit 2) or allow (exit 0, one line).",
+        ),
+    ] = IfUnavailable.block,
 ) -> None:
     """Check what a package would publish: agent files, the keys inside them, and what lets an
     AI rebuild your source (source maps, original source, AI instruction files).
@@ -482,9 +505,9 @@ def pack(
     """
     plain = _top_plain(ctx, plain)
     sources = Sources(config, no_config, baseline_file)
-    raise typer.Exit(
-        run_pack_command(target, fmt, _given(ctx, fail_on), plain, badge, sources=sources)
-    )
+    given = _given(ctx, fail_on)
+    code = run_pack_command(target, fmt, given, plain, badge, sources, if_unavailable)
+    raise typer.Exit(code)
 
 
 class FixFormat(StrEnum):

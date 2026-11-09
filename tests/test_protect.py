@@ -18,7 +18,14 @@ from agentprint import __version__, protect
 from agentprint.cli import app
 from agentprint.gitcheck import RefUpdate, parse_updates
 from agentprint.models import CannotCheck
-from agentprint.protect import CHAINED, MARK, hook_script, npm_command, push_check
+from agentprint.protect import (
+    CHAINED,
+    MARK,
+    guarded_snippet,
+    hook_script,
+    npm_command,
+    push_check,
+)
 from tests import fakes
 from tests.conftest import set_home
 
@@ -267,9 +274,11 @@ def test_a_hook_that_would_break_when_renamed_is_left_alone(repo, home, content,
     assert code == 1
     assert listing(hooks) == before
     assert manager in text and "left it as is" in text
-    assert f"uvx agentprint=={__version__} push-check" in text
     if manager == "pre-commit":
         assert "stages: [pre-push]" in text and "pre-commit install --hook-type pre-push" in text
+        assert f'additional_dependencies: ["agentprint=={__version__}"]' in text
+    else:
+        assert f"out=$(uvx agentprint=={__version__} push-check) || s=$?" in text
     if manager == "lefthook":
         assert "use_stdin: true" in text
     assert not (home / ".agentprint" / "protect.json").exists()
@@ -302,7 +311,8 @@ def test_husky_hooks_path_inside_the_repo_prints_the_line_instead(repo, home):
     assert code == 1
     assert listing(repo) == before  # nothing written anywhere in the repository
     assert "core.hooksPath" in text and ".husky/pre-push" in text.replace(os.sep, "/")
-    assert f"    uvx agentprint=={__version__} push-check\n" in text + "\n"
+    assert f"    s=0; out=$(uvx agentprint=={__version__} push-check) || s=$?" in text
+    assert "committed" in text and "push goes on with one line" in text
     assert not (home / ".agentprint" / "protect.json").exists()
 
 
@@ -314,8 +324,9 @@ def test_lefthook_gets_its_yaml(repo, home):
     code, text = run(repo, home, strict=True)
     assert code == 1
     assert "lefthook.yml" in text and "lefthook install" in text
-    assert f"          run: uvx agentprint=={__version__} push-check --strict" in text
-    assert "use_stdin: true" in text
+    assert "          run: |\n" in text and "use_stdin: true" in text
+    assert f"            s=0; out=$(uvx agentprint=={__version__} push-check --strict)" in text
+    assert "push blocked" in text
     assert not (repo / "githooks" / "pre-push").exists()
 
 
@@ -475,6 +486,67 @@ def test_npm_reads_the_edited_package_json(package, home, monkeypatch):
     )
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout) == npm_command()
+
+
+def test_the_shared_npm_script_lets_the_publish_go_where_agentprint_cannot_run(package, home):
+    path = package / "package.json"
+    path.write_text('{"name": "x"}\n')
+    code, text = run(package, home)
+    script = json.loads(path.read_text())["scripts"]["prepublishOnly"]
+    assert script.endswith("pack --fail-on high --if-unavailable allow")
+    assert "teammates" in text and "goes on with one line" in text
+    undo(package, home)
+    code, text = run(package, home, strict=True)
+    script = json.loads(path.read_text())["scripts"]["prepublishOnly"]
+    assert script == f"npx --yes agentprint-cli@{__version__} pack --fail-on high"
+    assert "publish stops (strict)" in text
+
+
+def test_pack_if_unavailable_allow_exits_0_with_one_line(tmp_path):
+    missing = str(tmp_path / "no-such-package")
+    blocked = CliRunner().invoke(app, ["pack", missing, "--format", "agent"])
+    assert blocked.exit_code == 2
+    allowed = CliRunner().invoke(
+        app, ["pack", missing, "--format", "agent", "--if-unavailable", "allow"]
+    )
+    assert allowed.exit_code == 0
+    assert "could not check this package" in allowed.output and "publish goes on" in allowed.output
+
+
+FAKE_UVX = """#!/bin/sh
+printf '%s\\n' "$FAKE_OUT"
+exit "${FAKE_EXIT:-0}"
+"""
+
+
+@pytest.mark.posix_only
+@pytest.mark.parametrize(
+    "uvx, out, code, strict, expected",
+    [
+        (False, "", 0, False, 0),  # no uv on this machine: one line, the push goes on
+        (False, "", 0, True, 1),  # strict: blocked
+        (True, "agentprint: BLOCK — 1 problem to fix before pushing", 1, False, 1),
+        (True, "Traceback (most recent call last)", 1, False, 0),  # a crash is not a BLOCK
+        (True, "agentprint: OK", 0, False, 0),
+    ],
+)
+def test_the_hook_manager_snippet_fails_open_under_sh_e(tmp_path, uvx, out, code, strict, expected):
+    """husky runs .husky/pre-push with `sh -e`: the snippet must survive a failing agentprint."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    if uvx:
+        (bin_dir / "uvx").write_text(FAKE_UVX)
+        (bin_dir / "uvx").chmod(0o755)
+    script = tmp_path / "pre-push"
+    script.write_text("\n".join(["#!/bin/sh", *guarded_snippet(strict), "echo after >&2", ""]))
+    env = {"PATH": str(bin_dir), "FAKE_OUT": out, "FAKE_EXIT": str(code)}
+    sh = shutil.which("sh") or "/bin/sh"
+    done = subprocess.run([sh, "-e", str(script)], env=env, capture_output=True, text=True)
+    assert done.returncode == expected, done.stderr
+    if not uvx:
+        assert f"push {'blocked' if strict else 'allowed'}" in done.stderr
+    if out == "agentprint: OK":
+        assert done.stderr == "after\n"  # quiet on a clean push
 
 
 # ---- push-check -------------------------------------------------------------------------------
