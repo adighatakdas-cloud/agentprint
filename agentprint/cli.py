@@ -1267,6 +1267,8 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
         agents = []
         for s in states:
             agent = {"name": s.name, "label": s.label, "found": s.found, "armed": s.armed}
+            if s.mcp_only:  # Windows: install added the MCP server and the note, no hook
+                agent |= {"hook": False, "installed": "mcp-and-note"}
             if s.plugin:  # only when one is there, so the usual output stays as it was
                 agent["plugin"] = s.plugin  # "enabled", "disabled" or "unknown"
             agents.append(agent)
@@ -1281,7 +1283,7 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
         for s in swept:
             if s.found:
                 typer.echo(f"{clean(s.name)} scanned (agentprint install can't arm it yet)")
-        if any(s.found and not s.guarded for s in states):
+        if any(s.unarmed for s in states):
             typer.echo("Arm unarmed agents with: agentprint install")
         for note in notes:
             typer.echo(note)
@@ -1335,6 +1337,7 @@ def _protected_text(found: list[str]) -> str:
 
 def _status_word(s: AgentState) -> str:
     from .plugins import DISABLED, ENABLED, UNKNOWN
+    from .roster import MCP_ONLY
 
     if not s.found:
         return "not found"
@@ -1342,7 +1345,7 @@ def _status_word(s: AgentState) -> str:
         return "armed twice (plugin and install)"
     if s.plugin == ENABLED:
         return "armed (plugin)"
-    word = "armed" if s.armed else "unarmed"
+    word = "armed" if s.armed else MCP_ONLY if s.mcp_only else "unarmed"
     if s.plugin == UNKNOWN:
         return f"{word} (agentprint plugin found, not checked whether it is enabled)"
     if s.plugin == DISABLED:

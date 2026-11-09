@@ -80,12 +80,51 @@ def test_dry_run_on_windows_says_the_same(win, home):
 
 def test_status_and_uninstall_agree_on_windows(win, home):
     _run(home)
-    assert any(s.armed for s in roster(home, {}))
+    found = [s for s in roster(home, {}) if s.found]
+    assert not any(s.armed or s.guarded for s in found)  # no hook guards anything there
+    assert all(s.mcp_only and not s.unarmed for s in found)  # installed, nothing more to arm
     out = _run(home, fn=install.uninstall)
     assert "agentprint-hook" not in out
     assert not (home / ".agentprint").exists()
     assert not any("agentprint" in t for t in _files(home).values())
-    assert not any(s.armed for s in roster(home, {}))
+    assert not any(s.armed or s.mcp_only for s in roster(home, {}))
+
+
+def _status(home, *args):
+    from typer.testing import CliRunner
+
+    from agentprint.cli import app
+
+    done = CliRunner().invoke(app, ["status", "--home", str(home), *args])
+    assert done.exit_code == 0, done.output
+    return done.output
+
+
+def test_windows_status_never_says_armed_without_a_hook(win, home):
+    """I4: on Windows install adds the MCP server and the note only, and status says so in
+    every format instead of "armed"."""
+    _run(home)
+    agent = _status(home, "--format", "agent").splitlines()
+    assert "claude-code MCP and note; no hook on Windows yet" in agent
+    assert not any(line.endswith(" armed") for line in agent)
+    assert "Arm unarmed agents with: agentprint install" not in agent  # install can't do more
+    table = _status(home, "--plain")
+    assert "0 of 6 agents armed · 6 with MCP and note; no hook on Windows yet" in table
+    assert "MCP and note; no hook on Windows yet" in table.split("\n", 2)[2]
+    data = json.loads(_status(home, "--format", "json"))
+    claude = next(a for a in data["agents"] if a["name"] == "claude-code")
+    assert claude["armed"] is False and claude["hook"] is False
+    assert claude["installed"] == "mcp-and-note"
+
+
+def test_posix_status_json_is_unchanged(monkeypatch, home):
+    monkeypatch.setattr(platform, "is_windows", lambda: False)
+    monkeypatch.setattr(install, "resolve_agentprint", lambda: ["/opt/agentprint"])
+    _run(home)
+    data = json.loads(_status(home, "--format", "json"))
+    claude = next(a for a in data["agents"] if a["name"] == "claude-code")
+    assert set(claude) == {"name", "label", "found", "armed"} and claude["armed"] is True
+    assert "claude-code armed" in _status(home, "--format", "agent").splitlines()
 
 
 # ---- upgrading a 0.1.0 install, which put /bin/sh hooks on Windows too -------------------------
