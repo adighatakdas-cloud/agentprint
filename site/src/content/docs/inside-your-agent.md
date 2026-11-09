@@ -77,7 +77,7 @@ The agent hook reads the command before the agent runs it. Reading a command can
 
 ```bash
 agentprint protect            # this folder; or: agentprint protect path/to/project
-agentprint protect --strict   # the hook blocks when agentprint is missing or cannot check
+agentprint protect --strict   # block, not allow, when agentprint is missing or cannot check
 agentprint protect --undo     # take it out again
 ```
 
@@ -92,11 +92,14 @@ Use both. Each covers what the other misses.
 
 What `protect` adds:
 
-- **A git pre-push hook** in the repository's hooks folder (the one `git rev-parse --git-path hooks` names, so worktrees work too). Before each push it runs `agentprint push-check`: the same check the agent hook runs for `git push`. If a key or an agent file would go out, the push stops with the same brief. Deleting a remote branch is never blocked. A pre-push hook you already had is kept, byte for byte, as `pre-push.agentprint-chained`. It runs first with the same input, and either hook failing stops the push.
-- **If `core.hooksPath` points inside the repository** (husky, lefthook, a tracked folder), agentprint writes nothing there. It prints the line to add to your hook manager instead, for example in `.husky/pre-push`: `uvx agentprint==<version> push-check`. If it points outside the repository, agentprint writes there only when you own that folder. Every repository using that folder is then checked.
-- **If agentprint is missing or fails** when you push, the hook prints one line and lets the push go. With `--strict` (or `AGENTPRINT_STRICT=1`) it blocks instead.
-- **If the folder has a `package.json`**, its `scripts.prepublishOnly` runs `npx --yes agentprint-cli@<version> pack --fail-on high` first. A `prepublishOnly` you already had stays and runs first (`yours && npx ...`). `pack` lists the package with `npm pack --dry-run --ignore-scripts`, so it never starts itself again. If `pack` can't run, npm stops the publish.
+- **A git pre-push hook** in the repository's hooks folder (the one `git rev-parse --git-path hooks` names, so worktrees work too). Before each push it runs `agentprint push-check`. If a key or an agent file would go out, the push stops with the same brief the agent hook gives. A clean push prints nothing. Deleting a remote branch is never blocked. The hook lives in `.git/hooks`, which git never shares: it is local to your clone, and teammates and CI are not changed.
+- **A pre-push hook you already had** is kept, byte for byte, as `pre-push.agentprint-chained`. It runs first with the same arguments and input, and either hook failing stops the push. A hook that would break when renamed is left alone instead: one written by husky, lefthook, pre-commit or overcommit, or one that reads its own name (`$0`). `protect` then prints what to add to that manager.
+- **If `core.hooksPath` points inside the repository** (husky, lefthook, a tracked folder), agentprint writes nothing there. It prints the lines to add to your hook manager instead. If it points to a folder outside the repository, other repositories may use that folder too, so agentprint writes there only with `agentprint protect --global`, and only to a folder you own.
+- **If agentprint is missing, fails, or takes more than 60 seconds** when you push, the hook prints one line and lets the push go. `AGENTPRINT_HOOK_TIMEOUT` changes the 60. With `--strict` (or `AGENTPRINT_STRICT=1`) it blocks instead.
+- **If the folder has a `package.json`**, its `scripts.prepublishOnly` runs `npx --yes agentprint-cli@<version> pack --fail-on high --if-unavailable allow` first. A `prepublishOnly` you already had stays and runs first (`yours && npx ...`). Running `protect` again after an upgrade moves the pin to the new version. `pack` lists the package with `npm pack --dry-run --ignore-scripts`, so it never starts itself again. The wrapper never takes `uvx` or `pipx` from `node_modules/.bin`.
 - **On Windows**, Git for Windows runs hooks with its own `sh`, so the same hook works there.
+
+**What you commit is shared.** `package.json`, and a hook manager's files (`.husky/pre-push`, `lefthook.yml`, `.pre-commit-config.yaml`), are usually committed. Once they are, the check runs for every teammate and in CI too, where uv may not be installed. So by default these fail open: where agentprint can't run (no uv or pipx, or it can't be fetched), the publish or push goes on with one line. A leak still blocks. With `--strict` they block instead. The one thing that still stops a publish is npx failing to fetch `agentprint-cli` itself, which needs the same registry the publish does.
 
 `agentprint status`, and `agentprint scan` inside an agent, add one line in a protected repository: `protected (agentprint protect): git pre-push hook, npm prepublishOnly`.
 
@@ -112,11 +115,13 @@ What `protect` adds:
 
 So with Yarn 2+, or with `--ignore-scripts`, only the agent hook checks the publish. `protect` says so when it sees Yarn 2+.
 
+npm runs `prepublishOnly` before `prepack` and `prepare`, and `pack` lists the package without running any script. Files those scripts would build (a `dist/` folder made in `prepare`, say) are checked only if they are already there from an earlier build. To check exactly what goes out, build first, or check the built tarball in CI with `agentprint pack <file.tgz>`.
+
 **PyPI has no publish hook.** `twine upload` and `uv publish` run no script before they upload, so `protect` cannot add one. For Python packages the agent hook is the check, plus `agentprint pack dist/<file>` on the built package, by hand or in CI (see [Use it in CI](/agentprint/ci/)).
 
-What the push check reads: the agent files git tracks in the repository now, and keys inside them. A key that was committed and deleted again stays in history. The check doesn't read history, so rotate that key.
+What the push check reads: what the push uploads, from git's own objects, never your working files. That is the tree each pushed branch or tag points at, and every commit on the way that the remote does not have yet. A key added in one of those commits and deleted in a later one still goes out, so it still blocks. The brief then says to rewrite the commits that are not pushed yet (for example `git reset --soft` to the last pushed commit, then commit again without the key). Commits the remote already has are not read again: a key in those is already out, so rotate it. Run by hand, or by a hook manager that keeps git's input, `push-check` checks the files git tracks now. With the pre-commit framework it reads the push from pre-commit's own variables.
 
-**To undo it:** `agentprint protect --undo` takes out exactly what `protect` added. Your own pre-push hook goes back under its own name, and `package.json` comes back byte for byte. If you changed either file since, agentprint leaves it alone and says what to remove by hand. What `protect` wrote is recorded in `~/.agentprint/protect.json`.
+**To undo it:** `agentprint protect --undo` takes out exactly what `protect` added. Your own pre-push hook goes back under its own name, and `package.json` comes back byte for byte. If you changed either file since, agentprint leaves it alone and says what to remove by hand. What `protect` wrote is recorded in `~/.agentprint/protect.json`. That includes a copy of `package.json` from before, which is dropped once undo is done or leaves the file to you.
 
 ## Good to know
 

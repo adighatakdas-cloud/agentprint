@@ -292,6 +292,13 @@ def test_inside_your_agent_explains_the_protect_layer():
         "Bun",
         "pnpm",
         "Windows",
+        "--global",
+        "--if-unavailable allow",
+        "AGENTPRINT_HOOK_TIMEOUT",
+        "prepack",
+        "teammate",
+        "$0",
+        "git reset --soft",
     ):
         assert needed in section, needed
     readme = (gen_docs.ROOT / "README.md").read_text().split("## Inside your AI agent")[1]
