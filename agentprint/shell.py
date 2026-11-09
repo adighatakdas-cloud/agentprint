@@ -156,6 +156,7 @@ class _Lexer:
         append = out.append
         paren = case = 0
         command = True  # at a command position
+        test = regex = False  # inside `[[ ... ]]`; the next word is the regex after `=~`
         blanks_match, plain_match = _BLANKS.match, _PLAIN_WORD.match
         i = self.i
         while True:
@@ -166,6 +167,14 @@ class _Lexer:
                 self.i = i
                 break
             char = src[i]
+            if regex:  # [[ x =~ ^(#|$) ]]: `(`, `)`, `|` and what is inside `( )` are the regex
+                regex = False
+                if char not in "\n;&)#<>":
+                    self.i = i
+                    append(self._word(regex=True))
+                    i = self.i
+                    command = False
+                    continue
             if char in _OP_CHARS and not (char == "&" and src.startswith(("&>", "&>>"), i)):
                 if char == "\n":
                     append(_NEWLINE_OP)
@@ -223,6 +232,10 @@ class _Lexer:
                     case += 1
                 elif stop and command and text == "esac" and case:
                     case -= 1
+                if command and text == "[[":
+                    test = True
+                elif test:
+                    test, regex = text != "]]", text == "=~"
                 command = text in _LEADS
                 continue
             self.i = i
@@ -234,6 +247,10 @@ class _Lexer:
                 case += 1
             elif stop and command and reserved == "esac" and case:
                 case -= 1
+            if command and reserved == "[[":
+                test = True
+            elif test:
+                test, regex = reserved != "]]", reserved == "=~"
             command = reserved in _LEADS
         if self.pending:
             for doc in self.pending:  # here-document with no newline after it: no body
@@ -278,16 +295,29 @@ class _Lexer:
             return Redirect(op, fd, target, doc)
         return Redirect(op, fd, target)
 
-    def _word(self) -> Word:
+    def _word(self, regex: bool = False) -> Word:
+        """One word. `regex`: the right side of `=~` in `[[ ]]`, where bash keeps `|`, `(`, `)`
+        and everything between the parentheses (blanks, `#`, `<`) in the word."""
         src, n = self.src, self.n
         start = i = self.i
         parts: list[Part] = []
         if src.startswith(("<(", ">("), i):  # process substitution: a command's output as a file
             i = self._substitution(i + 2, parts, False)
+        depth = 0
         while i < n:
             char = src[i]
             if char in " \t\n;&|()<>":
-                break
+                if not regex or (char == ")" and not depth):
+                    break
+                if char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                elif char != "|" and not depth:
+                    break
+                parts.append(Part("lit", char))
+                i += 1
+                continue
             if char == "'":
                 end = src.find("'", i + 1)
                 if end < 0:
