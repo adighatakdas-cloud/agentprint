@@ -82,10 +82,14 @@ def _ours_in_script(script: str) -> bool:
     return f"{NPM_WRAPPER}@" in script and " pack" in script
 
 
-# The command protect wrote, in any release: refreshed to this one when protect runs again.
+# The command exactly as protect writes it, in any release (strict or not): replaced whole by
+# this release's when protect runs again. One the user changed keeps their flags; only its
+# version pin moves.
 _OURS = re.compile(
-    rf"npx --yes {NPM_WRAPPER}@[^\s&|;]+ pack --fail-on \w+(?: --if-unavailable \w+)?"
+    rf"npx --yes {NPM_WRAPPER}@[^\s&|;]+ pack --fail-on high(?: --if-unavailable allow)?"
+    r"(?=\s*(?:$|&&|\|\||;))"
 )
+_PIN = re.compile(rf"({re.escape(NPM_WRAPPER)}@)[^\s&|;]+")
 
 
 # ---- the git hook -----------------------------------------------------------------------------
@@ -578,7 +582,11 @@ def _add_script(command: str) -> Callable[[dict], None]:
         elif not _ours_in_script(current):
             scripts["prepublishOnly"] = f"{current.rstrip()} && {command}"
         else:  # an older release's pin (or the other strict setting): this one
-            scripts["prepublishOnly"] = _OURS.sub(lambda _: command, current, count=1)
+            if _OURS.search(current):
+                scripts["prepublishOnly"] = _OURS.sub(lambda _: command, current, count=1)
+            else:
+                pin = f"\\g<1>{__version__}"
+                scripts["prepublishOnly"] = _PIN.sub(pin, current, count=1)
 
     return add
 

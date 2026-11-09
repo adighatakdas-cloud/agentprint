@@ -470,6 +470,15 @@ def test_protect_again_refreshes_an_older_pin_and_undo_still_restores(package, h
     assert path.read_text() == original + "\n"
 
 
+def test_refreshing_the_pin_keeps_the_user_s_own_flags(package, home):
+    path = package / "package.json"
+    mine = "npx --yes agentprint-cli@0.0.9 pack --fail-on medium --format json"
+    path.write_text(json.dumps({"name": "x", "scripts": {"prepublishOnly": mine}}) + "\n")
+    run(package, home)
+    script = json.loads(path.read_text())["scripts"]["prepublishOnly"]
+    assert script == f"npx --yes agentprint-cli@{__version__} pack --fail-on medium --format json"
+
+
 def test_undo_leaves_a_package_json_changed_since(package, home):
     path = package / "package.json"
     path.write_text(json.dumps({"name": "x"}, indent=2) + "\n")
