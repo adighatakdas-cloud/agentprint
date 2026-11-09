@@ -7,11 +7,12 @@ U+FFA0; braille U+2800), Unicode tag characters, and variation selectors.
 
 Ruling X16, how strong a find is:
 - high: Unicode tags (text an AI reads and a person cannot see), bidi overrides, bidi isolates
-  and embeddings in left-to-right text, deprecated format characters, runs of four or more
+  and embeddings in left-to-right text, deprecated format characters, runs of three or more
   variation selectors, and runs of two or more zero-width or blank characters (or more than
   MAX_LONE single ones in a file: enough to carry text one bit at a time);
 - low: a single stray zero-width character, a single left-to-right or right-to-left mark in
-  left-to-right text, a soft hyphen outside a word, a variation selector inside an ASCII word.
+  left-to-right text, a soft hyphen outside a word, a variation selector after an ASCII
+  character (keycaps aside) or two in a row.
   One character hides no text; it is still worth removing.
 - not counted: one byte-order mark at the start of a file; a zero-width joiner inside an emoji
   sequence, or a joiner between letters of a script that uses them (Hebrew, Arabic, Persian, the
@@ -205,11 +206,20 @@ def hidden_characters(text: str) -> Hidden:
         if n >= MAX_HIDDEN:
             break
         size = run.end() - run.start()
-        if size >= 4:  # one base character takes at most one: a run carries data
+        if size >= 3:  # one base character takes at most one: a run carries data
             found.add("selector", run.start(), True, size)
-        elif size == 1 and _in_word(text, run.start()):
-            found.add("selector", run.start(), False)
+        elif size == 2 or _after_ascii(text, run.start()):
+            found.add("selector", run.start(), False, size)  # doubled, or nothing to select
     return found
+
+
+def _after_ascii(text: str, at: int) -> bool:
+    """A variation selector after a printable ASCII character selects nothing, except the
+    emoji presentation of a keycap (#, *, 0-9 then U+FE0F U+20E3)."""
+    if at == 0 or not "!" <= text[at - 1] <= "~":
+        return False
+    keycap = text[at - 1] in "#*0123456789" and text[at + 1 : at + 2] == "\u20e3"
+    return not keycap
 
 
 def _in_word(text: str, at: int) -> bool:
