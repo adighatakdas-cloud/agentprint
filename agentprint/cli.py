@@ -418,6 +418,21 @@ class IfUnavailable(StrEnum):
     allow = "allow"
 
 
+def _one_line(error: Exception) -> str:
+    """An error as one short line: its first line, keys masked (no tool's whole stderr)."""
+    from .guard import _masked
+    from .sanitize import clean
+
+    first = (str(error).strip().splitlines() or [type(error).__name__])[0]
+    return clean(_masked(first), limit=200)
+
+
+# `pack --if-unavailable allow` exits with these instead of 1 and 2, so a wrapper (the npm one)
+# can tell agentprint's own verdict from uv, npx or Python failing to run agentprint at all.
+ALLOW_BLOCK_EXIT = 3  # something would leak
+ALLOW_UNCHECKED_EXIT = 4  # the package could not be checked (not a missing tool)
+
+
 def run_pack_command(
     target: Path,
     fmt: Format | None,
@@ -429,29 +444,39 @@ def run_pack_command(
 ) -> int:
     """`agentprint pack`, returning the exit code (the menu runs it too). The project config is
     read from the target folder (for a built file, from the current folder); `fail_on` None:
-    the config's, else high. With `if_unavailable` allow, a package it cannot check exits 0
-    with one line instead of 2 (what `agentprint protect` puts in a shared prepublishOnly)."""
-    from .baseline import settle
+    the config's, else high.
 
+    Each ecosystem in the folder is checked on its own: what one finds always counts, even if
+    another can't be listed. Inside an npm `prepublishOnly` only the npm package is checked
+    (that is what npm is publishing). With `if_unavailable` allow, a tool agentprint needs being
+    missing (npm, uv) lets the publish go with one line; a package that can't be checked still
+    blocks, and the exit codes are ALLOW_BLOCK_EXIT / ALLOW_UNCHECKED_EXIT instead of 1 / 2."""
+    from .baseline import settle
+    from .pack import collect_each
+
+    allow = if_unavailable is IfUnavailable.allow
     fmt = _auto_format(fmt, Format.agent, Format.table)
     project = _project(target if target.is_dir() else Path("."), sources)
     out = themed_console(dict(os.environ), plain=plain) if fmt is Format.table else None
+    # npm (and pnpm, yarn, bun) name the running script in lowercase npm_lifecycle_event.
+    npm_only = os.environ.get("npm_lifecycle_event") == "prepublishOnly"  # noqa: SIM112
     started = time.perf_counter()
     try:
         with _working(out, plain, "preflighting…"):
-            listings = collect(target, PACKAGE_WANT)
+            listings, errors = collect_each(target, PACKAGE_WANT, npm_only=npm_only)
     except PackError as exc:
-        if if_unavailable is IfUnavailable.allow:
-            from .guard import _masked
-
+        listings, errors = [], [exc]
+    missing_tool = bool(errors) and all(error.unavailable for error in errors)
+    if not listings:
+        if allow and missing_tool:
             typer.echo(
-                f"agentprint: could not check this package ({_masked(str(exc))}); the publish "
-                "goes on (--if-unavailable allow).",
+                f"agentprint: could not check this package ({_one_line(errors[0])}); the "
+                "publish goes on (--if-unavailable allow).",
                 err=True,
             )
             return 0
-        typer.secho(f"error: {exc}", err=True, fg=typer.colors.RED)
-        return 2
+        _unchecked(errors[0], allow)
+        return ALLOW_UNCHECKED_EXIT if allow else 2
     secs = time.perf_counter() - started
     findings = [finding for listing in listings for finding in check_package(listing)]
     # Ruling C1: a key in the package always counts; ignore and baseline cover the rest.
@@ -469,9 +494,35 @@ def run_pack_command(
         out=out,
         header=header,
         known=settled.known,
+        not_checked=[f"could not list part of it: {_one_line(e)}" for e in errors],
     )
     known = len(settled.known)
-    return _write_badge(badge_dir, "pack", fail_on, findings, known) or exit_code(findings, fail_on)
+    code = _write_badge(badge_dir, "pack", fail_on, findings, known) or exit_code(findings, fail_on)
+    if code == 1:  # a finding always blocks, whatever else could not be listed
+        return ALLOW_BLOCK_EXIT if allow else 1
+    if code or not errors:
+        return code
+    if allow and missing_tool:
+        typer.echo(
+            f"agentprint: could not check part of this package ({_one_line(errors[0])}); the "
+            "publish goes on (--if-unavailable allow).",
+            err=True,
+        )
+        return 0
+    _unchecked(errors[0], allow)
+    return ALLOW_UNCHECKED_EXIT if allow else 2
+
+
+def _unchecked(error: PackError, allow: bool) -> None:
+    """Say a package could not be checked: the whole error, or (in allow mode, where a
+    wrapper reads it) one line."""
+    if allow:
+        typer.echo(
+            f"agentprint: could not check this package ({_one_line(error)}); the publish stops.",
+            err=True,
+        )
+    else:
+        typer.secho(f"error: {error}", err=True, fg=typer.colors.RED)
 
 
 @app.command()
@@ -492,7 +543,8 @@ def pack(
         IfUnavailable,
         typer.Option(
             "--if-unavailable",
-            help="When the package can't be checked: block (exit 2) or allow (exit 0, one line).",
+            help="allow: if a tool agentprint needs (npm, uv) is missing, exit 0 with one line. "
+            "Verdicts then exit 3 (would leak) and 4 (can't check) instead of 1 and 2.",
         ),
     ] = IfUnavailable.block,
 ) -> None:
@@ -1014,6 +1066,14 @@ def push_check(
             help="Block the push when agentprint cannot check it. Same as AGENTPRINT_STRICT=1.",
         ),
     ] = False,
+    remote: Annotated[
+        str | None,
+        typer.Option("--remote", help="The remote git named to the pre-push hook ($1)."),
+    ] = None,
+    pre_push: Annotated[
+        bool,
+        typer.Option("--pre-push", help="stdin is git's own pre-push input (empty: up to date)."),
+    ] = False,
 ) -> None:
     """Git pre-push hook entry point (`agentprint protect` sets it up).
 
@@ -1024,7 +1084,15 @@ def push_check(
 
     platform.use_utf8_streams()
     refs = None if sys.stdin is None or sys.stdin.isatty() else sys.stdin.read()
-    code, text = run_push_check(Path.cwd(), refs, os.environ, _given(ctx, fail_on), strict)
+    code, text = run_push_check(
+        Path.cwd(),
+        refs,
+        os.environ,
+        _given(ctx, fail_on),
+        strict,
+        remote=remote,
+        pre_push=pre_push,
+    )
     typer.echo(text)
     raise typer.Exit(code)
 

@@ -325,3 +325,81 @@ def test_a_check_that_hangs_is_given_up_on(world, strict):
         assert done.returncode != 0 and remote_head(remote) is None
     else:
         assert done.returncode == 0 and remote_head(remote) is not None
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="no bash")
+def test_a_clean_push_prints_nothing_under_bash_either(world):
+    """bash (macOS's /bin/sh, Git for Windows' sh) reports a killed background job unless the
+    hook waits for it: the time-limit watchdog must be reaped, or every push prints noise."""
+    repo, remote, home = world
+    install(repo, home)
+    head = git(repo, "rev-parse", "HEAD").stdout.strip()
+    done = subprocess.run(
+        [shutil.which("bash") or "bash", ".git/hooks/pre-push", "origin", str(remote)],
+        cwd=repo,
+        input=f"refs/heads/main {head} refs/heads/main {'0' * 40}\n",
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 0
+    assert done.stderr == ""
+
+
+# ---- the hook tells push-check where the push goes ---------------------------------------------
+
+
+def untracked_key_history(repo):
+    """A key committed, then untracked in the next commit: only history holds it."""
+    leak(repo)
+    git(repo, "rm", "-q", "--cached", ".claude/settings.local.json")
+    (repo / ".gitignore").write_text(".claude/settings.local.json\n")
+    commit(repo, "untrack")
+
+
+def test_a_key_another_remote_already_has_still_blocks_a_push_to_a_new_one(world, tmp_path):
+    """Open-sourcing a private repository: the private mirror having the commits doesn't make
+    the key in them public."""
+    repo, remote, home = world
+    untracked_key_history(repo)
+    private = tmp_path / "private.git"
+    git(tmp_path, "init", "-q", "--bare", str(private))
+    git(repo, "remote", "add", "private", str(private))
+    assert push(repo, "-q", "private", "HEAD:main").returncode == 0  # before protect
+    install(repo, home)
+    done = push(repo, "origin", "HEAD:main")
+    assert done.returncode != 0 and "agentprint: BLOCK" in done.stderr
+    assert "in pushed commit" in done.stderr
+    assert remote_head(remote) is None
+
+
+def test_an_up_to_date_push_uploads_nothing_and_says_nothing(world):
+    """git runs pre-push with empty stdin when nothing is to be pushed: an uncommitted key in a
+    tracked file goes nowhere, so it must not block."""
+    repo, remote, home = world
+    (repo / ".mcp.json").write_text(json.dumps({"mcpServers": {"x": {"command": "npx"}}}))
+    commit(repo, "shared mcp config")
+    assert push(repo, "-q", "origin", "HEAD:main").returncode == 0
+    server = {"command": "npx", "env": {"GITHUB_TOKEN": fakes.GITHUB}}
+    (repo / ".mcp.json").write_text(json.dumps({"mcpServers": {"x": server}}))  # not committed
+    install(repo, home)
+    done = push(repo, "origin", "HEAD:main")
+    assert done.returncode == 0, done.stderr
+    assert "agentprint" not in done.stderr
+
+
+def test_a_leaky_branch_pushed_with_a_tag_on_a_single_file_is_blocked(world):
+    repo, remote, home = world
+    git(repo, "checkout", "-q", "-b", "leaky")
+    leak(repo)
+    git(repo, "checkout", "-q", "-")
+    blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"], cwd=repo, input="hello\n",
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()  # fmt: skip
+    git(repo, "tag", "zz-blob", blob)
+    install(repo, home)
+    done = push(repo, "origin", "leaky", "refs/tags/zz-blob")
+    assert done.returncode != 0 and "agentprint: BLOCK" in done.stderr
+    assert "not_checked: refs/tags/zz-blob points at a single file" in done.stderr
+    assert remote_has(remote, "refs/heads/leaky") is None
