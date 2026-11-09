@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -90,7 +91,7 @@ def test_a_clean_push_goes_through(world):
     install(repo, home)
     done = shell(repo, "git push -q origin HEAD:main")
     assert done.returncode == 0, done.stderr
-    assert "agentprint: OK" in done.stderr
+    assert "agentprint" not in done.stderr  # a clean push says nothing
     assert remote_head(remote) == git(repo, "rev-parse", "HEAD").stdout.strip()
 
 
@@ -154,7 +155,7 @@ def test_an_existing_hook_runs_first_with_the_same_arguments_and_stdin(world, tm
     assert done.returncode == 0, done.stderr
     head = git(repo, "rev-parse", "HEAD").stdout.strip()
     assert log.read_text() == f"args: origin {remote}\nHEAD {head} refs/heads/main {'0' * 40}\n"
-    assert "agentprint: OK" in done.stderr  # ours ran too
+    assert "agentprint" not in done.stderr  # ours ran too, and a clean push says nothing
 
 
 def test_either_hook_failing_blocks_the_push(world):
@@ -301,3 +302,25 @@ def test_a_key_added_and_removed_on_the_way_is_blocked_until_the_commits_are_rew
     commit(repo, "ignore local settings")
     done = push(repo, "origin", "HEAD:main")
     assert done.returncode == 0, done.stderr
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_a_check_that_hangs_is_given_up_on(world, strict):
+    repo, remote, home = world
+    hang = [sys.executable, "-c", "import time; time.sleep(60)"]
+    install(repo, home, argv=hang, strict=strict)
+    started = time.monotonic()
+    done = subprocess.run(
+        ["git", "push", "origin", "HEAD:main"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={**os.environ, "AGENTPRINT_HOOK_TIMEOUT": "2"},
+    )
+    assert time.monotonic() - started < 30
+    assert "the push check took more than 2s" in done.stderr
+    if strict:
+        assert done.returncode != 0 and remote_head(remote) is None
+    else:
+        assert done.returncode == 0 and remote_head(remote) is not None

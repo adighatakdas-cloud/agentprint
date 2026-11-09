@@ -97,10 +97,10 @@ def test_hook_script_is_lf_only_posix_sh_on_every_os(monkeypatch):
     """Git for Windows runs hooks with its bundled sh: LF line ends, forward-slash paths."""
     text = hook_script(["/opt/bin/agentprint"], strict=False)
     assert text.startswith("#!/bin/sh\n") and "\r" not in text and MARK in text
-    assert "| /opt/bin/agentprint push-check)\n" in text
+    assert '| /opt/bin/agentprint push-check > "$tmp" &\n' in text
     monkeypatch.setattr(protect.platform, "is_windows", lambda: True)
     windows = hook_script([r"C:\Users\me\.local\bin\agentprint.exe"], strict=True)
-    assert "| C:/Users/me/.local/bin/agentprint.exe push-check --strict)\n" in windows
+    assert '| C:/Users/me/.local/bin/agentprint.exe push-check --strict > "$tmp" &\n' in windows
     assert "\\" not in windows.replace("\\n", "")
     assert "strict=1" in windows
 

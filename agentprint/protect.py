@@ -66,6 +66,7 @@ CHAINED = "pre-push.agentprint-chained"
 STATE_FILE = "protect.json"
 NPM_WRAPPER = "agentprint-cli"
 PUSH_CHECK_SINCE = (0, 1, 1)  # the first agentprint with `push-check`
+HOOK_TIMEOUT = 60  # seconds the hook waits for agentprint (AGENTPRINT_HOOK_TIMEOUT)
 OK = "agentprint: OK"
 
 
@@ -110,30 +111,57 @@ def hook_script(agentprint: list[str], strict: bool) -> str:
 # Before every git push, however it was started (typed, run from a script, or hidden in eval),
 # this runs agentprint's push check and stops the push if a key or an agent file would go out.
 # A pre-push hook that was here before is kept as {CHAINED} and runs first.
-# If agentprint is missing or fails, this says so and lets the push go, unless strict mode is on
-# (`agentprint protect --strict`, or AGENTPRINT_STRICT=1): then it blocks instead.
+# If agentprint is missing, fails, or takes longer than AGENTPRINT_HOOK_TIMEOUT seconds (60),
+# this says so and lets the push go, unless strict mode is on (`agentprint protect --strict`,
+# or AGENTPRINT_STRICT=1): then it blocks instead. A clean push prints nothing.
 strict={1 if strict else 0}
 case "$(printf '%s' "${{AGENTPRINT_STRICT:-}}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" in
   1|true|yes|on) strict=1 ;;
 esac
+limit=${{AGENTPRINT_HOOK_TIMEOUT:-{HOOK_TIMEOUT}}}
+case "$limit" in ''|*[!0-9]*) limit={HOOK_TIMEOUT} ;; esac
 refs=$(cat)
 feed() {{ [ -z "$refs" ] || printf '%s\\n' "$refs"; }}
 chained="$(dirname "$0")/{CHAINED}"
 if [ -x "$chained" ]; then
   feed | "$chained" "$@" || exit $?
 fi
-out=$(feed | {command} push-check{flag})
+tmp=$(mktemp 2>/dev/null) || tmp="${{TMPDIR:-/tmp}}/agentprint-push.$$"
+feed | {command} push-check{flag} > "$tmp" &
+pid=$!
+(
+  i=0
+  while [ "$i" -lt "$limit" ]; do
+    sleep 1
+    kill -0 "$pid" 2>/dev/null || exit 0
+    i=$((i + 1))
+  done
+  : > "$tmp.late"
+  kill "$pid"
+) > /dev/null 2>&1 &
+watch=$!
+wait "$pid"
 status=$?
-[ -z "$out" ] || printf '%s\\n' "$out" >&2
+kill "$watch" 2> /dev/null
+out=$(cat "$tmp" 2> /dev/null)
+late=0
+[ ! -e "$tmp.late" ] || late=1
+rm -f "$tmp" "$tmp.late"
+case "$status:$out" in
+  0:|"0:{OK}") ;;
+  *) printf '%s\\n' "$out" >&2 ;;
+esac
 case "$status" in
   0) exit 0 ;;
   1) case "$out" in "agentprint: BLOCK"*) exit 1 ;; esac ;;
 esac
+why="could not run (exit $status)"
+[ "$late" = 0 ] || why="took more than ${{limit}}s"
 if [ "$strict" = 1 ]; then
-  echo "agentprint: the push check could not run (exit $status); push blocked (strict mode)" >&2
+  echo "agentprint: the push check $why; push blocked (strict mode)" >&2
   exit 1
 fi
-echo "agentprint: the push check could not run (exit $status); push allowed" >&2
+echo "agentprint: the push check $why; push allowed" >&2
 exit 0
 """
 
