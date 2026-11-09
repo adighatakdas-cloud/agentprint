@@ -988,3 +988,28 @@ def find_secrets_deep(text: str) -> list[SecretMatch]:
     direct = find_secrets(text)
     hidden = find_hidden(text, {m.value for m in direct})
     return sorted([*direct, *hidden], key=lambda m: m.start)
+
+
+# ---- masking text agentprint echoes back ------------------------------------------------------
+
+# A known key start glued to other text (a file name, a flag): output masks it even where the
+# detector, which wants a word boundary, would not report it.
+_GLUED = re.compile(rf"(?:{_KEY_PREFIX.pattern})[A-Za-z0-9_\-]{{16,}}")
+
+
+def mask_keys(text: str) -> str:
+    """`text` with every key in it cut to its redact() stub: what find_secrets sees (placeholders
+    too), every hidden copy, and any known key start glued to other text. For text agentprint
+    repeats back, such as a command line it asks the agent to run again."""
+    spans = [(m.start, m.end, m.value) for m in find_secrets(text, placeholders=True)]
+    spans += [(m.start, m.end, m.value) for m in hidden_spans(text)]
+    spans += [(m.start(), m.end(), m.group()) for m in _GLUED.finditer(text)]
+    out: list[str] = []
+    end = 0
+    for start, stop, value in sorted(spans, key=lambda s: (s[0], -s[1])):
+        if start >= end:
+            out += [text[end:start], redact(value)]
+            end = stop
+        elif stop > end:  # an overlapping, longer span: extend the cut, keep the first stub
+            end = stop
+    return "".join([*out, text[end:]])

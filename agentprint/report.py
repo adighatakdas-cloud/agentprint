@@ -14,6 +14,7 @@ from . import __version__
 from .advice import Moment, advise
 from .models import Finding, Severity
 from .sanitize import clean, quote, safe_step
+from .secrets import mask_keys
 
 
 class FailOn(StrEnum):
@@ -151,6 +152,10 @@ def _to_agent(findings: list[Finding], fail_on: FailOn, moment: Moment, rerun: s
         ]
     out.append(
         "Do every fix step, tell the human each ask_human item, then "
-        + (f"run again: {quote(rerun)}" if rerun else "re-run the same agentprint check.")
+        + (
+            f"run again: {quote(mask_keys(rerun))}"
+            if rerun
+            else "re-run the same agentprint check."
+        )
     )
     return "\n".join(out)
