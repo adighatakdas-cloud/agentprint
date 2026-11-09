@@ -17,6 +17,7 @@ push.
 
 from __future__ import annotations
 
+import base64
 import glob
 import os
 import re
@@ -82,13 +83,13 @@ _SHELL_VALUES = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
 # or `np` are too common in ordinary code (`list.push(x)`, `import numpy as np`) to count by
 # themselves, and so is a method call near the tool word (`git ... summary.push(x)`).
 _NAMED_PUBLISH = re.compile(
-    r"(?<![\w.-])(?:(npm|pnpm|yarn|bun|uv|poetry|hatch|flit|changeset|lerna)"
+    r"(?=[npybuhfcltgsr])(?<![\w.$-])(?:(npm|pnpm|yarn|bun|uv|poetry|hatch|flit|changeset|lerna)"
     r"(?:\.|(?![\w.-]).{0,40}?(?<![\w./-]))publish(?![\w:-])"
     r"|(twine)(?![\w-]).{0,40}?(?<![\w-])upload(?![\w-])"
     r"|(git)(?:\.|(?![\w./-]).{0,40}?(?<![\w./-]))push(?![\w-])"
     r"|(semantic-release|release-it)(?![\w.-])"
     r"|npx\s+(np)(?![\w.-]))",
-    re.S,
+    re.S | re.I,  # code can build `NPM PUBLISH`.lower(); a shell on macOS finds `NPM` too
 )
 
 
@@ -280,13 +281,19 @@ def _include_lines(text: str, have: int) -> list[tuple[str, bool]]:
 
 
 _PARTS = re.compile(r"(\n|;|&&|\|\|?)")  # where one command ends in scanned text
-_DRY_RUN = re.compile(r"(?<![\w-])(?:--dry-run|--preview)(?![\w-])")
-_GIT_PUSH_N = re.compile(r"(?<![\w.-])git(?![\w-]).*(?<![\w-])push(?![\w-]).*(?<![\w-])-n(?![\w-])")
+_DRY_RUN = re.compile(r"(?<![\w-])(?:--dry-run|--preview)(?:=true)?(?![\w=-])", re.I)
+_GIT_PUSH_N = re.compile(
+    r"(?<![\w.-])git(?![\w-])[^\n]*?(?<![\w-])push(?![\w-])[^\n]*?(?<![\w-])-n(?![\w-])"
+)
 
 
 # A dry-run flag that depends on something: ${DRY:+--dry-run}, `dry ? '--dry-run' : ''`,
 # `+ (['--dry-run'] if '-n' in sys.argv else [])`. Such a command may well publish.
-_CONDITIONAL = re.compile(r"\$\{|\?|\bif\b|\bunless\b|argv|environ|getenv|process\.env|ENV\[")
+_CONDITIONAL = re.compile(
+    r"\$\{|\$\(|`|\?|\bif\b|\bunless\b|\band\b|\bor\b|argv|environ|getenv|process\.env|ENV\["
+    r"|\*|\[\s*-?\d*\s*:|--no-dry-run|(?:dry-run|preview)['\"]?\s*[=,]?\s*['\"]?(?:false|0|no|off)\b",
+    re.I,
+)
 
 
 def _without_dry_runs(text: str) -> str:
@@ -295,9 +302,9 @@ def _without_dry_runs(text: str) -> str:
     literal, unconditional dry run counts; one that depends on a variable or a test does not."""
 
     def dry(part: str) -> bool:
-        if _PARTS.fullmatch(part) or _CONDITIONAL.search(part):
+        if _PARTS.fullmatch(part) or not (_DRY_RUN.search(part) or _GIT_PUSH_N.search(part)):
             return False
-        return bool(_DRY_RUN.search(part) or _GIT_PUSH_N.search(part))
+        return not _CONDITIONAL.search(part)
 
     return "".join(" " if dry(part) else part for part in _PARTS.split(text))
 
@@ -309,6 +316,7 @@ def _named(text: str) -> list[Hit]:
     text = _without_dry_runs(text)
     for match in _NAMED_PUBLISH.finditer(text):
         tool = next(group for group in match.groups() if group)
+        tool = tool.lower()
         hit = (c.Action.push if tool == "git" else c.Action.publish, tool)
         if hit not in hits:
             hits.append(hit)
@@ -318,30 +326,38 @@ def _named(text: str) -> list[Hit]:
 # ---- code in other languages ----------------------------------------------------------------
 
 _STRING = r"""(?:"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\$])*`)"""
+_STRING_ANY = r"""(?:"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\])*`)"""
 _JOINED = re.compile(rf"({_STRING})(?:\s*(?:\+|\.\.?)\s*|[ \t]+)({_STRING})")  # "a" + 'b', "a" "b"
 _LIST = rf"{_STRING}(?:\s*,\s*{_STRING})*\s*,?"
 _PY_JOIN = re.compile(rf"({_STRING})\.join\(\s*[\[(]\s*({_LIST})\s*[\])]\s*\)")  # "".join([...])
 _JS_JOIN = re.compile(rf"\[\s*({_LIST})\s*\]\.join\(\s*({_STRING})?\s*\)")  # [...].join("")
 _LITERAL_PART = re.compile(rf"\$?\{{\s*({_STRING})\s*\}}")  # `${"lish"}`, f"{'lish'}"
-# Where code starts a process. JS `exec`/`spawn` count only next to `child_process` (a RegExp's
-# .exec() and a class's `async exec ()` are not processes).
+# Code that can start a process, anywhere in the file (aliases like `from subprocess import run`,
+# `import subprocess as sp` or `const {execSync: x} = require("child_process")` included). JS
+# `exec`/`spawn` count only with `child_process` (a RegExp's .exec() is not a process).
 _STARTS_PROCESS = re.compile(
-    r"subprocess\.\w+|\bos\.(?:system|popen|exec\w*|spawn\w*)|\bexeca(?:Sync)?\b|"
-    r"Deno\.(?:Command|run)|Bun\.(?:spawn\w*|\$)|\bsystem\s*\(|(?<!['\"])\bexec(?:\s+|\s*\(\s*)[\"'`]|"
-    r"%x[{(\[]|\bqx[{(/]|shell_exec|passthru|proc_open|\bpopen\s*\(|IO\.popen|Open3\."
+    r"\bsubprocess\b|\bos\.(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*)|\bpty\.spawn|"
+    r"\bpexpect\b|\bplumbum\b|\bimport\s+sh\b|\bfrom\s+sh\s+import\b|create_subprocess_|"
+    r"child_process|\bexeca\b|\bzx\b|\$`|Deno\.(?:Command|run)|Bun\.(?:spawn\w*|\$)|"
+    r"\bshelljs\b|cross-spawn|\bsystem\s*\(|(?<!['\"])\bexec(?:\s+|\s*\(\s*)[\"'`]|"
+    r"%x[{(\[]|\bqx[{(/]|shell_exec|passthru|proc_open|\bpopen\s*\(|IO\.popen|Open3\.|"
+    r"Process\.spawn|\bspawn\s*\(\s*[\"']"
 )
-_JS_PROCESS = re.compile(r"\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\s*\(")
-NEAR_PROCESS = 400  # characters between a process start and the command it builds
+# A publish or push word anywhere in code (or in what it is given on its command line), any case:
+# with a process start in the same code, "could not check" (`run([t, "PUBLISH".lower()])`).
+# A method call (`list.push(x)`, `client.publish(...)`), a path or a script name is not one.
+_CODE_WORD = re.compile(r"(?<![\w.$:/-])(publish|push)(?![\w:./-])", re.I)
+_UPLOAD_WORD = re.compile(r"(?<![\w.$:/-])upload(?![\w:./-])", re.I)
 _TOOL = r"(?:npm|pnpm|yarn|bun|twine|uv|poetry|hatch|flit|git|gh)"
-# A publishing tool whose arguments are built at run time: ["npm", verb], "npm " + verb,
-# `npm ${verb}`, f"npm {verb}", "npm {}".format(verb), "npm %s" % verb.
-_BUILT_FOR = [
-    re.compile(rf"""["']({_TOOL})["']\s*,\s*(?!["'\])\s])"""),
-    re.compile(rf"""["'`]({_TOOL})\s[^"'`\n]*["'`]\s*(?:\+|\.(?![\w.])|%)"""),
-    re.compile(rf"""`({_TOOL})\s[^`]*\$\{{"""),
-    re.compile(rf"""\bf["']({_TOOL})\s[^"'\n]*\{{"""),
-    re.compile(rf"""["']({_TOOL})\s[^"'\n]*(?:\{{\}}|%s)"""),
-]
+# A publishing tool as a string of its own (["npm", ...]) and what comes after it.
+_TOOL_ITEM = re.compile(rf"""(["'])({_TOOL})\1\s*([,\])+])""", re.I)
+# A command line written as one string: "npm " + verb, `npm ${v}`, f"git log {n}", "npm %s".
+_TOOL_TEXT = re.compile(rf"""(["'`])({_TOOL})(\s(?:(?!\1)[^\\\n]|\\.)*)(\1)?""", re.I)
+_ITEM = re.compile(rf"""\s*(?:({_STRING_ANY})|(\*|\.\.\.)|(\[)|(\]|\)))""")
+_PLACEHOLDER = re.compile(r"\$\{|\{|%[sdr]|#\{|^\$\w")
+_CODE_VALUES = {"--filter", "-F", "--dir", "-C", "--prefix", "--cwd", "-w", "--workspace",
+                "--tag", "--registry", "--loglevel", "-c", "--git-dir", "--work-tree", "-n",
+                "--format"}  # fmt: skip
 _BUILT = "it builds a `{tool}` command at run time, which agentprint can't read"
 MAX_NORMALISE = 8  # passes joining string literals
 
@@ -383,29 +399,194 @@ def _normalised(code: str) -> str:
     return code
 
 
-def _code_flags(code: str, name: str, cwd: Path, program: str = "") -> list[c.Risky]:
+_RUNTIME_WORD = "it starts a process and names `{verb}`, so it may build a publish at run time"
+
+
+def _code_flags(
+    code: str, name: str, cwd: Path, program: str = "", argv: list[str] | tuple = ()
+) -> list[c.Risky]:
     """Code in another language, which agentprint does not read as commands: "could not check"
-    when it names a publish or push once strings built from literals are joined, or when it
-    starts a process for a publishing tool whose arguments it builds at run time."""
+    when it names a publish or push once strings built from literals are joined (and literal
+    base64, hex and character codes decoded), when it starts a process for a publishing tool
+    whose subcommand is not written out, or when it starts a process and names a publish or push
+    (any case) in its text or in what it is given on its command line."""
     plain = _normalised(code)
+    if '\\"' in plain or "\\'" in plain:  # exec("os.system(\"npm pub\" + \"lish\")")
+        plain += "\n" + _normalised(plain.replace('\\"', '"').replace("\\'", "'"))
+    decoded = _decoded(plain)
+    if decoded:
+        plain += "\n" + decoded
     hits = _named(code) + [hit for hit in _named(plain) if hit not in _named(code)]
     if hits:
         return _flag(hits, name, cwd, _CODE)
-    starts = [m.start() for m in _STARTS_PROCESS.finditer(plain)]
-    if "child_process" in plain:
-        starts += [m.start() for m in _JS_PROCESS.finditer(plain)]
-    if Path(program).name in {"ruby", "perl"}:
-        starts += [m.start() for m in re.finditer("`", plain)]
-    if not starts:
+    if not _starts_process(plain, program):
         return []
-    for pattern in _BUILT_FOR:
-        for match in pattern.finditer(plain):
-            if any(abs(match.start() - at) <= NEAR_PROCESS for at in starts):
-                tool = match.group(1)
-                action = c.Action.push if tool in {"git", "gh"} else c.Action.publish
-                why = _BUILT.format(tool=tool)
-                return [c.Risky(action, tool, cwd, unsure=why, label=name)]
+    given = " ".join(argv)
+    plain = _without_dry_runs(plain)
+    evidence = _CODE_WORD.search(plain) or _CODE_WORD.search(given)
+    if not evidence and re.search(r"twine", plain + given, re.I):
+        evidence = _UPLOAD_WORD.search(plain) or _UPLOAD_WORD.search(given)
+    for tool, kind in _built_commands(plain):
+        if kind == "splat" and not evidence:
+            continue  # def git(*args): run(["git", *args]): a helper, its calls written out
+        tool = tool.lower()
+        action = c.Action.push if tool in {"git", "gh"} else c.Action.publish
+        return [c.Risky(action, tool, cwd, unsure=_BUILT.format(tool=tool), label=name)]
+    if evidence:
+        verb = evidence.group(1).lower()
+        action = c.Action.push if verb == "push" else c.Action.publish
+        why = _RUNTIME_WORD.format(verb=verb)
+        return [c.Risky(action, Path(program).name or "code", cwd, unsure=why, label=name)]
     return []
+
+
+def _starts_process(code: str, program: str) -> bool:
+    if _STARTS_PROCESS.search(code):
+        return True
+    return Path(program).name in {"ruby", "perl", "php"} and "`" in code
+
+
+def _built_commands(code: str) -> list[tuple[str, str]]:
+    """Publishing tools the code runs with a subcommand that is not written out: ("npm",
+    "dynamic") for ["npm", verb] or `npm ${v}`, ("npm", "changed") for ["npm", "X".lower()],
+    ("git", "splat") for ["git", *args]. A written-out subcommand (`pnpm --filter ${p} build`,
+    f"npm install {pkg}", "git rev-parse " + ref) is not listed."""
+    out: list[tuple[str, str]] = []
+    for match in _TOOL_ITEM.finditer(code):
+        kind = _list_verb(code, match.end(3) - 1)
+        if kind != "literal":
+            out.append((match.group(2), kind))
+    for match in _TOOL_TEXT.finditer(code):
+        kind = _text_verb(match.group(3), code[match.end() : match.end() + 3], bool(match.group(4)))
+        if kind != "literal":
+            out.append((match.group(2), kind))
+    return out
+
+
+def _list_verb(code: str, at: int) -> str:
+    """The subcommand after a tool written as one item of a list: what kind it is."""
+    after = code[at]
+    if after in "])":
+        rest = code[at + 1 : at + 8].lstrip()
+        return "dynamic" if rest[:1] in {"+", "*"} or rest[:6] == ".concat" else "literal"
+    if after == "+":
+        return "dynamic"
+    i = at + 1
+    takes_value = False
+    for _ in range(16):
+        item = _ITEM.match(code, i)
+        if item is None:  # an expression: a variable, sys.argv[1], a call...
+            if not takes_value:
+                return "dynamic"
+            takes_value = False  # ["--filter", process.argv[1], "build"]: an option's value
+            i = _skip_expression(code, i)
+            comma = re.match(r"\s*,", code[i:])
+            if not comma:
+                return "literal"
+            i += comma.end()
+            continue
+        literal, splat, opening, closing = item.groups()
+        i = item.end()
+        if opening:
+            continue
+        if closing:
+            return "literal"  # no subcommand at all
+        if splat:
+            return "splat"
+        assert literal is not None
+        tail = code[i : i + 3].lstrip()
+        if tail[:1] not in {",", "]", ")", ""}:
+            return "changed"  # "PUBLISH".lower(), "hsilbup"[::-1], "pub%s" % x
+        text = literal[1:-1]
+        if takes_value:
+            takes_value = False
+        elif text.startswith("-"):
+            takes_value = text.partition("=")[0] in _CODE_VALUES and "=" not in text
+        else:
+            return "literal" if not _PLACEHOLDER.search(text) else "dynamic"
+        comma = re.match(r"\s*,", code[i:])
+        if not comma:
+            return "literal"
+        i += comma.end()
+    return "dynamic"
+
+
+def _skip_expression(code: str, i: int) -> int:
+    """Where an expression in a list ends: the next `,` (or closing bracket) outside brackets."""
+    depth = 0
+    end = min(len(code), i + 400)
+    while i < end:
+        char = code[i]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            if depth == 0:
+                return i
+            depth -= 1
+        elif char == "," and depth == 0:
+            return i
+        elif char in "\"'`":
+            close = code.find(char, i + 1)
+            i = end if close < 0 else close
+        i += 1
+    return i
+
+
+def _text_verb(rest: str, after: str, closed: bool) -> str:
+    """The subcommand inside a command written as one string ("npm publish x", `npm ${v}`)."""
+    words = rest.split()
+    takes_value = False
+    for k, word in enumerate(words):
+        if _PLACEHOLDER.search(word):
+            if takes_value:
+                takes_value = False
+                continue
+            return "dynamic"
+        if takes_value:
+            takes_value = False
+        elif word.startswith("-"):
+            takes_value = word.partition("=")[0] in _CODE_VALUES and "=" not in word
+        else:
+            last = k == len(words) - 1 and not rest[-1:].isspace()
+            if last and closed and after.lstrip()[:1] in {"+", ".", "%"}:
+                return "changed"  # "npm pub" + "lish": the word goes on past the string
+            return "literal"
+    if not closed:
+        return "literal"
+    return "dynamic" if after.lstrip()[:1] in {"+", ".", "%", ","} else "literal"
+
+
+_B64_LITERAL = re.compile(r"""["']([A-Za-z0-9+/]{8,}={0,2})["']""")
+_HEX_LITERAL = re.compile(r"""["']((?:[0-9a-fA-F]{2}){4,})["']""")
+_CHAR_CODES = re.compile(r"(?<![\w.])\d{2,3}(?:\s*,\s*\d{2,3}){3,}(?![\w.])")
+
+
+def _decoded(code: str) -> str:
+    """Text written in code as base64, hex or character codes, decoded (so a publish hidden
+    that way is still named)."""
+    out: list[str] = []
+    for match in _B64_LITERAL.finditer(code):
+        literal = match.group(1)
+        if len(literal) % 4:
+            continue
+        try:
+            text = base64.b64decode(literal, validate=True).decode("ascii")
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if text.isprintable():
+            out.append(text)
+    for match in _HEX_LITERAL.finditer(code):
+        try:
+            text = bytes.fromhex(match.group(1)).decode("ascii")
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if text.isprintable():
+            out.append(text)
+    for match in _CHAR_CODES.finditer(code):
+        codes = [int(n) for n in re.findall(r"\d+", match.group())]
+        if all(32 <= n < 127 for n in codes):
+            out.append("".join(map(chr, codes)))
+    return "\n".join(out)
 
 
 def _hits(text: str, cwd: Path) -> list[Hit]:
@@ -669,7 +850,8 @@ def _interpreted(program: str, args: list[str], cwd: Path, depth: int) -> list[c
             return c.detect(shlex.join(args[i + 1 :]), cwd, depth + 1)
         if flag in code:
             text = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
-            return _code_flags(text, f"{program} {flag}", cwd, program)
+            given = args[i + 1 :] if eq else args[i + 2 :]  # what the code gets as its argv
+            return _code_flags(text, f"{program} {flag}", cwd, program, given)
         if arg == "--":
             i += 1
             break
