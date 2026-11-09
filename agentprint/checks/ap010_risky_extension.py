@@ -106,7 +106,7 @@ def docs_only(artifact: Artifact) -> bool:
     CHANGELOG, package metadata, or anything in docs/, examples/ or tests/ at the folder's top.
     A file that is an extension by itself (one rule, one command) is always read."""
     path = artifact.path
-    root = artifact.root if isinstance(artifact, ExtensionArtifact) else path.parent
+    root = (artifact.root if isinstance(artifact, ExtensionArtifact) else None) or path.parent
     try:
         parts = path.relative_to(root).parts
     except ValueError:
