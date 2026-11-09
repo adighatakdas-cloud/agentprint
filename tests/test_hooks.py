@@ -159,6 +159,23 @@ def test_antigravity_allow_defers_to_its_own_policy(project):
     assert out == {"decision": "allow"}
 
 
+def test_antigravity_without_a_folder_could_not_check(project, monkeypatch):
+    # A plugin hook runs in the plugin's own folder, so with neither Cwd nor workspacePaths the
+    # check must not look there and say OK: a publish or push "could not be checked".
+    monkeypatch.chdir(project)  # even a leaky package here must not be what gets checked
+    data = payload("antigravity", PUBLISH, project)
+    del data["workspacePaths"], data["toolCall"]["args"]["Cwd"]
+    out = json.loads(run("antigravity", data).stdout)
+    assert out["decision"] == "allow" and "could not check" in out["reason"]
+    assert "agentprint: BLOCK" not in out["reason"]
+    strict = json.loads(
+        hook.run_hook("antigravity", json.dumps(data), {"AGENTPRINT_STRICT": "1"}).stdout
+    )
+    assert strict["decision"] == "deny" and "strict mode" in strict["reason"]
+    data["toolCall"]["args"]["CommandLine"] = "ls -la"
+    assert json.loads(run("antigravity", data).stdout) == {"decision": "allow"}
+
+
 def test_hermes_ignores_other_tools(project):
     data = payload("hermes", PUBLISH, project)
     data["tool_name"] = "read_file"
@@ -220,6 +237,37 @@ CURSOR_MATCHES = [
     "git -C sub push origin main",
     "git add . && git commit -m x && git push",
     "if npm test; then git push; fi",
+    # files a publish can hide in (Ruling X7)
+    "make",
+    "make release",
+    "cd pkg && gmake -j4 publish",
+    "just release",
+    "task release",
+    "npm version patch",
+    "pnpm --silent version minor",
+    "./release.sh",
+    "scripts/release",
+    "bash scripts/release.sh",
+    "sh -e x.sh",
+    "source ./ship.sh",
+    "python scripts/release.py",
+    "python3 -u tools/up.py",
+    "node release.mjs",
+    "uv run python scripts/release.py",
+    "poetry run release",
+    "npx tsx scripts/release.ts",
+    "tsx scripts/release.ts",
+    "deno run -A scripts/release.ts",
+    "ruby scripts/release.rb",
+    "perl release.pl",
+    "bun scripts/ship.ts",
+    "pdm run release",
+    "pipenv run python release.py",
+    "hatch run release",
+    "rye run release",
+    "go-task release",
+    "fish release.fish",
+    "env make release",
 ]
 CURSOR_SKIPS = [
     "git stash push",
@@ -229,6 +277,12 @@ CURSOR_SKIPS = [
     "ls -la",
     "npm test",
     "git status",
+    "cat Makefile",
+    "echo make release",
+    "git commit -m 'make it work'",
+    "ls -la scripts",
+    "vim release.sh",
+    "npm install semver",
 ]
 
 

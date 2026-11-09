@@ -58,6 +58,9 @@ class Launch:
 class HookCall:
     command: str
     cwd: Path
+    # False when the payload named no folder and `cwd` is only the hook's own working folder
+    # (a plugin hook's is the plugin's folder): a publish or push there "could not be checked".
+    cwd_known: bool = True
 
 
 @dataclass(frozen=True)

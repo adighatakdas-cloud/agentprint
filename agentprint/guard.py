@@ -31,6 +31,7 @@ from .models import CannotCheck, Finding
 from .pack import PackageListing, PackError, read_archive, read_npm_project
 from .report import KNOWN_WORD, FailOn, exit_code, known_groups, to_agent
 from .sanitize import clean, quote
+from .secrets import find_secrets, redact
 
 ARCHIVES = (".whl", ".tar.gz", ".zip", ".tgz")
 DEFAULT_DIST = ("dist/*",)
@@ -74,6 +75,7 @@ _LOOKS_RISKY = re.compile(
     r"(?<![\w-])(?:" + "|".join(re.escape(w) for w in PUBLISH_WORDS) + r")(?![\w-])", re.I
 )
 
+NEXT_STEP = "Run the publish or push as its own command, so agentprint can check it."
 STRICT_HINT = (
     "Strict mode is on (AGENTPRINT_STRICT=1 or --strict), so a command agentprint cannot check "
     "is blocked. Fix the cause and retry, or ask the human to turn strict mode off."
@@ -194,8 +196,7 @@ def _decide(
             else:
                 findings += _check_publish(item)
         except (CannotCheck, PackError) as exc:
-            what = "git push" if item.action is Action.push else f"{item.tool} publish"
-            warnings.append(f"agentprint could not check this {what}: {clean(str(exc))}.")
+            warnings.append(_could_not(item, exc))
     moment = Moment.publish if any(r.action is Action.publish for r in risky) else Moment.push
     warning = " ".join(warnings) or None
     findings, threshold, known, notes = _settle(findings, fail_on, project)
@@ -206,6 +207,28 @@ def _decide(
     if strict and warnings:
         return strict_block(warning or "")
     return Verdict(False, warning=shown)
+
+
+def _could_not(item: Risky, exc: Exception) -> str:
+    """One "could not check" line. When it is about a file or command (`item.label`), it names
+    that (as a quoted value) and says what to do instead. Labels and reasons can hold text from
+    the command or its files, so every key in them is cut to its redact() stub first."""
+    why = clean(_masked(str(exc)))
+    if item.label:
+        return f"agentprint could not check {quote(_masked(item.label))}: {why}. {NEXT_STEP}"
+    what = "git push" if item.action is Action.push else f"{item.tool} publish"
+    return f"agentprint could not check this {what}: {why}."
+
+
+def _masked(text: str) -> str:
+    """`text` with every key `find_secrets` sees replaced by its first 4 characters and length."""
+    out: list[str] = []
+    end = 0
+    for match in sorted(find_secrets(text), key=lambda m: (m.start, -m.end)):
+        if match.start >= end:
+            out += [text[end : match.start], redact(match.value)]
+            end = match.end
+    return "".join([*out, text[end:]])
 
 
 def _built(cwd: Path, patterns: tuple[str, ...]) -> list[PackageListing]:

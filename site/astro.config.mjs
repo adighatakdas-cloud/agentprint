@@ -44,6 +44,7 @@ export default defineConfig({
           items: [
             { slug: "config" },
             { slug: "agents" },
+            { slug: "plugins" },
             { slug: "how-it-works" },
             { slug: "privacy" },
             { slug: "comparison" },

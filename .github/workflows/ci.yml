@@ -40,8 +40,8 @@ jobs:
       - name: agentprint checks the npm wrapper package
         run: uv run agentprint pack npm --fail-on high
 
-  # macOS and Windows. The Windows legs may fail without turning the run red while the Windows
-  # port is young (continue-on-error); the macOS leg is a hard gate.
+  # macOS and Windows, both hard gates. (`experimental: true` on a leg would let it fail without
+  # turning the run red; no leg uses it now that Windows is green.)
   test-other-os:
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.experimental }}
@@ -52,8 +52,8 @@ jobs:
       matrix:
         include:
           - {os: macos-latest, python: "3.13", experimental: false}
-          - {os: windows-latest, python: "3.11", experimental: true}
-          - {os: windows-latest, python: "3.13", experimental: true}
+          - {os: windows-latest, python: "3.11", experimental: false}
+          - {os: windows-latest, python: "3.13", experimental: false}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

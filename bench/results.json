@@ -3,25 +3,25 @@
   "generated": "2026-11-07",
   "seed": 20261107,
   "corpus": {
-    "cases": 174,
-    "positives": 111,
-    "negatives": 63
+    "cases": 195,
+    "positives": 118,
+    "negatives": 77
   },
   "tools": {
     "agentprint": {
       "version": "0.1.1",
       "overall": {
-        "tp": 107,
-        "fn": 4,
+        "tp": 118,
+        "fn": 0,
         "fp": 7,
-        "tn": 56,
-        "recall": 0.964,
-        "precision": 0.9386,
-        "false_positive_rate": 0.1111,
+        "tn": 70,
+        "recall": 1.0,
+        "precision": 0.944,
+        "false_positive_rate": 0.0909,
         "any_hit": {
-          "tp": 108,
-          "recall": 0.973,
-          "precision": 0.9391
+          "tp": 118,
+          "recall": 1.0,
+          "precision": 0.944
         },
         "plain_keys": {
           "found": 69,
@@ -29,13 +29,19 @@
           "recall": 1.0
         },
         "hidden_keys": {
-          "found": 38,
-          "cases": 42,
-          "recall": 0.9048
+          "found": 49,
+          "cases": 49,
+          "recall": 1.0
         }
       },
       "categories": {
         "neg-base64-image": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
+        "neg-empty-quotes": {
           "kind": "negative",
           "cases": 7,
           "false_positives": 0,
@@ -83,6 +89,12 @@
           "false_positives": 0,
           "false_positive_rate": 0.0
         },
+        "neg-short-base64": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
         "neg-uuid": {
           "kind": "negative",
           "cases": 7,
@@ -92,11 +104,18 @@
         "obf-base64": {
           "kind": "positive",
           "cases": 7,
-          "found": 6,
-          "recall": 0.8571,
+          "found": 7,
+          "recall": 1.0,
           "any_hit": 7
         },
         "obf-line-continuation": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 7,
+          "recall": 1.0,
+          "any_hit": 7
+        },
+        "obf-quotes-side-by-side": {
           "kind": "positive",
           "cases": 7,
           "found": 7,
@@ -113,9 +132,9 @@
         "obf-split-string": {
           "kind": "positive",
           "cases": 7,
-          "found": 4,
-          "recall": 0.5714,
-          "any_hit": 4
+          "found": 7,
+          "recall": 1.0,
+          "any_hit": 7
         },
         "obf-yaml-folded": {
           "kind": "positive",
@@ -207,15 +226,15 @@
       "version": "8.30.1",
       "overall": {
         "tp": 63,
-        "fn": 48,
+        "fn": 55,
         "fp": 14,
-        "tn": 49,
-        "recall": 0.5676,
+        "tn": 63,
+        "recall": 0.5339,
         "precision": 0.8182,
-        "false_positive_rate": 0.2222,
+        "false_positive_rate": 0.1818,
         "any_hit": {
           "tp": 63,
-          "recall": 0.5676,
+          "recall": 0.5339,
           "precision": 0.8182
         },
         "plain_keys": {
@@ -225,12 +244,18 @@
         },
         "hidden_keys": {
           "found": 9,
-          "cases": 42,
-          "recall": 0.2143
+          "cases": 49,
+          "recall": 0.1837
         }
       },
       "categories": {
         "neg-base64-image": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
+        "neg-empty-quotes": {
           "kind": "negative",
           "cases": 7,
           "false_positives": 0,
@@ -278,6 +303,12 @@
           "false_positives": 0,
           "false_positive_rate": 0.0
         },
+        "neg-short-base64": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
         "neg-uuid": {
           "kind": "negative",
           "cases": 7,
@@ -297,6 +328,13 @@
           "found": 1,
           "recall": 0.1429,
           "any_hit": 1
+        },
+        "obf-quotes-side-by-side": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 0,
+          "recall": 0.0,
+          "any_hit": 0
         },
         "obf-split-concat": {
           "kind": "positive",
@@ -402,15 +440,15 @@
       "version": "3.99.8",
       "overall": {
         "tp": 63,
-        "fn": 48,
+        "fn": 55,
         "fp": 0,
-        "tn": 63,
-        "recall": 0.5676,
+        "tn": 77,
+        "recall": 0.5339,
         "precision": 1.0,
         "false_positive_rate": 0.0,
         "any_hit": {
           "tp": 63,
-          "recall": 0.5676,
+          "recall": 0.5339,
           "precision": 1.0
         },
         "plain_keys": {
@@ -420,12 +458,18 @@
         },
         "hidden_keys": {
           "found": 10,
-          "cases": 42,
-          "recall": 0.2381
+          "cases": 49,
+          "recall": 0.2041
         }
       },
       "categories": {
         "neg-base64-image": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
+        "neg-empty-quotes": {
           "kind": "negative",
           "cases": 7,
           "false_positives": 0,
@@ -473,6 +517,12 @@
           "false_positives": 0,
           "false_positive_rate": 0.0
         },
+        "neg-short-base64": {
+          "kind": "negative",
+          "cases": 7,
+          "false_positives": 0,
+          "false_positive_rate": 0.0
+        },
         "neg-uuid": {
           "kind": "negative",
           "cases": 7,
@@ -492,6 +542,13 @@
           "found": 2,
           "recall": 0.2857,
           "any_hit": 2
+        },
+        "obf-quotes-side-by-side": {
+          "kind": "positive",
+          "cases": 7,
+          "found": 0,
+          "recall": 0.0,
+          "any_hit": 0
         },
         "obf-split-concat": {
           "kind": "positive",

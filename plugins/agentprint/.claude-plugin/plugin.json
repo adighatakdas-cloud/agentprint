@@ -1,0 +1,12 @@
+{
+  "name": "agentprint",
+  "version": "0.1.1",
+  "description": "Stops your AI coding agent from publishing a package or running git push that would leak API keys or agent files, and gives it an MCP server to check first. Offline.",
+  "author": {
+    "name": "adighatakdas-cloud",
+    "email": "adi65das@gmail.com"
+  },
+  "homepage": "https://github.com/adighatakdas-cloud/agentprint",
+  "repository": "https://github.com/adighatakdas-cloud/agentprint",
+  "license": "MIT"
+}

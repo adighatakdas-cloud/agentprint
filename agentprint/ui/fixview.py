@@ -22,7 +22,7 @@ from rich.console import Console
 from rich.text import Text
 
 from agentprint.fix import Outcome, Plan
-from agentprint.fixreport import UNDOABLE, Row, fixes, rows, server_name, skipped_rows
+from agentprint.fixreport import UNDOABLE, Row, env_field, fixes, rows, server_name, skipped_rows
 from agentprint.models import Finding
 from agentprint.report import FailOn, _short, exit_code
 from agentprint.sanitize import clean
@@ -51,7 +51,9 @@ def _what(row: Row) -> Text:
             text.append(f" (×{places})", style="ap.dim")
         return text
     if row.kind == "env":
-        return Text(f"{clean(server_name(first), 60)}.env.{first.var} → ${{{first.var}}}")
+        reference = first.reference or "${" + first.var + "}"
+        where = f"{clean(server_name(first), 60)}.{env_field(first)}.{first.var}"
+        return Text(f"{where} → {clean(reference)}")
     if row.kind == "ignore":
         text = Text(f"+ {clean(first.line_text)}")
         if not os.path.lexists(first.path):
@@ -60,6 +62,9 @@ def _what(row: Row) -> Text:
                 " (new file, copied from .gitignore)" if seeded else " (new file)", "ap.dim"
             )
         return text
+    if row.kind == "lock" and first.old_mode is None:  # Windows: an access list, not a mode
+        many = f"{len(row.changes)} files: " if len(row.changes) > 1 else ""
+        return Text(f"{many}access list → other users removed")
     if row.kind == "lock" and len(row.changes) > 1:
         return Text(f"{len(row.changes)} files → owner only")
     if row.kind == "lock" and first.old_mode is not None:

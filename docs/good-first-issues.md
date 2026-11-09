@@ -50,29 +50,25 @@ The hook launcher is a POSIX shell script (`~/.agentprint/bin/agentprint-hook`),
   agent whose Windows hook format is documented (Claude Code or Codex), and keep the POSIX path
   unchanged.
 
-## 4. Qwen Code: from scan-only to a full agent
+## 4. Qwen Code integration
 
-Today Qwen Code has package rules only (`agents/scan_only.py`). Its docs describe Claude-style
-hooks, so most of the work is paths.
+A sweep already reads Qwen Code in full (`agentprint/agents/qwen_code.py`). Its docs describe
+Claude-style hooks, so `install` can arm it the way it arms Claude Code.
 
-- **Scan:** chats in `~/.qwen/projects/*/chats/*.jsonl` (history); `~/.qwen/settings.json`
-  (settings: hooks, MCP servers); `~/.qwen/oauth_creds.json` and `~/.qwen/.env` (credential
-  stores: permission check only).
 - **Install:** a hook and MCP entry in `~/.qwen/settings.json`; the note in `~/.qwen/QWEN.md`.
-- **Done when:** `agentprint/agents/qwen_code.py` and `agentprint/integrations/qwen_code.py`
-  exist with tests, the scan-only entry is removed, and `site/src/content/docs/agents.md` is updated (then run `uv run python -m tools.gen_docs`).
+- **Done when:** `agentprint/integrations/qwen_code.py` exists with tests, and
+  `site/src/content/docs/agents.md` is updated (then run `uv run python -m tools.gen_docs`).
 
 ## 5. Goose integration
 
-Goose is scan-only today. Per its docs it supports a blocking pre-tool hook (exit 2) in plugin
-folders, MCP servers as `extensions:` in `~/.config/goose/config.yaml`, and global hints in
-`~/.config/goose/.goosehints`.
+A sweep already reads Goose in full (`agentprint/agents/goose.py`). Per its docs it supports a
+blocking pre-tool hook (exit 2) in plugin folders, MCP servers as `extensions:` in
+`~/.config/goose/config.yaml`, and global hints in `~/.config/goose/.goosehints`.
 
-- **Scan:** sessions in `~/.local/share/goose/sessions/sessions.db` (SQLite, read with
-  `agentprint/sqlite_text.py`); `secrets.yaml` as a credential store.
 - **Install:** hook, MCP entry and note, through Goose's own files. YAML edits must keep the
   user's comments and layout (see how `integrations/hermes.py` does it).
-- **Done when:** both modules exist with tests; mark it "docs-verified" in `site/src/content/docs/agents.md`.
+- **Done when:** `agentprint/integrations/goose.py` exists with tests; mark it "docs-verified" in
+  `site/src/content/docs/agents.md`.
 
 ## 6. Kilo Code: reuse the OpenCode plugin
 
@@ -95,12 +91,14 @@ Windsurf paths. Devin's own files live in `.devin/` (projects) and `~/.config/de
   personal files are covered by AP007/AP008, and package rules cover `.devin/` files that must
   not ship.
 
-## 8. Cline's plain-text key store
+## 8. Cline integration
 
-Cline keeps provider keys in `~/.cline/data/secrets.json`. It is already a package rule
-(AP006), but `scan` doesn't look at Cline's home folder yet.
+A sweep already reads Cline in full (`agentprint/agents/cline.py`), including its plain-text
+`secrets.json` (permission check only). Cline runs hook files named after the event:
+`~/.cline/hooks/PreToolUse` for the CLI, `~/Documents/Cline/Hooks/PreToolUse` for the
+extension (opt-in, "Enable Hooks"), and blocks on stdout `{"cancel": true}`.
 
-- **Where:** a new `agentprint/agents/cline.py` (move Cline out of `scan_only.py`).
-- **Done when:** `secrets.json` is a credential store (AP008 checks who can read it), Cline's
-  MCP settings (`~/.cline/data/settings/cline_mcp_settings.json`) are read for AP005, and task
-  history is scanned for AP001.
+- **Where:** a new `agentprint/integrations/cline.py`.
+- **Done when:** `install --agent cline` writes the hook file and the MCP entry in
+  `~/.cline/data/settings/cline_mcp_settings.json` with tests, and a missing or failing
+  agentprint answers "allow".
