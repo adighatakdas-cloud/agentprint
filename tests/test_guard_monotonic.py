@@ -102,3 +102,26 @@ def test_code_with_a_written_out_subcommand_stays_quiet(tmp_path, command, files
     _files(tmp_path, files)
     assert evaluate(command, tmp_path) is None
     assert evaluate(command, tmp_path, strict=True) is None
+
+
+# ---- make: what make fills in at run time; define blocks; huge variables ----------------------
+
+
+def test_make_fills_in_at_run_time_names_a_publish(leaky):
+    files = {"Makefile": "pub = $(1) publish\nrelease:\n\t$(call pub,npm)\n"}
+    assert _blocks("make release", leaky, files)
+    _files(
+        leaky, {"Makefile": "define PUB\nnpm publish demo-1.0.0.tgz\nendef\nrelease:\n\t$(PUB)\n"}
+    )
+    assert evaluate("make release", leaky).block  # a define block is a variable: read for real
+
+
+def test_a_huge_variable_in_one_recipe_line_stays_fast_and_seen(leaky):
+    from agentprint.commands import detect
+    from tests import timing
+
+    big = "V2 = " + "x" * 100 + "\nV1 = " + "$(V2)" * 20 + "\nV0 = " + "$(V1)" * 30 + "\n"
+    makefile = "NPM = npm\n" + big + "all:\n" + "\techo $(V0)\n" * 60
+    _files(leaky, {"Makefile": makefile + "\t$(NPM) publish demo-1.0.0.tgz\n"})
+    assert timing.best_of(lambda: detect("make", leaky), times=1) < timing.bound(1.0)  # was 2.5 s
+    assert evaluate("make", leaky).block

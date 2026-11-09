@@ -295,10 +295,14 @@ def parse_make(text: str, into: Makefile | None = None) -> Makefile:
     mf = into or Makefile()
     prefix = "\t"
     current: list[str] | None = None  # the targets whose recipe the next tab line belongs to
-    in_define = False
+    define: tuple[str, list[str]] | None = None  # define NAME ... endef: a multi-line variable
     for line in _logical_lines(text):
-        if in_define:
-            in_define = not re.match(r"^\s*endef\b", line)
+        if define is not None:
+            if re.match(r"^\s*endef\b", line):
+                mf.variables[define[0]] = "\n".join(define[1])
+                define = None
+            else:
+                define[1].append(line)
             continue
         if line.startswith(prefix):
             for target in current or []:
@@ -309,7 +313,8 @@ def parse_make(text: str, into: Makefile | None = None) -> Makefile:
             continue  # neither ends a recipe
         current = None
         if _MAKE_DEFINE.match(stripped):
-            in_define = True
+            words = re.sub(r"^(?:(?:override|export)\s+)?define\s*", "", stripped).split()
+            define = (words[0] if words else "", [])
         elif assign := _MAKE_ASSIGN.match(stripped):
             name, op, value = assign.groups()
             if name == ".RECIPEPREFIX":
@@ -385,16 +390,39 @@ class MakePlan:
         reads as `npm publish`."""
         lines: list[str] = []
         size = 0
+        single = "\n" not in step  # a line of its own: a huge variable in it stays unknown
         for line in step.split("\n"):
             past = total and size > total
             line = expand_make(
-                line, self.variables, self.memo, limit=SMALL_EXPANSION if past else limit
+                line,
+                self.variables,
+                self.memo,
+                limit=SMALL_EXPANSION if past else limit,
+                value_limit=SMALL_EXPANSION if single else 0,
             )
             line = _RECIPE_PREFIX.sub("", line)
             if line.strip():
                 lines.append(line)
                 size += len(line) + 1
         return "\n".join(lines)
+
+    def evidence(self, step: str) -> str:
+        """A recipe step as written, with the values of the variables it names (and theirs):
+        what a line make fills in at run time (`$(call pub,npm)`) may run."""
+        out = [step]
+        todo = _MAKE_REFS.findall(step)
+        seen: set[str] = set()
+        while todo and len(seen) < 64:
+            name = todo.pop()
+            if name in seen or name not in self.variables:
+                continue
+            seen.add(name)
+            out.append(self.variables[name])
+            todo += _MAKE_REFS.findall(self.variables[name])
+        return "\n".join(out)[: 64 * 1024]
+
+
+_MAKE_REFS = re.compile(r"\$[({](?:call\s+)?([A-Za-z_][\w.-]*)")
 
 
 def make_plan(mf: Makefile, goals: list[str], overrides: dict[str, str]) -> MakePlan:
@@ -447,10 +475,11 @@ def expand_make(
     memo: dict[str, str] | None = None,
     depth: int = 0,
     limit: int = 0,
+    value_limit: int = 0,
 ) -> str:
     """`text` with make variables filled in. Each variable is expanded once (`memo`); one that
-    refers to itself, nests too deeply or grows past 64 KB is left as `${NAME}`, and so is the
-    whole text when it grows past `limit` characters (64 KB when 0)."""
+    refers to itself, nests too deeply or grows past 64 KB (or `value_limit`) is left as
+    `${NAME}`, and so is the whole text when it grows past `limit` characters (64 KB when 0)."""
     memo = {} if memo is None else memo
     limit = limit or _MAX_EXPANSION
     out: list[str] = []
@@ -467,7 +496,10 @@ def expand_make(
             if end < 0:
                 piece, i = text[i:], len(text)
             else:
-                piece, i = _make_value(text[i + 2 : end], variables, memo, depth), end + 1
+                piece = _make_value(text[i + 2 : end], variables, memo, depth)
+                if value_limit and len(piece) > value_limit:
+                    piece = "${" + text[i + 2 : end].strip() + "}"
+                i = end + 1
         else:  # $@, $<, $^ and one-letter variables: only make knows
             piece, i = "$" + text[i + 1], i + 2
         out.append(piece)

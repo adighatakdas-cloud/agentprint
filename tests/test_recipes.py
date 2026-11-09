@@ -193,3 +193,17 @@ def test_only_called_functions_keep_their_bodies():
     assert "git push" in recipes.called_only(keyword) and "echo" not in recipes.called_only(keyword)
     broken = "f() { npm publish\n"
     assert recipes.called_only(broken) == broken  # no closing brace: left alone
+
+
+def test_a_define_block_is_a_variable_a_recipe_can_use():
+    text = "define PUB\nnpm publish\ngit push\nendef\nrelease:\n\t$(PUB)\n"
+    assert _make(text, ["release"]) == (["npm publish\ngit push"], [])
+
+
+def test_evidence_follows_the_variables_a_recipe_line_names():
+    mf = recipes.parse_make(
+        "pub = $(1) publish\nx = $(y)\ny = push\nrelease:\n\t$(call pub,npm) $(x)\n"
+    )
+    plan = recipes.make_plan(mf, ["release"], {})
+    [raw] = plan.raw
+    assert "publish" in plan.evidence(raw) and "push" in plan.evidence(raw)

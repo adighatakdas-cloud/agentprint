@@ -949,13 +949,29 @@ def _make(args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
     reading = _reading(cwd)
     for raw in plan.raw:
         left = MAX_BYTES - reading.bytes
+        before = len(found)
         if reading.peeking or left <= 0:  # scan only, with a small expansion
-            found += _flag(
-                _hits(plan.text(raw, limit=recipes.SMALL_EXPANSION), cwd), name, cwd, _DEEP
-            )
+            text = plan.text(raw, limit=recipes.SMALL_EXPANSION)
+            found += _flag(_hits(text, cwd), name, cwd, _DEEP)
         elif text := plan.text(raw, total=left):  # a .ONESHELL step stops growing at the budget
             found += _step(recipes.Step(text), name, cwd, depth)
+        if len(found) == before and "${" in text:  # filled in only when make runs
+            found += _filled_by_make(plan.evidence(raw), name, cwd)
     return found
+
+
+_MAKE_FILLS = "it runs a recipe line make fills in at run time, from text that names `{verb}`"
+
+
+def _filled_by_make(evidence: str, name: str, cwd: Path) -> list[c.Risky]:
+    """A recipe line with a value only make knows (`$(call pub,npm)`, `$(shell ...)`): "could not
+    check" when the line or the variables it uses name a publish or push."""
+    match = c.EVIDENCE.search(evidence)
+    if match is None:
+        return []
+    verb = match.group(1).lower()
+    action = c.Action.push if verb == "push" else c.Action.publish
+    return [c.Risky(action, "make", cwd, unsure=_MAKE_FILLS.format(verb=verb), label=name)]
 
 
 _Loaded = tuple[recipes.Makefile, str, bool, list["c.Risky"]]
@@ -974,12 +990,13 @@ def _makefile(cwd: Path, files: list[str]) -> _Loaded | list[c.Risky]:
     name = ""
     incomplete = False
     queue = [(path, False) for path in files]
-    read = 0
+    read = tries = 0
     scanned: list[c.Risky] = []  # includes too large to follow: what their scan found
     result: _Loaded | list[c.Risky] = []
     first = True
-    while queue and read < MAX_INCLUDES:
+    while queue and read < MAX_INCLUDES and tries < MAX_INCLUDES * 4:
         path, optional = queue.pop(0)
+        tries += 1
         file = _read(path, cwd)
         if file is None:
             if first:

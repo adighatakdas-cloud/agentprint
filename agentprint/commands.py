@@ -135,6 +135,8 @@ _UNKNOWABLE = re.compile(r"[$`*?]")  # variables, substitutions and globs: known
 _VARIABLE = re.compile(r"[$`]")  # a word only the shell can fill in
 _DEFAULTED = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?-([A-Za-z0-9_.+-]+)\}")  # ${NPM:-npm}
 PUBLISH_VERBS = {"publish": Action.publish, "upload": Action.publish, "push": Action.push}
+# A publish, upload or push word: what makes text only known at run time worth a "could not check".
+EVIDENCE = re.compile(r"(?=[pu])(?<![\w$-])(publish|upload|push)(?![\w-])", re.I)
 # Subcommands that show a variable before them only held options (`git $FLAGS commit`).
 _OTHER_VERBS: dict[str, set[str]] = {
     "git": {
