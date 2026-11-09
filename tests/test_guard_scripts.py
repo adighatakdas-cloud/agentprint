@@ -612,3 +612,32 @@ def test_a_brace_in_a_regex_does_not_hide_what_follows_a_function(leaky):
     assert evaluate("./r.sh", leaky).block
     _repo(leaky, {"lib.sh": 'build() { make; }\nrelease() { cd "$PKG"; npm publish; }\n'})
     assert evaluate("source lib.sh && build", leaky) is None  # still no wolf
+
+
+# ---- a makefile too large to parse: its includes are still followed --------------------------
+
+PAD_RULES = "".join(f"obj/f{i}.o: src/f{i}.c\n" for i in range(4000))  # ~90 KB of plain rules
+
+
+@pytest.mark.parametrize(
+    ("files", "command"),
+    [
+        ({"Makefile": PAD_RULES + "include release.mk\n", "release.mk": f"release:\n\t{PUBLISH}"},
+         "make release"),
+        ({"big.mk": PAD_RULES, "rel.mk": f"release:\n\t{PUBLISH}"},
+         "make -f big.mk -f rel.mk release"),
+    ],
+    ids=["include-in-large-makefile", "large-first-makefile"],
+)  # fmt: skip
+def test_a_large_makefile_still_leads_to_its_other_files(leaky, files, command):
+    _repo(leaky, files)
+    assert evaluate(command, leaky).block
+
+
+def test_a_large_makefile_with_nothing_to_publish_stays_quiet(tmp_path):
+    _repo(
+        tmp_path,
+        {"Makefile": PAD_RULES + "-include deps.mk\nall:\n\tcc x.c\n", "deps.mk": "x.o: x.c\n"},
+    )
+    assert evaluate("make", tmp_path) is None
+    assert evaluate("make", tmp_path, strict=True) is None

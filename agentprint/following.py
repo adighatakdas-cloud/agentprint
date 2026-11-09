@@ -137,6 +137,7 @@ class _File:
     named: tuple[Hit, ...] = ()  # a large file: the publishes and pushes it names
     bare: str = ""  # a large file: the first publish/upload/push word on its own
     first_line: str = ""  # a large file: its shebang, if any
+    includes: tuple[tuple[str, bool], ...] = ()  # a large file: its make include lines
 
 
 @dataclass
@@ -239,23 +240,38 @@ def _text(data: bytes) -> str:
 def _scan_large(handle, head: bytes, path: Path, name: str) -> _File:
     """Scan a file too large to follow, 64 KB at a time with an overlap, up to 8 MB."""
     named: list[Hit] = []
+    includes: list[tuple[str, bool]] = []
     bare = ""
     first_line = _text(head[:4096]).split("\n", 1)[0]
-    total, chunk, tail = len(head), head, ""
+    total, chunk, tail, partial = len(head), head, "", ""
     while chunk:
-        text = tail + chunk.decode("utf-8", "replace")
+        decoded = chunk.decode("utf-8", "replace")
+        text = tail + decoded
         for hit in _named(text):
             if hit not in named:
                 named.append(hit)
         bare = bare or next((m.group(1) for m in _BARE_PUBLISH.finditer(text)), "")
         tail = text[-128:]
+        whole, _, partial = (partial + decoded).rpartition("\n")  # include lines, whole lines
+        includes += _include_lines(whole, len(includes))
         if total >= MAX_SCAN_BYTES:
             if handle.read(1):
                 return _File(path, name, None, "huge", first_line=first_line)
             break
         chunk = handle.read(min(MAX_FILE_BYTES, MAX_SCAN_BYTES - total))
         total += len(chunk)
-    return _File(path, name, None, "large", tuple(named), bare, first_line)
+    includes += _include_lines(partial, len(includes))
+    return _File(path, name, None, "large", tuple(named), bare, first_line, tuple(includes))
+
+
+_INCLUDE_LINE = re.compile(r"(?m)^[ \t]*(-include|sinclude|include)[ \t]+([^#\n]+)")
+
+
+def _include_lines(text: str, have: int) -> list[tuple[str, bool]]:
+    """The make include lines in text (a cheap line scan of a makefile too large to parse)."""
+    if have >= MAX_INCLUDES * 4 or "include" not in text:
+        return []
+    return [(m.group(2).strip(), m.group(1) != "include") for m in _INCLUDE_LINE.finditer(text)]
 
 
 # ---- what text names ------------------------------------------------------------------------
@@ -674,35 +690,34 @@ def _makefile(cwd: Path, files: list[str]) -> _Loaded | list[c.Risky]:
     read = 0
     scanned: list[c.Risky] = []  # includes too large to follow: what their scan found
     result: _Loaded | list[c.Risky] = []
+    first = True
     while queue and read < MAX_INCLUDES:
         path, optional = queue.pop(0)
         file = _read(path, cwd)
         if file is None:
-            if mf is None:
+            if first:
                 break  # the makefile is missing, outside the folder, or not text
             incomplete = incomplete or not optional
             continue
-        if file.text is None:
-            if mf is None:  # the makefile itself: only its scan
-                result = _unread(file, cwd, "make", True)
-                break
-            incomplete = True  # an include (or a second -f) too large to follow
-            scanned += _unread(file, cwd, "make", True)
-            continue
-        before = len(mf.includes) if mf else 0
-        mf = recipes.parse_make(file.text, mf)
+        first, read = False, read + 1
         name = name or file.name
-        for line, optional in mf.includes[before:]:  # include lines, variables filled in
-            for word in recipes.expand_make(line, mf.variables).split():
+        if file.text is None:  # too large to follow (or unreadable): scanned, includes read
+            incomplete = True
+            scanned += _unread(file, cwd, "make", True)
+            lines = list(file.includes)
+        else:
+            before = len(mf.includes) if mf else 0
+            mf = recipes.parse_make(file.text, mf)
+            lines = mf.includes[before:]
+        for line, optional in lines:  # include lines, variables filled in
+            for word in recipes.expand_make(line, mf.variables if mf else {}).split():
                 if "$" in word:
                     incomplete = True  # only make knows which file this is
                 elif "*" in word or "?" in word or "[" in word:
                     queue += [(found, True) for found in sorted(glob.glob(str(cwd / word)))]
                 else:
                     queue.append((word, optional))
-        read += 1
-    if mf is not None:
-        result = (mf, name, incomplete or bool(queue), scanned)
+    result = (mf, name, incomplete or bool(queue), scanned) if mf is not None else scanned
     reading.parsed[key] = result
     return result
 
