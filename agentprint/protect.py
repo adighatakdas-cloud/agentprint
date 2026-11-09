@@ -134,7 +134,7 @@ if [ -x "$chained" ]; then
 fi
 late=0
 if tmp=$(mktemp 2> /dev/null) && mark=$(mktemp 2> /dev/null); then
-  feed | {command} push-check{flag} > "$tmp" &
+  feed | {command} push-check --pre-push --remote "$1"{flag} > "$tmp" &
   pid=$!
   (
     i=0
@@ -156,7 +156,7 @@ if tmp=$(mktemp 2> /dev/null) && mark=$(mktemp 2> /dev/null); then
   rm -f "$tmp" "$mark"
 else  # no private temporary file: run without the time limit
   [ -z "${{tmp:-}}" ] || rm -f "$tmp"
-  out=$(feed | {command} push-check{flag})
+  out=$(feed | {command} push-check --pre-push --remote "$1"{flag})
   status=$?
 fi
 case "$status:$out" in
@@ -183,16 +183,21 @@ def manual_line(strict: bool) -> str:
     return f"uvx agentprint=={__version__} push-check" + (" --strict" if strict else "")
 
 
-def guarded_snippet(strict: bool) -> list[str]:
+HOOK_ARGS = '--pre-push --remote "$1"'  # in a pre-push hook script: git's stdin and remote
+
+
+def guarded_snippet(strict: bool, args: str = HOOK_ARGS) -> list[str]:
     """sh lines that run `manual_line` the way protect's own hook does: a BLOCK stops the push;
     if agentprint can't run (no uv on a teammate's machine), one line and the push goes on,
-    unless strict. Safe under `sh -e` (husky): no command here fails unless it should."""
+    unless strict. Safe under `sh -e` (husky): no command here fails unless it should. `args`
+    tell push-check where the push comes from (git's stdin and the remote's name)."""
     if strict:
         last = 'echo "agentprint: the push check could not run (exit $s); push blocked" >&2; exit 1'
     else:
         last = 'echo "agentprint: the push check could not run (exit $s); push allowed" >&2'
+    command = manual_line(strict) + (f" {args}" if args else "")
     return [
-        f"s=0; out=$({manual_line(strict)}) || s=$?",
+        f"s=0; out=$({command}) || s=$?",
         f'case "$s:$out" in 0:|"0:{OK}") ;; *) printf \'%s\\n\' "$out" >&2 ;; esac',
         f'case "$s:$out" in 0:*) ;; "1:agentprint: BLOCK"*) exit 1 ;; *) {last} ;; esac',
     ]
@@ -296,26 +301,32 @@ def _by_hand(repo: Repo, manager: str | None, strict: bool) -> list[str]:
             "        agentprint:",
             "          use_stdin: true",
             "          run: |",
-            *(f"            {line}" for line in snippet),
+            *(f"            {line}" for line in guarded_snippet(strict, "--pre-push --remote {1}")),
             SHARED,
             unavailable,
         ]
     if manager == "pre-commit":
-        strict_args = '\n          args: ["--strict"]' if strict else ""
+        # pre-commit keeps git's stdin and names the push in PRE_COMMIT_* variables, which
+        # push-check reads; it runs the hook for one ref of a push.
         return [
             "  To check every push, add this under `repos:` in .pre-commit-config.yaml, then run "
-            "`pre-commit install --hook-type pre-push` (pre-commit installs agentprint itself):",
+            "`pre-commit install --hook-type pre-push`:",
             "    - repo: local",
             "      hooks:",
             "        - id: agentprint-push-check",
             "          name: agentprint push-check",
-            "          entry: agentprint push-check",
-            "          language: python",
-            f'          additional_dependencies: ["agentprint=={__version__}"]',
+            "          language: system",
             "          stages: [pre-push]",
             "          pass_filenames: false",
-            "          always_run: true" + strict_args,
+            "          always_run: true",
+            "          entry: sh",
+            "          args:",
+            "            - -c",
+            "            - |",
+            *(f"              {line}" for line in guarded_snippet(strict, "")),
+            "            - agentprint",
             SHARED,
+            unavailable,
         ]
     if manager == "husky":
         husky = _short(str(repo.root / ".husky" / HOOK))
@@ -816,12 +827,18 @@ def protection_text(found: list[str]) -> str:
 # ---- push-check (run by the hook) -------------------------------------------------------------
 
 
-def _pre_commit_update(env: Mapping[str, str]) -> list[RefUpdate]:
-    """The pre-commit framework keeps git's stdin and names the push in its environment
-    instead (PRE_COMMIT_TO_REF: the local sha, PRE_COMMIT_FROM_REF: the remote's)."""
-    local, remote = env.get("PRE_COMMIT_TO_REF", ""), env.get("PRE_COMMIT_FROM_REF", "")
-    remote = remote or "0" * len(local)
+def _pre_commit_update(cwd: Path, env: Mapping[str, str]) -> list[RefUpdate]:
+    """The pre-commit framework keeps git's stdin and names one ref of the push in its
+    environment instead (PRE_COMMIT_TO_REF: the local sha, PRE_COMMIT_FROM_REF: the remote's).
+    When the push holds the root commit it sets no TO_REF: the local branch is read from git."""
+    if not (env.get("PRE_COMMIT_REMOTE_NAME") or env.get("PRE_COMMIT_TO_REF")):
+        return []
     branch = env.get("PRE_COMMIT_LOCAL_BRANCH") or "HEAD"
+    local = (
+        env.get("PRE_COMMIT_TO_REF")
+        or (_git(cwd, "rev-parse", "--verify", "-q", f"{branch}^{{commit}}") or "").strip()
+    )
+    remote = env.get("PRE_COMMIT_FROM_REF") or "0" * len(local)
     target = env.get("PRE_COMMIT_REMOTE_BRANCH") or branch
     return parse_updates(f"{branch} {local} {target} {remote}")
 
@@ -832,24 +849,35 @@ def push_check(
     env: Mapping[str, str],
     fail_on: FailOn | None = None,
     strict: bool = False,
+    *,
+    remote: str | None = None,
+    pre_push: bool = False,
 ) -> tuple[int, str]:
     """(exit code, report) for `agentprint push-check`: 1 blocks the push, 0 lets it go.
 
     With git's pre-push lines it checks what those refs upload, read from git's own objects:
-    the tree each one points at and the commits on the way, never the working tree. Without
-    any (run by hand, or by a hook manager that kept them) it checks what git tracks now. A
-    push that only deletes remote refs uploads nothing and always goes. The project config
-    and baseline apply as they do for the agent hook (`fail_on` None: the config's, else high).
+    the tree each one points at and the commits on the way to `remote` (the name git gave the
+    hook), never the working tree. `pre_push` says stdin is git's own pre-push input: empty
+    means an up-to-date push, which uploads nothing. Without lines (run by hand, or by a hook
+    manager that kept them) it checks what git tracks now. A push that only deletes remote refs
+    always goes. What could not be checked never takes back a finding (Ruling X19): it blocks
+    if anything was found, else says "could not check" (strict mode: blocks), never OK. The
+    project config and baseline apply as for the agent hook (`fail_on` None: the config's).
     """
     strict = strict or strict_requested(env)
-    updates = parse_updates(refs or "") or _pre_commit_update(env)
+    updates = parse_updates(refs or "")
+    if not updates and pre_push and refs is not None and not refs.strip():
+        return 0, OK  # git ran the hook for a push with nothing to upload
+    if not updates:
+        updates = _pre_commit_update(cwd, env)
+        remote = remote or env.get("PRE_COMMIT_REMOTE_NAME") or None
     if updates and all(update.deletes for update in updates):
         return 0, OK
     try:
         project = _project(cwd, None)
         strict = strict or project.config.strict
         if updates:
-            findings, notes = check_pushed(cwd, updates)
+            findings, notes = check_pushed(cwd, updates, remote or None)
         else:
             findings, notes = check_push(cwd), []
     except CannotCheck as exc:
@@ -863,9 +891,17 @@ def push_check(
             return 1, strict_block(why).reason.rstrip("\n")
         return 0, f"{why} The push was allowed. Please report this."
     findings, threshold, known, config_notes = _settle(findings, fail_on, project)
-    code = exit_code(findings, threshold)
-    if strict and notes and not code:
-        return 1, strict_block(f"agentprint could not check all of this push: {notes[0]}.").reason
+    notes = [clean(_masked(note)) for note in notes]
+    if exit_code(findings, threshold):  # found: blocks, whatever else could not be checked
+        text = to_agent(
+            findings, threshold, Moment.push, rerun="git push", not_checked=notes, known=known
+        )
+        return 1, "\n".join([text, *config_notes])
+    if notes:
+        why = f"agentprint could not check all of this push: {'; '.join(notes)}."
+        if strict:
+            return 1, strict_block(why).reason.rstrip("\n")
+        rest = to_agent(findings, threshold, Moment.push, known=known).split("\n")[1:]
+        return 0, "\n".join([f"{why} The push was allowed.", *rest, *config_notes])
     text = to_agent(findings, threshold, Moment.push, rerun="git push", known=known)
-    lines = [f"agentprint: {clean(note)}." for note in notes] + config_notes
-    return code, "\n".join([text, *lines])
+    return 0, "\n".join([text, *config_notes])

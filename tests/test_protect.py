@@ -97,10 +97,13 @@ def test_hook_script_is_lf_only_posix_sh_on_every_os(monkeypatch):
     """Git for Windows runs hooks with its bundled sh: LF line ends, forward-slash paths."""
     text = hook_script(["/opt/bin/agentprint"], strict=False)
     assert text.startswith("#!/bin/sh\n") and "\r" not in text and MARK in text
-    assert '| /opt/bin/agentprint push-check > "$tmp" &\n' in text
+    assert '| /opt/bin/agentprint push-check --pre-push --remote "$1" > "$tmp" &\n' in text
     monkeypatch.setattr(protect.platform, "is_windows", lambda: True)
     windows = hook_script([r"C:\Users\me\.local\bin\agentprint.exe"], strict=True)
-    assert '| C:/Users/me/.local/bin/agentprint.exe push-check --strict > "$tmp" &\n' in windows
+    assert (
+        '| C:/Users/me/.local/bin/agentprint.exe push-check --pre-push --remote "$1" --strict'
+        in windows
+    )
     assert "\\" not in windows.replace("\\n", "")
     assert "strict=1" in windows
 
@@ -283,11 +286,13 @@ def test_a_hook_that_would_break_when_renamed_is_left_alone(repo, home, content,
     assert manager in text and "left it as is" in text
     if manager == "pre-commit":
         assert "stages: [pre-push]" in text and "pre-commit install --hook-type pre-push" in text
-        assert f'additional_dependencies: ["agentprint=={__version__}"]' in text
-    else:
-        assert f"out=$(uvx agentprint=={__version__} push-check) || s=$?" in text
-    if manager == "lefthook":
+        assert "language: system" in text and "- agentprint" in text  # fails open, as husky's
+        assert f"out=$(uvx agentprint=={__version__} push-check) || s=$?" in text  # env, no args
+    elif manager == "lefthook":
         assert "use_stdin: true" in text
+        assert "push-check --pre-push --remote {1}) || s=$?" in text
+    else:
+        assert f'out=$(uvx agentprint=={__version__} push-check --pre-push --remote "$1")' in text
     assert not (home / ".agentprint" / "protect.json").exists()
 
 
@@ -318,7 +323,8 @@ def test_husky_hooks_path_inside_the_repo_prints_the_line_instead(repo, home):
     assert code == 1
     assert listing(repo) == before  # nothing written anywhere in the repository
     assert "core.hooksPath" in text and ".husky/pre-push" in text.replace(os.sep, "/")
-    assert f"    s=0; out=$(uvx agentprint=={__version__} push-check) || s=$?" in text
+    pin = f"uvx agentprint=={__version__}"
+    assert f'    s=0; out=$({pin} push-check --pre-push --remote "$1")' in text
     assert "committed" in text and "push goes on with one line" in text
     assert not (home / ".agentprint" / "protect.json").exists()
 
@@ -332,7 +338,8 @@ def test_lefthook_gets_its_yaml(repo, home):
     assert code == 1
     assert "lefthook.yml" in text and "lefthook install" in text
     assert "          run: |\n" in text and "use_stdin: true" in text
-    assert f"            s=0; out=$(uvx agentprint=={__version__} push-check --strict)" in text
+    run_line = f"            s=0; out=$(uvx agentprint=={__version__} push-check --strict "
+    assert run_line + "--pre-push --remote {1}) || s=$?" in text
     assert "push blocked" in text
     assert not (repo / "githooks" / "pre-push").exists()
 
@@ -626,12 +633,52 @@ def test_push_check_masks_keys_in_why_it_could_not_check(tmp_path, monkeypatch):
 
 
 def test_a_partly_read_push_is_said_and_blocks_only_in_strict_mode(tmp_path, monkeypatch):
-    monkeypatch.setattr(protect, "check_pushed", lambda cwd, updates: ([], ["read only part"]))
+    monkeypatch.setattr(protect, "check_pushed", lambda *a: ([], ["read only part"]))
     refs = f"refs/heads/main {SHA} refs/heads/main {ZERO}\n"
     code, text = push_check(tmp_path, refs, {})
-    assert code == 0 and "agentprint: read only part." in text
+    assert code == 0
+    assert text.startswith("agentprint could not check all of this push: read only part.")
+    assert "agentprint: OK" not in text
     code, text = push_check(tmp_path, refs, {}, strict=True)
     assert code == 1 and text.startswith("agentprint: BLOCK (strict mode)")
+
+
+@needs_git
+def test_more_commits_than_it_reads_is_could_not_check_never_ok(repo, monkeypatch):
+    """A key in the oldest of too many commits: never an OK headline."""
+    from agentprint import gitcheck
+
+    head = _commit_leak(repo)
+    git(repo, "rm", "-q", "--cached", ".claude/settings.local.json")
+    for i in range(6):
+        (repo / "n.txt").write_text(str(i))
+        git(repo, "add", "n.txt")
+        git(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "n")
+    head = git(repo, "rev-parse", "HEAD").strip()
+    monkeypatch.setattr(gitcheck, "MAX_COMMITS", 3)
+    refs = f"refs/heads/main {head} refs/heads/main {ZERO}\n"
+    code, text = push_check(repo, refs, {}, pre_push=True, remote="origin")
+    assert code == 0
+    assert text.startswith("agentprint could not check all of this push: refs/heads/main uploads")
+    assert "agentprint: OK" not in text
+    code, text = push_check(repo, refs, {}, strict=True)
+    assert code == 1 and text.startswith("agentprint: BLOCK (strict mode)")
+
+
+def test_empty_stdin_from_git_uploads_nothing(tmp_path, monkeypatch):
+    for name in ("check_push", "check_pushed"):
+        monkeypatch.setattr(protect, name, lambda *a: pytest.fail("checked an up-to-date push"))
+    assert push_check(tmp_path, "", {}, pre_push=True) == (0, "agentprint: OK")
+
+
+@needs_git
+def test_pre_commit_without_a_to_ref_reads_the_local_branch(repo):
+    """pre-commit sets no PRE_COMMIT_TO_REF when the push holds the root commit."""
+    _commit_leak(repo)
+    git(repo, "rm", "-q", "--cached", ".claude/settings.local.json")  # clean index
+    branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    env = {"PRE_COMMIT_REMOTE_NAME": "origin", "PRE_COMMIT_LOCAL_BRANCH": branch}
+    assert push_check(repo, "", env)[0] == 1
 
 
 def _commit_leak(repo):

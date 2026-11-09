@@ -1014,6 +1014,14 @@ def push_check(
             help="Block the push when agentprint cannot check it. Same as AGENTPRINT_STRICT=1.",
         ),
     ] = False,
+    remote: Annotated[
+        str | None,
+        typer.Option("--remote", help="The remote git named to the pre-push hook ($1)."),
+    ] = None,
+    pre_push: Annotated[
+        bool,
+        typer.Option("--pre-push", help="stdin is git's own pre-push input (empty: up to date)."),
+    ] = False,
 ) -> None:
     """Git pre-push hook entry point (`agentprint protect` sets it up).
 
@@ -1024,7 +1032,15 @@ def push_check(
 
     platform.use_utf8_streams()
     refs = None if sys.stdin is None or sys.stdin.isatty() else sys.stdin.read()
-    code, text = run_push_check(Path.cwd(), refs, os.environ, _given(ctx, fail_on), strict)
+    code, text = run_push_check(
+        Path.cwd(),
+        refs,
+        os.environ,
+        _given(ctx, fail_on),
+        strict,
+        remote=remote,
+        pre_push=pre_push,
+    )
     typer.echo(text)
     raise typer.Exit(code)
 
