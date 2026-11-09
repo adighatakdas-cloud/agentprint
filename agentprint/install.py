@@ -388,11 +388,80 @@ def _would_change(path: Path, edits: list[Edit]) -> bool:
 # ---- install ----------------------------------------------------------------------------------
 
 
+def _is_hook(edit: Edit) -> bool:
+    return edit.what.startswith("hook")
+
+
 def _hook_free(edits: list[Edit]) -> list[Edit]:
     """On Windows only the MCP server and the note go in: hooks run through a /bin/sh launcher."""
     if not platform.is_windows():
         return edits
-    return [e for e in edits if not e.what.startswith("hook")]
+    return [e for e in edits if not _is_hook(e)]
+
+
+OLD_HOOKS_WINDOWS = (
+    "Hooks from an earlier agentprint (0.1.0) were found. They run a /bin/sh launcher, which "
+    "can't guard anything on Windows, so they are taken out; the MCP server and the note stay."
+)
+
+
+def _old_hooks_out(
+    home: Path,
+    found: list[Integration],
+    env: Mapping[str, str],
+    launch: Launch,
+    state: State,
+    dry_run: bool,
+    echo: Echo,
+) -> int:
+    """Windows: take out hooks an earlier agentprint installed (0.1.0 armed Windows too), and
+    then their launcher. Each is recognised by the launcher's name (HOOK_MARK) in it. Returns
+    how many files changed (or would)."""
+    every = _group([e for i in found for e in i.edits(home, env, launch)])
+    hooks = {path: [e for e in group if _is_hook(e)] for path, group in every.items()}
+    hooks = {path: group for path, group in hooks.items() if group}
+    launcher = Path(launch.hook)
+    holding = [(path, group) for path, group in hooks.items() if _holds_ours(path, group)]
+    if not holding and not _holds_ours(launcher, _core_edits(home, ["agentprint"])):
+        return 0
+    echo("\n== old hooks ==")
+    echo(OLD_HOOKS_WINDOWS)
+    changed, kept = 0, False
+    for path, group in holding:
+        entry = state.files.get(str(path))
+        result = _uninstall_file(home, path, group, state, dry_run, echo)
+        changed += result not in {"same", "kept"}
+        if entry is not None and not dry_run and _holds_ours(path, every[path]):
+            state.files[str(path)] = entry  # its MCP server stays: uninstall still needs this
+        if result == "kept":
+            kept = True
+            echo(f"    Remove each hook entry that runs {_shown(home, launcher)} from it by hand.")
+    if kept:  # a hook still runs it: the launcher stays until that hook is gone
+        echo(f"  {_shown(home, launcher)}: kept while a hook above still runs it.")
+        return changed
+    for path, group in _group(_core_edits(home, ["agentprint"])).items():
+        changed += _uninstall_file(home, path, group, state, dry_run, echo) not in {"same", "kept"}
+    return changed
+
+
+def _holds_ours(path: Path, edits: list[Edit]) -> bool:
+    """True when the file at `path` still holds one of `edits` (taking them out would change
+    what it says, not just tidy an empty table away)."""
+    try:
+        current = _read(path)
+        if current is None:
+            return False
+        reverted = _through_edits(current, edits, revert=True) or ""
+        return reverted != current and not _same(reverted, current, edits)
+    except Exception:  # noqa: BLE001 - can't be read as data: does a hook of ours show in it?
+        return HOOK_MARK in (_read_quietly(path) or "")
+
+
+def _read_quietly(path: Path) -> str | None:
+    try:
+        return _real(path).read_bytes().decode("utf-8", errors="replace")
+    except OSError:
+        return None
 
 
 def _group(edits: list[Edit]) -> dict[Path, list[Edit]]:
@@ -471,7 +540,7 @@ def install(
     elif strict:
         echo("Strict mode: a publish or push agentprint cannot check will be blocked.")
     state = State.load(home)
-    changed = 0
+    changed = _old_hooks_out(home, found, env, launch, state, dry_run, echo) if windows else 0
     agents = [(i.name, i.label, _hook_free(i.edits(home, env, launch))) for i in found]
     agent_files = [(path, group) for _, _, edits in agents for path, group in _group(edits).items()]
     # The shared launcher goes in when an agent file will use it, or when a hook installed
@@ -588,8 +657,8 @@ def uninstall(
     state = State.load(home)
     echo(f"agentprint uninstall{' (dry run: nothing is written)' if dry_run else ''}")
     grouped: dict[Path, list[Edit]] = {}
-    for name in chosen:
-        grouped.update(_group(_hook_free(ALL_INTEGRATIONS[name].edits(home, env, launch))))
+    for name in chosen:  # hooks too on Windows: 0.1.0 installed them there
+        grouped.update(_group(ALL_INTEGRATIONS[name].edits(home, env, launch)))
     for key, entry in state.files.items():  # moved since install, e.g. AGENTS.override.md
         if Path(key) not in grouped and (entry.get("agent") in chosen or not names):
             grouped[Path(key)] = _marker_reverts(Path(key))
@@ -599,7 +668,7 @@ def uninstall(
         if entry.get("agent") != CORE and Path(key) not in grouped
     ]
     last = not others  # nothing of another agent left: the launcher and state go too
-    if last and not platform.is_windows():
+    if last:
         grouped.update(_group(_core_edits(home, ["agentprint"])))
     changed = 0
     exact = True
@@ -617,6 +686,9 @@ def uninstall(
     if dry_run:
         echo(f"\n{changed} file(s) would change." + (f" {apply_hint}" if apply_hint else ""))
         return changed
+    # The record and backups go only once nothing agentprint wrote is left: they are how a
+    # later uninstall finds a hook or launcher this one could not take out.
+    exact = exact and not any(_holds_ours(path, group) for path, group in grouped.items())
     if last and exact:
         shutil.rmtree(home / STATE_DIR / "backups", ignore_errors=True)
         state.path.unlink(missing_ok=True)
