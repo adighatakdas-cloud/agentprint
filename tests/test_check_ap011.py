@@ -195,3 +195,41 @@ def test_qwen_extension_manifest_mcp_servers_are_read(tmp_path):
     ext.write(path, json.dumps(manifest, indent=2))
     [finding] = _ap011(home, None)
     assert (finding.location, finding.agent) == (str(path), "qwen-code")
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("docker", "run", "-i", "--rm", "--pids-limit", "100", "mcp/x:1.0"),
+        ("docker", "run", "-i", "--memory-reservation", "1g", "mcp/x:1.0"),
+        ("docker", "run", "-i", "--dns-search", "corp", "mcp/x:1.0"),
+        ("docker", "run", "-i", "--health-start-period", "5s", "mcp/x:1.0"),
+        ("docker", "run", "-i", "--cpu-quota", "5000", "--stop-timeout", "3", "mcp/x:1.0"),
+        ("docker", "run", "-i", "--pull", "always", "mcp/x@sha256:" + "ab" * 32),
+        (
+            "npx",
+            "-y",
+            "https://x.example.invalid/x/y/tarball/0123456789abcdef0123456789abcdef01234567",
+        ),
+        ("npx", "-y", "https://registry.example.invalid/pkg-1.2.3.tgz"),
+        ("deno", "run", "-A", "npm:some-mcp@1.2.3"),
+        ("deno", "run", "-A", "./server.ts"),
+    ],
+)
+def test_review_pinned_forms_pass(argv):
+    assert unpinned(_server(*argv)) is None
+
+
+@pytest.mark.parametrize(
+    ("argv", "problem"),
+    [
+        (("docker", "run", "-i", "--rm", "--pull=always", "mcp/x:1.0"), "--pull=always"),
+        (("pnpm", "--silent", "dlx", "some-mcp"), "no version"),
+        (("sh", "-c", "exec npx -y some-mcp"), "no version"),
+        (("npx", "-y", "https://x.example.invalid/x/y/tarball/main"), "remote archive"),
+        (("deno", "run", "-A", "npm:some-mcp"), "no version"),
+    ],
+)
+def test_review_unpinned_forms(argv, problem):
+    hit = unpinned(_server(*argv))
+    assert hit is not None and problem in hit.problem

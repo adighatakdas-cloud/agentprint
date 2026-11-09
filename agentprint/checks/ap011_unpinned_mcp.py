@@ -10,9 +10,11 @@ What counts as unpinned:
   other dist-tag) or a version range (`@^1.2.0`). `-p/--package` specs are read the same way.
 - uvx and `uv tool run`: a package with no `==<version>` or `@<version>` (or `@latest`, or a
   range); with `--from <spec>`, that spec is the package. pipx run: the same, `--spec` included.
-- docker and podman run: an image with no tag, or the `latest` tag, and no `@sha256:` digest.
+- docker and podman run: an image with no tag, or the `latest` tag, and no `@sha256:` digest;
+  a tag with `--pull=always` (pulled again on every start).
 - a git source with no commit (`github:user/repo`, `git+https://...` without `#<sha>` or
-  `@<sha>`).
+  `@<sha>`), and a remote archive URL that names no version or commit (`.../tarball/main`).
+- deno run with an `npm:` package that has no version.
 
 Never flagged: local paths and programs (`node server.js`, `./bin/server`, `uv run`), an exact
 version or a digest, a runner such as `npx tsx ./server.ts` that starts a local script, and
@@ -58,19 +60,31 @@ _UV_VALUE |= {"--no-binary-package", "--no-build-package", "--config-setting"}
 _UV_VALUE |= {"--refresh-package", "--python-platform", "--torch-backend"}
 _PIPX_VALUE = {"--python", "--index-url", "-i", "--pip-args", "--backend", "--fetch-python"}
 _DOCKER_GLOBAL = {"--context", "-c", "-H", "--host", "--config", "-l", "--log-level"}
-_DOCKER_VALUE = {"-e", "--env", "-v", "--volume", "--name", "-p", "--publish", "--network"}
-_DOCKER_VALUE |= {"--net", "-w", "--workdir", "-u", "--user", "--entrypoint", "--env-file"}
-_DOCKER_VALUE |= {"--mount", "-l", "--label", "--platform", "--pull", "--cpus", "-m"}
-_DOCKER_VALUE |= {"--memory", "--add-host", "--cap-add", "--cap-drop", "--device", "--dns"}
-_DOCKER_VALUE |= {"-h", "--hostname", "--ipc", "--log-driver", "--log-opt", "--restart"}
-_DOCKER_VALUE |= {"--runtime", "--security-opt", "--shm-size", "--stop-signal", "--tmpfs"}
-_DOCKER_VALUE |= {"--ulimit", "--gpus", "-a", "--attach", "--cidfile", "--pid", "--userns"}
-_DOCKER_VALUE |= {"--uts", "--volumes-from", "--link", "--expose", "--group-add", "--sysctl"}
-_DOCKER_VALUE |= {"--memory-swap", "--stop-timeout", "--label-file", "-c", "--cpu-shares"}
-_DOCKER_VALUE |= {"--cpuset-cpus", "--health-cmd", "--health-interval", "--health-retries"}
-_DOCKER_VALUE |= {"--health-timeout", "--isolation", "--mac-address", "--ip", "--ip6"}
-_DOCKER_VALUE |= {"--network-alias", "--oom-score-adj", "--storage-opt", "--cgroup-parent"}
-_DOCKER_VALUE |= {"--cgroupns", "--domainname", "--annotation", "--blkio-weight"}
+# Every `docker run` option that takes a value, so a value is never read as the image
+# (https://docs.docker.com/reference/cli/docker/container/run/, read 2026-11-09; podman's extras).
+_DOCKER_VALUE: set[str] = {
+    "-a", "--attach", "--add-host", "--annotation", "--blkio-weight", "--blkio-weight-device",
+    "-c", "--cpu-shares", "--cap-add", "--cap-drop", "--cgroup-parent", "--cgroupns",
+    "--cidfile", "--cpu-count", "--cpu-percent", "--cpu-period", "--cpu-quota",
+    "--cpu-rt-period", "--cpu-rt-runtime", "--cpus", "--cpuset-cpus", "--cpuset-mems",
+    "--detach-keys", "--device", "--device-cgroup-rule", "--device-read-bps",
+    "--device-read-iops", "--device-write-bps", "--device-write-iops", "--dns", "--dns-option",
+    "--dns-search", "--domainname", "-e", "--env", "--entrypoint", "--env-file", "--expose",
+    "--gpus", "--group-add", "--health-cmd", "--health-interval", "--health-retries",
+    "--health-start-interval", "--health-start-period", "--health-timeout", "-h", "--hostname",
+    "--ip", "--ip6", "--ipc", "--isolation", "--kernel-memory", "-l", "--label", "--label-file",
+    "--link", "--link-local-ip", "--log-driver", "--log-opt", "--mac-address", "-m", "--memory",
+    "--memory-reservation", "--memory-swap", "--memory-swappiness", "--mount", "--name",
+    "--network", "--net", "--network-alias", "--oom-score-adj", "--pid", "--pids-limit",
+    "--platform", "-p", "--publish", "--pull", "--restart", "--runtime", "--security-opt",
+    "--shm-size", "--stop-signal", "--stop-timeout", "--storage-opt", "--sysctl", "--tmpfs",
+    "--ulimit", "-u", "--user", "--userns", "--uts", "-v", "--volume", "--volume-driver",
+    "--volumes-from", "-w", "--workdir", "--arch", "--os", "--variant", "--secret",
+    "--hooks-dir", "--cgroup-conf", "--chrootdirs", "--conmon-pidfile", "--env-merge",
+    "--gidmap", "--uidmap", "--subgidname", "--subuidname", "--pod", "--pod-id-file",
+    "--preserve-fds", "--requires", "--sdnotify", "--seccomp-policy", "--timeout", "--tz",
+    "--umask", "--unsetenv", "--passwd-entry",
+}  # fmt: skip
 
 
 @dataclass(frozen=True)
@@ -111,6 +125,8 @@ def _unwrap(argv: list[str]) -> list[str]:
             argv = argv[1:]
             while argv and ("=" in argv[0] or argv[0].startswith("-")):
                 argv = argv[1:]
+        elif program == "exec":  # sh -c "exec npx -y pkg"
+            argv = argv[1:]
         else:
             return argv
     return argv
@@ -141,9 +157,19 @@ def _options(
     return specs, i
 
 
+_VERSIONED_URL = re.compile(
+    r"[/@#-]v?\d+\.\d+\.\d+[^/]*$|/[0-9a-f]{7,40}(?:\.(?:tar\.gz|tgz|zip))?$"
+)
+
+
+def _remote_problem(spec: str) -> str | None:
+    """A package fetched from a URL: pinned when the URL names a version or a commit."""
+    return None if _VERSIONED_URL.search(spec) else "a remote archive with no fixed version"
+
+
 def _local(spec: str) -> bool:
     return (
-        spec.startswith((".", "/", "~", "file:", "http://", "https://"))
+        spec.startswith((".", "/", "~", "file:"))
         or "\\" in spec
         or bool(re.match(r"[A-Za-z]:", spec))
         or "$" in spec
@@ -161,6 +187,8 @@ def _git_problem(spec: str) -> str | None:
 def _npm_problem(spec: str) -> str | None:
     if _local(spec):
         return None
+    if spec.startswith(("http://", "https://")):
+        return _remote_problem(spec)
     if spec.startswith(("git+", "git:", "github:", "gitlab:", "bitbucket:")) or re.fullmatch(
         r"[\w.-]+/[\w.-]+(?:#.*)?", spec
     ):
@@ -179,6 +207,8 @@ def _npm_problem(spec: str) -> str | None:
 def _pypi_problem(spec: str) -> str | None:
     if _local(spec):
         return None
+    if spec.startswith(("http://", "https://")):
+        return _remote_problem(spec)
     if spec.startswith("git+"):
         return _git_problem(spec.partition("#")[0])
     match = re.match(r"([A-Za-z0-9][\w.-]*)(\[[^\]]*\])?\s*(.*)$", spec)
@@ -251,6 +281,21 @@ def _pipx(args: list[str]) -> Unpinned | None:
     return Unpinned("pipx run", spec, problem, f"pipx run --spec {pinned} {app or spec}")
 
 
+def _deno(args: list[str]) -> Unpinned | None:
+    """deno run [options] npm:pkg[@version]: an npm: specifier is an npm package."""
+    for arg in args:
+        if arg.startswith("npm:"):
+            spec = arg[4:]
+            problem = _npm_problem(spec)
+            if problem is None:
+                return None
+            name = _package(spec, "@")
+            return Unpinned("deno run", arg, problem, f"deno run npm:{name}@<version>")
+        if not arg.startswith("-"):
+            return None  # a local file or a jsr:/https: module: not an npm package
+    return None
+
+
 def _image_problem(ref: str) -> str | None:
     if "$" in ref or "{" in ref or "@sha256:" in ref:
         return None
@@ -269,11 +314,13 @@ def _docker(program: str, args: list[str]) -> Unpinned | None:
         rest = rest[1:]
     else:
         return None
-    _, at = _options(rest, _DOCKER_VALUE, set())
+    pulls, at = _options(rest, _DOCKER_VALUE, {"--pull"})
     if at >= len(rest):
         return None
     image = rest[at]
     problem = _image_problem(image)
+    if problem is None and "always" in pulls and "@sha256:" not in image and "$" not in image:
+        problem = "a tag pulled again on every start (--pull=always)"
     if problem is None:
         return None
     name = image.rsplit(":", 1)[0] if ":" in image.rsplit("/", 1)[-1] else image
@@ -291,8 +338,12 @@ def unpinned(server: McpServer) -> Unpinned | None:
     program, args = _program(argv[0]), argv[1:]
     if program in ("npx", "bunx"):
         return _npm(program, args)
-    if program in ("pnpm", "yarn") and args[:1] == ["dlx"]:
-        return _npm(f"{program} dlx", args[1:])
+    if program in ("pnpm", "yarn") and "dlx" in args[:4]:
+        at = args.index("dlx")
+        if all(arg.startswith("-") for arg in args[:at]):  # pnpm --silent dlx pkg
+            return _npm(f"{program} dlx", args[at + 1 :])
+    if program == "deno" and args[:1] == ["run"]:
+        return _deno(args[1:])
     if program == "npm" and args[:1] in (["exec"], ["x"]):
         return _npm("npm exec", args[1:])
     if program == "uvx":
