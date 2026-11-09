@@ -896,3 +896,10 @@ def test_a_conditional_dry_run_does_not_silence_a_publish(tmp_path, command, fil
     for rel, text in files.items():
         write(tmp_path, rel, text, 0o755)
     assert tools(command, tmp_path) == [(P, "npm")]
+
+
+def test_a_variable_publish_past_the_oneshell_cap_is_still_seen(tmp_path):
+    big = "V2 = " + "x" * 100 + "\nV1 = " + "$(V2)" * 20 + "\nV0 = " + "$(V1)" * 30 + "\n"
+    makefile = ".ONESHELL:\nNPM = npm\n" + big + "all:\n" + "\techo $(V0)\n" * 60
+    write(tmp_path, "Makefile", makefile + "\t$(NPM) publish demo-1.0.0.tgz\n")
+    assert tools("make", tmp_path) == [(P, "npm")]  # scanned past the cap: could not check

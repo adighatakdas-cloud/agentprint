@@ -278,6 +278,7 @@ _RECIPE_PREFIX = re.compile(r"^[\s@+-]+")
 _MAKE_NAME = re.compile(r"[A-Za-z_][\w.-]*")
 _EXPANSION_DEPTH = 8
 _MAX_EXPANSION = 64 * 1024
+SMALL_EXPANSION = 4096  # past a budget: enough for `$(NPM)`, not for a runaway value
 
 
 @dataclass
@@ -379,13 +380,16 @@ class MakePlan:
     def text(self, step: str, limit: int = 0, total: int = 0) -> str:
         """One step with variables filled in and `@`/`-`/`+` taken off each line. A value that
         grows past `limit` characters (64 KB when 0) stays unknown. Once the step is longer than
-        `total` characters (when given), the rest of its lines (a `.ONESHELL` recipe) are kept
-        as written, unexpanded, so one step can't grow without bound."""
+        `total` characters (when given), the rest of its lines (a `.ONESHELL` recipe) are filled
+        in under a small limit, so one step can't grow without bound and `$(NPM) publish` still
+        reads as `npm publish`."""
         lines: list[str] = []
         size = 0
         for line in step.split("\n"):
-            if not total or size <= total:
-                line = expand_make(line, self.variables, self.memo, limit=limit)
+            past = total and size > total
+            line = expand_make(
+                line, self.variables, self.memo, limit=SMALL_EXPANSION if past else limit
+            )
             line = _RECIPE_PREFIX.sub("", line)
             if line.strip():
                 lines.append(line)

@@ -647,7 +647,9 @@ def _make(args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
     for raw in plan.raw:
         left = MAX_BYTES - reading.bytes
         if reading.peeking or left <= 0:  # scan only, with a small expansion
-            found += _flag(_hits(plan.text(raw, limit=4096), cwd), name, cwd, _DEEP)
+            found += _flag(
+                _hits(plan.text(raw, limit=recipes.SMALL_EXPANSION), cwd), name, cwd, _DEEP
+            )
         elif text := plan.text(raw, total=left):  # a .ONESHELL step stops growing at the budget
             found += _step(recipes.Step(text), name, cwd, depth)
     return found
