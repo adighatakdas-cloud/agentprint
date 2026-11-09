@@ -40,7 +40,7 @@ from pathlib import Path, PureWindowsPath
 
 from . import __version__, platform
 from .advice import Moment
-from .gitcheck import _git, check_push, check_pushed, parse_updates, repo_root
+from .gitcheck import RefUpdate, _git, check_push, check_pushed, parse_updates, repo_root
 from .guard import _masked, _project, _settle, strict_block, strict_requested
 from .install import (
     STATE_DIR,
@@ -198,25 +198,69 @@ def _hook_folder(repo: Repo) -> tuple[Path | None, str]:
     return None, "not-owned"
 
 
-def _manager_advice(repo: Repo, why: str, strict: bool) -> list[str]:
-    """What to add by hand when the hook folder belongs to a hook manager or someone else."""
+# A pre-push hook that a hook manager wrote, or that finds out which hook it is from its own file
+# name ($0, as husky 4 and overcommit do), breaks when renamed: it is never chained.
+_DISPATCH = re.compile(rb"\$\{?0(?![0-9])")
+_MANAGERS = ("husky", "lefthook", "pre-commit", "overcommit")
+
+
+def _run_by(hook: bytes) -> str | None:
+    """Which manager runs this hook ("husky", ..., or "$0" for one that reads its own name), or
+    None for a plain script that can be renamed and chained."""
+    low = hook.lower()
+    for manager in _MANAGERS:
+        if manager.encode() in low:
+            return manager
+    return "$0" if _DISPATCH.search(hook) else None
+
+
+def _by_hand(repo: Repo, manager: str | None, strict: bool) -> list[str]:
+    """Where and what to add by hand for `manager`, indented under the explanation."""
     line = manual_line(strict)
-    shown = _short(str(repo.hooks))
-    lines = [f"git: core.hooksPath is set to {shown}, so agentprint did not add a hook there."]
     lefthook = [n for n in ("lefthook.yml", ".lefthook.yml") if (repo.root / n).is_file()]
-    if why == "managed" and ".husky" in repo.hooks.parts:
-        husky = repo.root / ".husky" / HOOK
-        lines.append(f"  To check every push, add this line to {_short(str(husky))}:")
-        lines.append(f"    {line}")
-    elif why == "managed" and lefthook:
-        lines.append(
-            f"  To check every push, add this to {lefthook[0]} and run `lefthook install`:"
-        )
-        lines += ["    pre-push:", "      jobs:", f"        - run: {line}"]
-    else:
-        owner = "a folder inside the repository" if why == "managed" else "a folder you don't own"
-        lines.append(f"  It is {owner}. To check every push, add this line to its {HOOK} hook:")
-        lines.append(f"    {line}")
+    if manager == "lefthook" or (manager is None and lefthook):
+        name = lefthook[0] if lefthook else "lefthook.yml"
+        return [
+            f"  To check every push, add this to {name}, then run `lefthook install`:",
+            "    pre-push:",
+            "      commands:",
+            "        agentprint:",
+            "          use_stdin: true",
+            f"          run: {line}",
+        ]
+    if manager == "pre-commit":
+        return [
+            "  To check every push, add this under `repos:` in .pre-commit-config.yaml, then run "
+            "`pre-commit install --hook-type pre-push`:",
+            "    - repo: local",
+            "      hooks:",
+            "        - id: agentprint-push-check",
+            "          name: agentprint push-check",
+            f"          entry: {line}",
+            "          language: system",
+            "          stages: [pre-push]",
+            "          pass_filenames: false",
+            "          always_run: true",
+        ]
+    if manager == "husky":
+        husky = _short(str(repo.root / ".husky" / HOOK))
+        return [
+            f"  To check every push, add this line to {husky} (husky 4: to the pre-push command "
+            "in package.json's husky.hooks):",
+            f"    {line}",
+        ]
+    return [f"  To check every push, add this line to that {HOOK} hook:", f"    {line}"]
+
+
+def _manager_advice(repo: Repo, why: str, strict: bool) -> list[str]:
+    """What to add by hand when core.hooksPath names a hook manager's or someone else's folder."""
+    shown = _short(str(repo.hooks))
+    owner = "a folder inside the repository" if why == "managed" else "a folder you don't own"
+    lines = [
+        f"git: core.hooksPath is set to {shown}, {owner}, so agentprint did not add a hook there."
+    ]
+    manager = "husky" if why == "managed" and ".husky" in repo.hooks.parts else None
+    lines += _by_hand(repo, manager if why == "managed" else None, strict)
     lines.append(
         "  It reads git's pre-push input on stdin (husky passes it on); without that input, "
         "deleting a branch is checked too."
@@ -354,6 +398,18 @@ def _protect_git(
         return 1
     if hook.is_dir():
         echo(f"git: {shown} is a folder, so no hook was added.")
+        return 1
+    manager = _run_by(current) if current is not None else None
+    if manager is not None:
+        who = (
+            "finds out which hook it is from its own file name ($0)"
+            if manager == "$0"
+            else f"is run by {manager}"
+        )
+        echo(f"git: your pre-push hook {shown} {who}, so agentprint left it as is: renamed to")
+        echo("  chain it, it would stop working.")
+        for line in _by_hand(repo, None if manager == "$0" else manager, strict):
+            echo(line)
         return 1
     created = _make_dirs(folder)
     keep = os.path.lexists(hook)
@@ -648,6 +704,16 @@ def protection_text(found: list[str]) -> str:
 # ---- push-check (run by the hook) -------------------------------------------------------------
 
 
+def _pre_commit_update(env: Mapping[str, str]) -> list[RefUpdate]:
+    """The pre-commit framework keeps git's stdin and names the push in its environment
+    instead (PRE_COMMIT_TO_REF: the local sha, PRE_COMMIT_FROM_REF: the remote's)."""
+    local, remote = env.get("PRE_COMMIT_TO_REF", ""), env.get("PRE_COMMIT_FROM_REF", "")
+    remote = remote or "0" * len(local)
+    branch = env.get("PRE_COMMIT_LOCAL_BRANCH") or "HEAD"
+    target = env.get("PRE_COMMIT_REMOTE_BRANCH") or branch
+    return parse_updates(f"{branch} {local} {target} {remote}")
+
+
 def push_check(
     cwd: Path,
     refs: str | None,
@@ -664,7 +730,7 @@ def push_check(
     and baseline apply as they do for the agent hook (`fail_on` None: the config's, else high).
     """
     strict = strict or strict_requested(env)
-    updates = parse_updates(refs or "")
+    updates = parse_updates(refs or "") or _pre_commit_update(env)
     if updates and all(update.deletes for update in updates):
         return 0, OK
     try:
