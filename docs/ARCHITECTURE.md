@@ -33,6 +33,8 @@ steps, and what to ask the human). Who is running it decides which (`ui/detect.p
                                                                    sanitize.py on every scanned string
 
  agentprint install ─► install.py + integrations/*.py: a hook, an MCP entry and a note per agent
+ agentprint protect ─► protect.py: a git pre-push hook (runs `push-check` → gitcheck.py) and
+                       npm's prepublishOnly (runs `pack`), checked at git and npm themselves
 ```
 
 ## The parts
@@ -87,6 +89,13 @@ agent is about to run and spots publishes and pushes. It is a careful reader, no
 follows `cd`, `&&`, `bash -c`, `npm run release` (by reading `package.json`), workspaces and
 release tools. `guard.py` then works out what would be uploaded and checks it. Everything that
 isn't a publish or a push passes straight through without any check.
+
+**`protect.py` (the second layer).** Reading a command can be dodged (`eval`, a push built at
+run time), so `agentprint protect` also checks at the tools' own boundary, for one project: a git
+pre-push hook that runs `agentprint push-check` (the same `gitcheck.py` check) and a
+`prepublishOnly` script that runs `agentprint pack`. An existing hook is chained, a hook
+manager's folder is left alone (the line to add is printed), and `--undo` restores each file
+exactly from the record in `~/.agentprint/protect.json`.
 
 **`mcp_server.py`.** An MCP server (official MCP Python SDK) with four tools:
 `check_package`, `check_push`, `scan_secrets`, `explain_finding`. Same checks, agent format.
