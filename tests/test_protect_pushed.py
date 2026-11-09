@@ -60,7 +60,14 @@ def fast_import(repo, commits, branch="main"):
             else:
                 data = text.encode()
                 out.append(f"M 100644 inline {path}\ndata {len(data)}\n{text}\n")
-    git(repo, "fast-import", "--quiet", "--force", stdin="".join(out))
+    # Bytes, not text: on Windows a text-mode pipe turns \n into \r\n and breaks `data <len>`.
+    subprocess.run(
+        ["git", "-C", str(repo), "fast-import", "--quiet", "--force"],
+        check=True,
+        capture_output=True,
+        input="".join(out).encode(),
+        timeout=120,
+    )
     if branch == "main":
         git(repo, "reset", "-q", "--hard", branch)
     return sha_of(repo, f"refs/heads/{branch}")
