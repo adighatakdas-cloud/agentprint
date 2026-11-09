@@ -40,6 +40,7 @@ import re
 from bisect import bisect_right
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from itertools import chain
 from typing import NamedTuple
 
 from ..secrets import Budget, base64_texts, mask_keys
@@ -56,8 +57,8 @@ MAX_LINE = 8192  # a longer command or sentence is not read for shapes (minified
 MAX_PARAGRAPH = 256  # lines of prose read as one paragraph; a longer one is read in parts
 # The per-file budget, linear in the file's length: a fixed part plus a share per character.
 BASE_TRIES, TRIES_PER_CHAR = 8192, 1 / 8
-BASE_CHARS, CHARS_PER_CHAR = 1_500_000, 2
-BLOCK_COST = 192  # what one command or sentence that holds a shape's word costs, on top
+BASE_CHARS, CHARS_PER_CHAR = 2_000_000, 2
+BLOCK_COST = 400  # what one command or sentence that holds a shape's word costs, on top
 
 
 @dataclass
@@ -673,7 +674,7 @@ def _sentences(paragraph: list[tuple[int, str]]) -> Iterator[Block]:
         size += len(part)
     text = "".join(parts)
     at = 0
-    for match in [*_SENTENCE_END.finditer(text), None]:
+    for match in chain(_SENTENCE_END.finditer(text), [None]):  # lazily: a scan may stop early
         end = match.start() if match else len(text)
         sentence = text[at:end].strip()
         if sentence:
