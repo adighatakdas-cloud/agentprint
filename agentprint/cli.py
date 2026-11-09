@@ -324,6 +324,12 @@ def run_scan_command(
         header=header,
         not_checked=platform.scan_notes(),
     )
+    if fmt is Format.agent:
+        from .protect import protection_line
+
+        protected = protection_line(path)  # only in a protected repo: other output is unchanged
+        if protected:
+            typer.echo(protected)
     return _write_badge(badge_dir, "scan", fail_on, findings) or exit_code(findings, fail_on)
 
 
@@ -660,6 +666,67 @@ def guard(
     raise typer.Exit(reply.exit_code)
 
 
+@app.command("push-check", hidden=True)
+def push_check(
+    fail_on: FailOnOpt = FailOn.high,
+    strict: Annotated[
+        bool,
+        typer.Option(
+            "--strict",
+            help="Block the push when agentprint cannot check it. Same as AGENTPRINT_STRICT=1.",
+        ),
+    ] = False,
+) -> None:
+    """Git pre-push hook entry point (`agentprint protect` sets it up).
+
+    Reads git's pre-push lines on stdin, checks what the push would publish, prints the brief
+    and exits 1 to stop the push. A push that only deletes remote branches is never stopped.
+    """
+    from .protect import push_check as run_push_check
+
+    platform.use_utf8_streams()
+    refs = None if sys.stdin is None or sys.stdin.isatty() else sys.stdin.read()
+    code, text = run_push_check(Path.cwd(), refs, os.environ, fail_on, strict)
+    typer.echo(text)
+    raise typer.Exit(code)
+
+
+@app.command()
+def protect(
+    path: Annotated[Path, typer.Argument(help="Project folder. Default: this one.")] = Path("."),
+    undo: Annotated[
+        bool, typer.Option("--undo", help="Take out what protect added, exactly.")
+    ] = False,
+    strict: Annotated[
+        bool,
+        typer.Option(
+            "--strict",
+            help="The hook blocks the push when agentprint is missing or cannot check it "
+            "(default: it lets the push go with a note).",
+        ),
+    ] = False,
+) -> None:
+    """Check every git push and npm publish at git and npm themselves, for one project.
+
+    Adds a git pre-push hook (a hook already there is kept and runs first) and, if PATH has a
+    package.json, a prepublishOnly script. They fire however the push or publish was started,
+    even one hidden from the agent hook. `agentprint protect --undo` takes them out.
+    """
+    from .protect import protect as run_protect
+    from .protect import unprotect
+
+    if undo and strict:
+        typer.secho("error: --undo takes no --strict", err=True, fg=typer.colors.RED)
+        raise typer.Exit(2)
+    home = Path.home()
+    code = (
+        unprotect(path, home, typer.echo)
+        if undo
+        else run_protect(path, home, typer.echo, strict=strict)
+    )
+    raise typer.Exit(code)
+
+
 @app.command()
 def mcp() -> None:
     """Run agentprint as an MCP server on stdin/stdout, for AI agents.
@@ -780,6 +847,7 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
     notes = [note for s in states if s.found and (note := _keep_one(s))]
     # Agents a sweep reads in full but install can't arm yet: listed when found.
     swept = scanned(home_dir)
+    protected = _protected_here()  # only set in a protected repo: other output is unchanged
     if fmt is StatusFormat.json:
         agents = []
         for s in states:
@@ -788,11 +856,10 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
                 agent["plugin"] = s.plugin  # "enabled", "disabled" or "unknown"
             agents.append(agent)
         also = [{"name": s.name, "label": s.label, "found": s.found} for s in swept]
-        typer.echo(
-            json_lib.dumps(
-                {"tool": "agentprint", "version": __version__, "agents": agents, "scanned": also}
-            )
-        )
+        data = {"tool": "agentprint", "version": __version__, "agents": agents, "scanned": also}
+        if protected:
+            data["protected"] = protected
+        typer.echo(json_lib.dumps(data))
     elif fmt is StatusFormat.agent:
         for s in states:
             typer.echo(f"{clean(s.name)} {_status_word(s)}")
@@ -803,6 +870,8 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
             typer.echo("Arm unarmed agents with: agentprint install")
         for note in notes:
             typer.echo(note)
+        if protected:
+            typer.echo(_protected_text(protected))
     else:
         out = themed_console(env or dict(os.environ), plain=plain)
         out.print(Text(f"agentprint {__version__} · roster", style="ap.dim"))
@@ -830,7 +899,23 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
         for note in notes:
             for line in hang("", note, out.width):
                 out.print(line)
+        if protected:
+            for line in hang("", Text(_protected_text(protected), style="ap.dim"), out.width):
+                out.print(line)
     return 0
+
+
+def _protected_here() -> list[str]:
+    """What checks pushes and publishes at git and npm themselves for the current folder."""
+    from .protect import protection
+
+    return protection(Path.cwd())
+
+
+def _protected_text(found: list[str]) -> str:
+    from .protect import protection_text
+
+    return protection_text(found)
 
 
 def _status_word(s: AgentState) -> str:
