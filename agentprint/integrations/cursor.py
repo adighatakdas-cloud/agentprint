@@ -54,10 +54,12 @@ NAME = "cursor"
 # Cursor matches this regex against the whole command line (it's JavaScript; this pattern uses
 # only syntax shared with Python's `re`, which the tests use). The tool must sit where a
 # command starts, so `git stash push`, `echo npm publish` and quoted text don't fire the hook.
+# Wrappers may take options with values (`sudo -u deploy`, `env -C dir`, `nice -n 10`).
 _PROGRAM_START = (
     r"(?:^|[;&|({!`\n]|\$\(|\b(?:do|then|else|elif|if|while|until|xargs|sudo|doas|env|exec|eval|"
-    r"nohup|nice|time|command|caffeinate|stdbuf|npx|pnpx|bunx|uvx|corepack)\s|\btimeout\s+\S+\s|"
-    r"\bpython[0-9.]*\s+-m\s)\s*(?:-\S+\s+(?:[0-9]+\s+)?)*(?:\w+=\S*\s+)*"
+    r"nohup|nice|ionice|chronic|unbuffer|watch|flock|setsid|time|command|builtin|caffeinate|"
+    r"stdbuf|npx|pnpx|bunx|uvx|corepack)\s|\bg?timeout\s+\S+\s|\bpython[0-9.]*\s+-m\s)"
+    r"\s*(?:-\S+\s+(?:[^-\s;&|]\S*\s+)?)*(?:\w+=\S*\s+)*"
 )
 _COMMAND_START = _PROGRAM_START + r"(?:\S*/)?"
 _PUBLISHES = (
@@ -66,23 +68,31 @@ _PUBLISHES = (
     r"|twine\b[^;&|\n]*?\bupload\b"
     r"|(?:changeset|lerna)\b[^;&|\n]*?\bpublish\b"
     r"|(?:np|semantic-release|release-it)(?:\s|$)"
-    r"|git(?:\s+-\S+(?:\s+[^-\s]\S*)?)*\s+push\b)"
+    r"|git(?:\s+-\S+(?:\s+[^-\s]\S*)?)*\s+push\b"
+    r"|(?:npm|pnpm|yarn|bun|uv|poetry|hatch|flit|twine|git|changeset|lerna)"
+    r"(?:\s+-\S+(?:\s+[^-\s]\S*)?)*\s+[\"']?\$)"  # npm $VERB: the subcommand is a variable
 )
 # Commands that can publish from a file the guard reads (Ruling X7): every form
 # agentprint.following follows. make, just and task recipes, `npm version` hooks, and scripts
-# run as ./x, `bash x`, `python x`, `tsx x`, `deno run x`, `uv run x`, `pdm run x`...
+# run as ./x, `bash x`, `python x`, `tsx x`, `deno run x`, `uv run x`, `pdm run x`... and code on
+# stdin (`python3 - <<EOF`, `| sh`).
 _RUNS_A_FILE = (
     r"(?:(?:g?make|just|go-task|task)(?:\s|$)"
     r"|(?:npm|pnpm|yarn|bun)(?:\s+-\S+(?:\s+[^-\s]\S*)?)*\s+version\b"
     r"|\S*/\S"
-    r"|(?:sh|bash|zsh|dash|ksh|fish|python[0-9.]*|pypy[0-9.]*|node|nodejs|tsx|ts-node|bun|ruby|"
-    r"perl|php)"
-    r"(?:\s+-\S+)*\s+[^-\s]"
+    r"|(?:sh|bash|zsh|dash|ksh|fish|ash|mksh|tcsh|csh|python[0-9.]*|pypy[0-9.]*|node|nodejs|tsx|"
+    r"ts-node|bun|ruby|perl|php)"
+    r"(?:\s+-\S+)*(?:\s+[^-\s]|\s+-(?:\s|$)|\s*$|\s*[;&|)])"
     r"|deno\s+(?:run|eval)\b"
     r"|(?:source|\.)\s+\S"
-    r"|(?:uv|poetry|pdm|pipenv|hatch|rye)\s+run\s+\S)"
+    r"|(?:uv|poetry|pdm|pipenv|hatch|rye)\s+run\s+\S"
+    r"|eval\b|alias\s|set\s+--|printf\s+-v\s|xargs\b|env\s+-S"  # text run later
+    # a command named by a variable or a substitution, or written with quotes (`n"p"m`)
+    r"|[\"']?\$[\w{(@*'\"]|`|[^\s;&|()<>]*[\"'\\\\])"
 )
-MATCHER = rf"(?:{_COMMAND_START}{_PUBLISHES}|{_PROGRAM_START}{_RUNS_A_FILE})"
+# Text the shell may run later: here-documents and here-strings, and variables set to a publish.
+_RUNS_LATER = r"(?:<<|\b[A-Za-z_]\w*=(?:'[^']*|\"[^\"]*|\S*)\b(?:publish|push|upload)\b)"
+MATCHER = rf"(?:{_COMMAND_START}{_PUBLISHES}|{_PROGRAM_START}{_RUNS_A_FILE}|{_RUNS_LATER})"
 RULE = f"""\
 ---
 description: agentprint security check before publishing a package or pushing
