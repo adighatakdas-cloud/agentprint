@@ -18,10 +18,10 @@ from agentprint import protect
 from tests import fakes
 from tests.conftest import set_home
 
-pytestmark = [
-    pytest.mark.skipif(shutil.which("git") is None, reason="git not installed"),
-    pytest.mark.posix_only,  # the hook runs through /bin/sh; Windows is covered in test_protect
-]
+# Git for Windows runs the hook with its own sh, so these run on Windows too; only the tests
+# that need a POSIX shell of their own (eval, killing a hung check) are marked.
+pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+SH = shutil.which("sh") or shutil.which("bash")
 ARGV = [sys.executable, "-c", "from agentprint.cli import app; app()"]
 
 
@@ -75,9 +75,10 @@ def install(repo, home, argv=ARGV, strict=False):
     assert protect.protect(repo, home, lines.append, agentprint=argv, strict=strict) == 0, lines
 
 
-def shell(repo, script, env=None):
+def push(repo, *args, env=None):
+    """A real `git push`, run directly (no shell in between)."""
     return subprocess.run(
-        ["sh", "-c", script],
+        ["git", "push", *args],
         cwd=repo,
         capture_output=True,
         text=True,
@@ -89,7 +90,7 @@ def shell(repo, script, env=None):
 def test_a_clean_push_goes_through(world):
     repo, remote, home = world
     install(repo, home)
-    done = shell(repo, "git push -q origin HEAD:main")
+    done = push(repo, "-q", "origin", "HEAD:main")
     assert done.returncode == 0, done.stderr
     assert "agentprint" not in done.stderr  # a clean push says nothing
     assert remote_head(remote) == git(repo, "rev-parse", "HEAD").stdout.strip()
@@ -99,7 +100,7 @@ def test_a_leaky_push_is_blocked_with_the_key_masked(world):
     repo, remote, home = world
     leak(repo)
     install(repo, home)
-    done = shell(repo, "git push origin HEAD:main")
+    done = push(repo, "origin", "HEAD:main")
     assert done.returncode != 0
     assert "agentprint: BLOCK" in done.stderr and "AP002" in done.stderr
     assert fakes.ANTHROPIC not in done.stderr + done.stdout
@@ -107,12 +108,16 @@ def test_a_leaky_push_is_blocked_with_the_key_masked(world):
     assert remote_head(remote) is None
 
 
+@pytest.mark.skipif(SH is None, reason="no sh")
 def test_an_eval_hidden_push_is_blocked(world):
     """The red-team case: text reading can't see through eval; git's own hook still fires."""
     repo, remote, home = world
     leak(repo)
     install(repo, home)
-    done = shell(repo, "CMD='git push origin HEAD:main'; eval \"$CMD\"")
+    script = "CMD='git push origin HEAD:main'; eval \"$CMD\""
+    done = subprocess.run(
+        [SH or "sh", "-c", script], cwd=repo, capture_output=True, text=True, timeout=120
+    )
     assert done.returncode != 0
     assert "agentprint: BLOCK" in done.stderr
     assert remote_head(remote) is None
@@ -136,10 +141,10 @@ def test_a_push_built_inside_python_is_blocked(world):
 
 def test_deleting_a_remote_branch_is_never_blocked(world):
     repo, remote, home = world
-    assert shell(repo, "git push -q origin HEAD:main").returncode == 0
+    assert push(repo, "-q", "origin", "HEAD:main").returncode == 0
     leak(repo)
     install(repo, home)
-    done = shell(repo, "git push origin :main")
+    done = push(repo, "origin", ":main")
     assert done.returncode == 0, done.stderr
     assert remote_head(remote) is None
 
@@ -148,10 +153,11 @@ def test_an_existing_hook_runs_first_with_the_same_arguments_and_stdin(world, tm
     repo, remote, home = world
     log = tmp_path / "their-hook.log"
     theirs = repo / ".git" / "hooks" / "pre-push"
-    theirs.write_text(f'#!/bin/sh\necho "args: $*" > "{log}"\ncat >> "{log}"\nexit 0\n')
+    at = log.as_posix()  # Git for Windows' sh reads C:/x, not C:\\x
+    theirs.write_bytes(f'#!/bin/sh\necho "args: $*" > "{at}"\ncat >> "{at}"\nexit 0\n'.encode())
     theirs.chmod(0o755)
     install(repo, home)
-    done = shell(repo, "git push -q origin HEAD:main")
+    done = push(repo, "-q", "origin", "HEAD:main")
     assert done.returncode == 0, done.stderr
     head = git(repo, "rev-parse", "HEAD").stdout.strip()
     assert log.read_text() == f"args: origin {remote}\nHEAD {head} refs/heads/main {'0' * 40}\n"
@@ -161,15 +167,15 @@ def test_an_existing_hook_runs_first_with_the_same_arguments_and_stdin(world, tm
 def test_either_hook_failing_blocks_the_push(world):
     repo, remote, home = world
     theirs = repo / ".git" / "hooks" / "pre-push"
-    theirs.write_text("#!/bin/sh\necho 'their hook says no' >&2\nexit 1\n")
+    theirs.write_bytes(b"#!/bin/sh\necho 'their hook says no' >&2\nexit 1\n")
     theirs.chmod(0o755)
     install(repo, home)
-    done = shell(repo, "git push origin HEAD:main")  # clean repo: only their hook says no
+    done = push(repo, "origin", "HEAD:main")  # clean repo: only their hook says no
     assert done.returncode != 0 and "their hook says no" in done.stderr
     theirs_now = repo / ".git" / "hooks" / protect.CHAINED
-    theirs_now.write_text("#!/bin/sh\nexit 0\n")  # now theirs passes and ours blocks the leak
+    theirs_now.write_bytes(b"#!/bin/sh\nexit 0\n")  # now theirs passes and ours blocks the leak
     leak(repo)
-    done = shell(repo, "git push origin HEAD:main")
+    done = push(repo, "origin", "HEAD:main")
     assert done.returncode != 0 and "agentprint: BLOCK" in done.stderr
     assert remote_head(remote) is None
 
@@ -178,7 +184,7 @@ def test_a_missing_agentprint_lets_the_push_go_with_one_line(world, tmp_path):
     repo, remote, home = world
     leak(repo)
     install(repo, home, argv=[str(tmp_path / "no-such-agentprint")])
-    done = shell(repo, "git push -q origin HEAD:main")
+    done = push(repo, "-q", "origin", "HEAD:main")
     assert done.returncode == 0, done.stderr
     assert (
         "agentprint: the push check could not run" in done.stderr and "push allowed" in done.stderr
@@ -193,7 +199,7 @@ def test_strict_blocks_when_agentprint_cannot_run(world, tmp_path, how):
         repo, home, argv=[str(tmp_path / "no-such-agentprint")], strict=how.startswith("protect")
     )
     env = {"AGENTPRINT_STRICT": "1"} if how.startswith("AGENT") else {}
-    done = shell(repo, "git push origin HEAD:main", env)
+    done = push(repo, "origin", "HEAD:main", env=env)
     assert done.returncode != 0
     assert "push blocked (strict mode)" in done.stderr
     assert remote_head(remote) is None
@@ -204,18 +210,12 @@ def test_after_undo_the_push_is_not_checked(world):
     leak(repo)
     install(repo, home)
     assert protect.unprotect(repo, home, lambda line: None) == 0
-    done = shell(repo, "git push -q origin HEAD:main")
+    done = push(repo, "-q", "origin", "HEAD:main")
     assert done.returncode == 0, done.stderr
     assert "agentprint" not in done.stderr
 
 
 # ---- what is checked is what git uploads, never the working tree ------------------------------
-
-
-def push(repo, *args):
-    return subprocess.run(
-        ["git", "push", *args], cwd=repo, capture_output=True, text=True, timeout=120
-    )
 
 
 def remote_has(remote, ref):
@@ -304,6 +304,7 @@ def test_a_key_added_and_removed_on_the_way_is_blocked_until_the_commits_are_rew
     assert done.returncode == 0, done.stderr
 
 
+@pytest.mark.posix_only  # stopping a hung native process from Git for Windows' sh is untested
 @pytest.mark.parametrize("strict", [False, True])
 def test_a_check_that_hangs_is_given_up_on(world, strict):
     repo, remote, home = world
