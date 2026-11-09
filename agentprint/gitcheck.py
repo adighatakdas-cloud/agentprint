@@ -158,15 +158,12 @@ def _not_ignored(root: Path) -> list[Finding]:
 
 _HEX = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _ZERO = re.compile(r"0{40}|0{64}")
-MAX_COMMITS = 2000  # commits read per pushed ref; past that, the newest ones (and it says so)
+MAX_COMMITS = 10_000  # commits read per pushed ref; past that, "could not check" (never OK)
+DIFF_BATCH = 1000  # commits per `git diff-tree --stdin` run, so its output stays small
 MAX_SETTINGS_BYTES = 1024 * 1024  # a settings file bigger than this is not a settings file
 MAX_READ_BYTES = 64 * 1024 * 1024  # all file contents read for one push
-# Where agent and settings files live (every agent module's discover_project looks only at
-# files at the top of the project or inside a top-level dot-folder), and the kinds of files
-# they are: text config, never a build artifact or an archive (.yarn/cache is full of zips).
-_TEXT = {"", ".json", ".jsonc", ".json5", ".toml", ".yaml", ".yml", ".md", ".mdc", ".txt"}
-_TEXT |= {".ini", ".cfg", ".conf", ".local", ".env"}
 _REGULAR = {"100644", "100755"}
+_GLOB = re.compile(r"[*?\[]")
 
 
 @dataclass(frozen=True)
@@ -194,16 +191,47 @@ def parse_updates(text: str) -> list[RefUpdate]:
     return updates
 
 
-def _wanted(name: str) -> bool:
-    """A file a check reads: an agent file anywhere, or a text file at the top of the project or
-    in a top-level dot-folder (where every agent keeps its project settings)."""
+def _near_top(name: str) -> bool:
+    """A file a check might read: an agent file anywhere, or a file at the top of the project or
+    inside a top-level dot-folder (the only places any agent module's discover_project looks)."""
     if is_agent_file(name):
         return True
     top, _, rest = name.partition("/")
-    if rest and not top.startswith("."):
-        return False
-    base = name.rpartition("/")[2]
-    return base.startswith(".env") or os.path.splitext(base)[1].lower() in _TEXT
+    return not rest or top.startswith(".")
+
+
+def _read_by_checks(names: Iterable[str]) -> set[str]:
+    """Which of these repository paths a check reads: agent files (AP006, and AP002 for keys in
+    them), and the settings files each agent module's discover_project finds (AP002, AP005).
+    Discovery runs over empty stand-ins for the names, so nothing is read to decide; a
+    lockfile or a README is never read."""
+    names = set(names)
+    agent = {name for name in names if is_agent_file(name)}
+    rest = names - agent
+    if not rest:
+        return agent
+    found: set[str] = set()
+    with tempfile.TemporaryDirectory(prefix="agentprint-names-") as tmp:
+        base = Path(tmp)
+        for name in rest:
+            parts = name.split("/")
+            if any(part in ("", ".", "..") for part in parts):
+                continue
+            try:
+                target = base.joinpath(*parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.touch()
+            except OSError:  # a file and a folder of the same name, or a name the OS refuses
+                continue
+        for agent_module in ALL_AGENTS:
+            try:
+                artifacts = list(agent_module.discover_project(base))
+            except Exception:  # noqa: BLE001 - one agent module's bug must not stop the others
+                continue
+            for artifact in artifacts:
+                if artifact.kind is Kind.SETTINGS:
+                    found.add(artifact.path.relative_to(base).as_posix())
+    return agent | (found & rest)
 
 
 def _git_bytes(root: Path, *args: str, stdin: bytes | None = None) -> bytes:
@@ -241,51 +269,77 @@ def _tree(root: Path, sha: str) -> dict[str, _Entry]:
     for record in out.decode("utf-8", "replace").split("\0"):
         meta, _, name = record.partition("\t")
         parts = meta.split()
-        if len(parts) != 4 or parts[1] != "blob" or not _wanted(name):
+        if len(parts) != 4 or parts[1] != "blob" or not _near_top(name):
             continue
         mode, _, blob, size = parts
         entries[name] = _Entry(blob, int(size) if size.isdigit() else None, mode in _REGULAR)
     return entries
 
 
-def _pushed_commits(root: Path, update: RefUpdate) -> tuple[list[str], bool]:
-    """The commits this ref update would upload (none on a remote-tracking ref yet, nor in the
-    remote's old commit), newest first, and whether there were more than MAX_COMMITS."""
+def _ref_tree(root: Path, update: RefUpdate) -> dict[str, _Entry]:
+    """`_tree` for the object a ref update points at; a tag on a single file can't be placed."""
+    try:
+        return _tree(root, update.local_sha)
+    except CannotCheck:
+        if (_git(root, "cat-file", "-t", f"{update.local_sha}^{{}}") or "").strip() == "blob":
+            raise CannotCheck(
+                f"{clean(update.local_ref)} points at a single file, not a commit, so agentprint "
+                "can't tell which file it is"
+            ) from None
+        raise
+
+
+def _named_remote(root: Path, remote: str | None) -> bool:
+    """A remote configured by that name (a push to a URL names none)."""
+    if not remote or _GLOB.search(remote) or remote.startswith("-"):
+        return False
+    return _git(root, "config", "--get", f"remote.{remote}.url") is not None
+
+
+def _pushed_commits(root: Path, update: RefUpdate, remote: str | None) -> tuple[list[str], bool]:
+    """The commits this ref update would upload, newest first, and whether there were more than
+    MAX_COMMITS. Left out: the remote's old commit for this ref, and what the remote-tracking
+    refs of the remote being pushed to already hold (`--remotes=<name>`). Never what other
+    remotes hold: a private mirror having a commit doesn't make it public."""
     if _git(root, "cat-file", "-e", f"{update.local_sha}^{{commit}}") is None:
-        return [], False  # a tag on a tree or a blob: only its tree is read
-    args = ["rev-list", f"--max-count={MAX_COMMITS + 1}", update.local_sha, "--not", "--remotes"]
+        return [], False  # a tag on a tree: only its tree is read
+    known = [f"--remotes={remote}"] if remote and _named_remote(root, remote) else []
     old = update.remote_sha
     if not _ZERO.fullmatch(old) and _git(root, "cat-file", "-e", f"{old}^{{commit}}") is not None:
-        args.append(old)
-    commits = _git_bytes(root, *args).decode("ascii", "replace").split()
+        known.append(old)
+    args = ["rev-list", f"--max-count={MAX_COMMITS + 1}", update.local_sha]
+    commits = _git_bytes(root, *args, *(["--not", *known] if known else [])).decode().split()
     return commits[:MAX_COMMITS], len(commits) > MAX_COMMITS
 
 
 def _touched(root: Path, commits: list[str]) -> list[tuple[str, dict[str, _Entry]]]:
-    """For each commit, newest first, the wanted files it added or changed (their new blobs)."""
-    if not commits:
-        return []
-    out = _git_bytes(
-        root,
-        "diff-tree",
-        "--stdin",
-        "-r",
-        "-z",
-        "--root",
-        "--no-renames",
-        "--raw",
-        stdin="\n".join(commits).encode() + b"\n",
-    )
+    """For each commit, newest first, the files near the top it added or changed (their new
+    blobs). A merge is compared with each of its parents (-m), so a file a merge brings in or
+    changes on its own is read too."""
     result: list[tuple[str, dict[str, _Entry]]] = []
-    tokens = iter(out.decode("utf-8", "replace").split("\0"))
-    for token in tokens:
-        if _HEX.fullmatch(token):
-            result.append((token, {}))
-        elif token.startswith(":") and result:
-            name = next(tokens, "")
-            parts = token[1:].split()
-            if len(parts) == 5 and parts[4][:1] in "AMT" and _wanted(name):
-                result[-1][1][name] = _Entry(parts[3], None, parts[1] in _REGULAR)
+    for start in range(0, len(commits), DIFF_BATCH):
+        batch = commits[start : start + DIFF_BATCH]
+        out = _git_bytes(
+            root,
+            "diff-tree",
+            "--stdin",
+            "-r",
+            "-m",
+            "-z",
+            "--root",
+            "--no-renames",
+            "--raw",
+            stdin="\n".join(batch).encode() + b"\n",
+        )
+        tokens = iter(out.decode("utf-8", "replace").split("\0"))
+        for token in tokens:
+            if _HEX.fullmatch(token):
+                result.append((token, {}))
+            elif token.startswith(":") and result:
+                name = next(tokens, "")
+                parts = token[1:].split()
+                if len(parts) == 5 and parts[4][:1] in "AMT" and _near_top(name):
+                    result[-1][1][name] = _Entry(parts[3], None, parts[1] in _REGULAR)
     return [(commit, files) for commit, files in result if files]
 
 
@@ -325,28 +379,34 @@ def _contents(root: Path, blobs: list[str]) -> dict[str, bytes]:
 
 
 class _Budget:
+    """File contents left to read for this push. Past it, files are listed but not read."""
+
     def __init__(self) -> None:
         self.left = MAX_READ_BYTES
+        self.ran_out = False
 
-    def take(self, size: int) -> None:
+    def take(self, size: int) -> bool:
+        if size > self.left:
+            self.ran_out = True
+            return False
         self.left -= size
-        if self.left < 0:
-            raise CannotCheck(
-                "this push holds more agent and settings files than agentprint reads in one go"
-            )
+        return True
 
 
 def _snapshot(root: Path, entries: dict[str, _Entry], budget: _Budget) -> list[Finding]:
     """The working-tree checks, run on these files as git stores them (written to a private
-    temporary folder, then reported at their place in the repository)."""
+    temporary folder, then reported at their place in the repository). Only files a check
+    reads are read; past the budget a file is listed (AP006 still applies) but not read."""
+    entries = {name: e for name, e in entries.items() if name in _read_by_checks(entries)}
+    if not entries:
+        return []
     _sizes(root, entries.values())
     readable = {}
     for name, entry in entries.items():
         limit = MAX_CONTENT_BYTES if is_agent_file(name) else MAX_SETTINGS_BYTES
-        if entry.regular and entry.size is not None and entry.size <= limit:
+        fits = entry.regular and entry.size is not None and entry.size <= limit
+        if fits and budget.take(entry.size or 0):
             readable[name] = entry
-    for entry in readable.values():
-        budget.take(entry.size or 0)
     data = _contents(root, sorted({e.blob for e in readable.values()}))
     contents = {name: data.get(e.blob, b"") for name, e in readable.items()}
     skipped = [name for name in entries if name not in readable]
@@ -377,10 +437,14 @@ def _key(finding: Finding) -> tuple[str, str, str]:
     return finding.check_id, finding.location, finding.detail.partition(IN_PUSHED_COMMIT)[0]
 
 
-def check_pushed(cwd: Path, updates: list[RefUpdate]) -> tuple[list[Finding], list[str]]:
+def check_pushed(
+    cwd: Path, updates: list[RefUpdate], remote: str | None = None
+) -> tuple[list[Finding], list[str]]:
     """Findings for what these ref updates would upload, read from git's objects (never the
-    working tree), and notes on what was not read. Deletes upload nothing. Raises CannotCheck
-    when git can't read them."""
+    working tree), and what could not be checked. `remote` is the name git's pre-push hook got
+    (a push to a URL names none). Deletes upload nothing. Raises CannotCheck only when git is
+    missing; anything else that can't be read is a note, and never takes back a finding
+    already made (Ruling X19)."""
     if shutil.which("git") is None:
         raise CannotCheck("git is not installed, so the repository can't be read")
     root = repo_root(cwd) or cwd
@@ -388,29 +452,48 @@ def check_pushed(cwd: Path, updates: list[RefUpdate]) -> tuple[list[Finding], li
     findings: list[Finding] = []
     notes: list[str] = []
     seen: set[tuple[str, str, str]] = set()
+    read: set[tuple[str, str]] = set()  # (path, blob) already checked
+
+    def add(found: list[Finding], commit: str | None = None) -> None:
+        for finding in found:
+            if commit is not None and finding.check_id not in (AP002.id, AP005.id):
+                continue  # older versions only matter for the keys in them
+            if _key(finding) in seen:
+                continue
+            seen.add(_key(finding))
+            if commit is not None:
+                finding.detail += f"{IN_PUSHED_COMMIT}{commit[:12]})"
+            findings.append(finding)
+
     for update in updates:
         if update.deletes:
             continue
-        tip = _tree(root, update.local_sha)
-        for finding in _snapshot(root, tip, budget):
-            if _key(finding) not in seen:
-                seen.add(_key(finding))
-                findings.append(finding)
-        commits, more = _pushed_commits(root, update)
-        if more:
-            notes.append(
-                f"{clean(update.local_ref)} uploads more than {MAX_COMMITS} commits; only the "
-                f"newest {MAX_COMMITS} were read for keys added and removed on the way"
-            )
-        for commit, files in _touched(root, commits):
-            files = {
-                name: e for name, e in files.items() if name not in tip or tip[name].blob != e.blob
-            }
-            for finding in _snapshot(root, files, budget) if files else []:
-                if finding.check_id not in (AP002.id, AP005.id) or _key(finding) in seen:
-                    continue  # older versions only matter for the keys in them
-                seen.add(_key(finding))
-                finding.detail += f"{IN_PUSHED_COMMIT}{commit[:12]})"
-                findings.append(finding)
+        ref = clean(update.local_ref)
+        try:
+            tip = _ref_tree(root, update)
+            add(_snapshot(root, tip, budget))
+            read.update((name, e.blob) for name, e in tip.items())
+            commits, more = _pushed_commits(root, update, remote)
+            if more:
+                notes.append(
+                    f"{ref} uploads more than {MAX_COMMITS} commits, so the older ones were not "
+                    "read for keys added and removed on the way"
+                )
+            touched = _touched(root, commits)
+            wanted = _read_by_checks(name for _, files in touched for name in files)
+            for commit, files in touched:
+                files = {n: e for n, e in files.items() if n in wanted and (n, e.blob) not in read}
+                read.update((name, e.blob) for name, e in files.items())
+                if files:
+                    add(_snapshot(root, files, budget), commit)
+        except CannotCheck as exc:
+            notes.append(str(exc))
+        except Exception as exc:  # noqa: BLE001 - a bug in one ref keeps what was found
+            notes.append(f"{ref}: agentprint hit an internal error ({type(exc).__name__})")
+    if budget.ran_out:
+        notes.append(
+            "this push holds more agent and settings files than agentprint reads in one go, so "
+            "some were not read"
+        )
     findings.sort(key=lambda f: (-f.severity, f.check_id, f.location, f.line or 0))
     return findings, notes
