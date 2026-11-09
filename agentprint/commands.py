@@ -18,8 +18,8 @@ runs are only scanned for a publish or push ("could not check" when one is named
 When it can't tell what a publish would upload (a `cd "$DIR"`, a `--filter` selector, a
 target built from a variable) the result says so in `unsure`; the guard then reports
 "could not check" instead of "OK". A script shlex can't read as a whole is read line by line.
-Here-documents on the command line itself are not understood yet (their bodies are read as
-commands).
+A here-document body on the command line is data unless it is fed to a shell (`bash <<EOF`,
+`<<EOF | sh`); one fed to another language is only scanned.
 """
 
 from __future__ import annotations
@@ -256,7 +256,8 @@ def detect(command: str, cwd: Path, _depth: int = 0) -> list[Risky]:
     if following._READING.get() is None:  # the agent's own command line: files stay in cwd
         token = following._READING.set(following._Reading(following._real(cwd), command))
         try:
-            return _detect(command, cwd, _depth)
+            command, coded = following.command_line(command, cwd)  # here-document bodies
+            return [*coded, *(r for r in _detect(command, cwd, _depth) if r not in coded)]
         finally:
             following._READING.reset(token)
     return _detect(command, cwd, _depth)

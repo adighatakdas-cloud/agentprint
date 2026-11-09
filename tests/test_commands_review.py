@@ -84,7 +84,7 @@ NOT_RISKY = [
     "pnpm publish --dry-run -r",
     "npm run build",
     "pnpm build",
-    # Heredoc bodies (cat <<'EOF' ... npm publish ... EOF) are still read as commands: deferred.
+    # Heredoc bodies: see test_commands_scripts.py (data unless fed to a shell).
 ]
 
 

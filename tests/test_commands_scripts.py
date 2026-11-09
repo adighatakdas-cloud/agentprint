@@ -903,3 +903,29 @@ def test_a_variable_publish_past_the_oneshell_cap_is_still_seen(tmp_path):
     makefile = ".ONESHELL:\nNPM = npm\n" + big + "all:\n" + "\techo $(V0)\n" * 60
     write(tmp_path, "Makefile", makefile + "\t$(NPM) publish demo-1.0.0.tgz\n")
     assert tools("make", tmp_path) == [(P, "npm")]  # scanned past the cap: could not check
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat > RELEASING.md <<'EOF'\nDon't forget the changelog.\nThen:\nnpm publish\nEOF",
+        "tee notes.txt <<EOF\ngit push origin main\nEOF\necho done",
+    ],
+)
+def test_a_here_document_typed_on_the_command_line_is_data(command):
+    assert detect(command, CWD) == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["bash <<EOF\nnpm publish\nEOF", "cat <<EOF | sh\nnpm publish\nEOF",
+     "cat > notes.md <<'EOF'\nnpm publish\nEOF\nnpm publish"],
+    ids=["fed-to-bash", "piped-to-sh", "publish-after-the-body"],
+)  # fmt: skip
+def test_a_here_document_fed_to_a_shell_is_still_read(command):
+    assert tools(command, CWD) == [(P, "npm")]
+
+
+def test_a_here_document_fed_to_python_on_the_command_line_is_scanned():
+    command = "python3 - <<'EOF'\nimport subprocess\nsubprocess.run(['npm', 'publish'])\nEOF"
+    assert labelled(command, CWD) == [(P, "npm", code("npm publish"), "here-document")]

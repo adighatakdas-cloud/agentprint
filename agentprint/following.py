@@ -385,6 +385,16 @@ def _peek(text: str, cwd: Path, depth: int) -> list[c.Risky]:
         reading.peeking = False
 
 
+def command_line(command: str, cwd: Path) -> tuple[str, list[c.Risky]]:
+    """The agent's own command line with its here-document bodies sorted out: a body fed to a
+    shell (`bash <<EOF`, `<<EOF | sh`) stays as commands; one fed to another language is only
+    scanned; one fed to anything else (`cat > notes.md <<EOF`) is data, not a publish."""
+    if "<<" not in command or "\n" not in command:
+        return command, []
+    text, other = recipes.shell_text(command)
+    return text, [r for body in other for r in _flag(_named(body), "here-document", cwd, _CODE)]
+
+
 def too_deep(text: str, cwd: Path) -> list[c.Risky]:
     """`commands.detect` past `MAX_DEPTH` (a `bash -c` or package script at the limit)."""
     reading = _reading(cwd)
