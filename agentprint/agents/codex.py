@@ -14,7 +14,16 @@ from typing import Any
 
 from ..models import AgentConfig, Artifact, Grant, HookCommand, Kind, PackageRule, Severity
 from ..structured import load
-from .base import artifacts, children, from_home, glob, hook_commands, matches_any, mcp_servers
+from .base import (
+    artifacts,
+    children,
+    from_home,
+    glob,
+    hook_commands,
+    live_versions,
+    matches_any,
+    mcp_servers,
+)
 
 NAME = "codex"
 
@@ -117,7 +126,7 @@ class Codex:
             base = home / ".codex"
             paths += [base / "AGENTS.md", base / "AGENTS.override.md"]
             paths += children(base / "prompts", base / "skills", home / ".agents" / "skills")
-            paths += glob(base / "plugins" / "cache", "*/*/*")
+            paths += live_versions(glob(base / "plugins" / "cache", "*/*/*"))
         if project is not None:
             paths += [project / "AGENTS.md", project / "AGENTS.override.md"]
             paths += children(project / ".agents" / "skills")

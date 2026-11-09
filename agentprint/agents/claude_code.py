@@ -22,6 +22,7 @@ from .base import (
     glob,
     hook_commands,
     is_blanket_command,
+    live_versions,
     matches_any,
     mcp_servers,
 )
@@ -82,15 +83,6 @@ _RECORDS = (
 # What Claude Code loads from ~/.claude and a project's .claude/ as instructions or runs as hook
 # scripts, one extension per entry (extension_paths).
 _LOADED = ("skills", "commands", "agents", "rules", "hooks")
-
-
-def _live(folder: Path) -> bool:
-    """A cached plugin version still in use: an update or uninstall leaves `.orphaned_at` in
-    the old version folder until a cleanup deletes it."""
-    try:
-        return folder.is_dir() and not (folder / ".orphaned_at").exists()
-    except OSError:
-        return False
 
 
 class ClaudeCode:
@@ -160,7 +152,7 @@ class ClaudeCode:
         if home is not None:
             base = home / ".claude"
             paths += [base / "CLAUDE.md", *children(*(base / name for name in _LOADED))]
-            paths += [v for v in glob(base / "plugins" / "cache", "*/*/*") if _live(v)]
+            paths += live_versions(glob(base / "plugins" / "cache", "*/*/*"))
         if project is not None:
             base = project / ".claude"
             paths += [project / "CLAUDE.md", base / "CLAUDE.md"]

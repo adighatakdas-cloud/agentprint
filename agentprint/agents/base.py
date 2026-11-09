@@ -110,6 +110,20 @@ def children(*folders: Path) -> list[Path]:
     return found
 
 
+def live_versions(folders: Iterable[Path]) -> list[Path]:
+    """The cached plugin versions still in use: an update or uninstall leaves `.orphaned_at` in
+    the old version folder until a cleanup deletes it (Claude Code; read the same way for
+    Codex, whose cache has the same layout)."""
+    live = []
+    for folder in folders:
+        try:
+            if folder.is_dir() and not (folder / ".orphaned_at").exists():
+                live.append(folder)
+        except OSError:
+            continue
+    return live
+
+
 def each(*paths: Path) -> list[Path]:
     """A folder's entries (children), or the path itself when it is a file or missing: for
     names that are a file in one version of an agent and a folder in another (.clinerules)."""

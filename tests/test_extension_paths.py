@@ -199,3 +199,13 @@ def test_paths_need_no_home(tmp_path):
     assert [a.path for a in discover(None, project) if a.kind is Kind.EXTENSION] == [
         Path(project / ".claude" / "commands" / "x.md")
     ]
+
+
+@pytest.mark.parametrize("agent", [".claude", ".codex"])
+def test_orphaned_plugin_versions_are_not_read(tmp_path, agent):
+    cache = tmp_path / "home" / agent / "plugins" / "cache" / "market" / "tool"
+    ext.write(cache / "1.0.0" / "skills" / "x" / "SKILL.md", "old\n")
+    ext.write(cache / "1.0.0" / ".orphaned_at", "1700000000000")
+    ext.write(cache / "1.1.0" / "skills" / "x" / "SKILL.md", "new\n")
+    found = [a.path for a in discover(tmp_path / "home", None) if a.kind is Kind.EXTENSION]
+    assert found == [cache / "1.1.0" / "skills" / "x" / "SKILL.md"]
