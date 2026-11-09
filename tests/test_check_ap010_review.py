@@ -341,6 +341,7 @@ def test_hidden_character_strength(text, strong):
         HEBREW + " " + HEBREW + "\n" + RLM + "1. npm test\n",  # judged per paragraph
         HEBREW + " " + LRI + "npm run build" + PDI + "\n",
         chr(0x2801) + chr(0x2800) + chr(0x2802) + "\n",  # braille art
+        "e" + chr(0x301) + chr(0x34F) + chr(0x302) + "\n",  # joiner among combining marks
     ],
 )
 def test_hidden_character_exemptions_x16(text):

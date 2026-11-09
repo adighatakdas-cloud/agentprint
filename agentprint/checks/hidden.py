@@ -19,7 +19,7 @@ Ruling X16, how strong a find is:
   spaces between words); bidi marks, embeddings and isolates in a paragraph that has
   right-to-left letters; a soft hyphen inside a word; the tag characters of an emoji flag
   (England, Scotland, Wales); a Mongolian vowel separator in Mongolian; a braille blank in
-  braille art.
+  braille art; a combining grapheme joiner next to a combining mark.
 
 Linear in the text: each paragraph's right-to-left letters are looked up once, flags by bisect,
 and at most MAX_HIDDEN characters are looked at.
@@ -28,6 +28,7 @@ and at most MAX_HIDDEN characters are looked at.
 from __future__ import annotations
 
 import re
+import unicodedata
 from bisect import bisect_right
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -92,6 +93,10 @@ class Hidden:
         return ("at least " if self.capped else "") + ", ".join(parts)
 
 
+def _mark(ch: str) -> bool:
+    return bool(ch) and unicodedata.category(ch).startswith("M")
+
+
 def _emoji(ch: str) -> bool:
     cp = ord(ch)
     return cp >= 0x1F000 or 0x2190 <= cp <= 0x2BFF or ch in "\u00a9\u00ae\u203c\u2049\u2122"
@@ -137,6 +142,8 @@ def _kind(
         return None if braille or before == "\u2800" and after == "\u2800" else "blank"
     if ch in "\u115f\u1160\u3164\uffa0":
         return "blank"
+    if ch == "\u034f" and (_mark(before) or _mark(after)):
+        return None  # a combining grapheme joiner among combining marks, where it belongs
     return "zero-width"
 
 
