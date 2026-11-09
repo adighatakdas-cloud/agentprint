@@ -46,8 +46,8 @@ CASES = {
 }
 
 
-# The scan snapshots hold POSIX tmp paths and no "not checked on Windows" note; Windows output
-# legitimately differs (drive paths, the AP008 note), and the pack snapshots below run everywhere.
+# The scan snapshots hold POSIX tmp paths; Windows output legitimately differs (drive paths),
+# and the pack snapshots below run everywhere.
 CASE_PARAMS = [
     pytest.param(name, marks=pytest.mark.posix_only) if name.startswith("scan") else name
     for name in CASES

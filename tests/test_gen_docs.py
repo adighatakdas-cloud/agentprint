@@ -210,7 +210,6 @@ def _person_at_a_terminal(monkeypatch, home: Path, project: Path) -> None:
     monkeypatch.setattr(cli, "is_agent", lambda env: False)
 
 
-@pytest.mark.posix_only  # POSIX rendering; Windows adds the AP008 'not checked' note
 def test_fix_fragment_is_what_agentprint_fix_prints(tmp_path, monkeypatch):
     """The landing's fix block, line for line, is the real command run in ~/code/my-app by a
     person who answers y."""
@@ -223,7 +222,6 @@ def test_fix_fragment_is_what_agentprint_fix_prints(tmp_path, monkeypatch):
     assert result.output == _text(gen_docs.terminal_fragments()["fix"])
 
 
-@pytest.mark.posix_only  # POSIX rendering; Windows adds the AP008 'not checked' note
 def test_scan_fragment_is_what_agentprint_scan_prints(tmp_path, monkeypatch):
     """Below its header (time and roster are fixed on the landing), the scan block is the real
     sweep of the same world."""

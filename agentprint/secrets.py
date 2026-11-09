@@ -1,8 +1,9 @@
 """Secret detection by pattern. Matches are never validated against any service.
 
 `find_secrets` reads text as it is. `find_secrets_deep` also finds keys hidden on purpose: cut
-by invisible characters, split into joined string literals, folded over lines (backslash
-continuations, YAML block scalars) or base64-encoded. See `find_hidden` for how, and its limits.
+by invisible characters, split into joined string literals or by an empty quoted string, folded
+over lines (backslash continuations, YAML block scalars) or base64-encoded. See `find_hidden`
+for how, and its limits.
 """
 
 from __future__ import annotations
@@ -20,6 +21,14 @@ from functools import lru_cache
 from itertools import islice
 
 
+def _fold(text: str) -> str:
+    """`text` with case folded the way the rules' `(?i)` names match it. Besides upper and lower
+    case, Python's regex engine matches the long s, the Kelvin sign and the dotless i and dotted
+    capital I as s, k and i. casefold() turns the first two into s and k; the two i forms are
+    replaced first (casefold keeps the dotless i and adds a combining dot to the capital)."""
+    return text.replace("\u0130", "i").replace("\u0131", "i").casefold()
+
+
 @dataclass(frozen=True)
 class SecretRule:
     id: str
@@ -27,8 +36,9 @@ class SecretRule:
     pattern: re.Pattern[str]
     group: int = 0
     min_entropy: float = 0.0
-    # Lowercase words, at least one of which must be in the text for the rule to be tried at all.
-    # For rules that start with a case-insensitive name, which the regex engine cannot skip to.
+    # Words, at least one of which must be in the text (case folded by _fold) for the rule to be
+    # tried at all. For rules that start with a case-insensitive name, which the regex engine
+    # cannot skip to. Folded the same way when RULES is built.
     needs: tuple[str, ...] = ()
     # Exact text, at least one of which must be in the text (the rule's own literal start).
     starts: tuple[str, ...] = ()
@@ -251,9 +261,9 @@ _RULES: tuple[SecretRule, ...] = (
 _STARTS: dict[str, tuple[str, ...]] = {
     "google-oauth": ("GOCSPX-",),
     "npm": ("npm_",),
-    "pypi": ("pypi-AgEI",),
+    "pypi": ("pypi-AgEIcHlwaS5vcmc",),
     "gitlab": ("glpat-",),
-    "dockerhub": ("dckr_",),
+    "dockerhub": ("dckr_pat_", "dckr_oat_"),
     "huggingface": ("hf_", "api_org_"),
     "groq": ("gsk_",),
     "openrouter": ("sk-or-v1-",),
@@ -274,7 +284,12 @@ _STARTS: dict[str, tuple[str, ...]] = {
     "onepassword": ("ops_eyJ",),
 }
 RULES: tuple[SecretRule, ...] = tuple(
-    replace(rule, starts=_STARTS[rule.id]) if rule.id in _STARTS else rule for rule in _RULES
+    replace(
+        rule,
+        starts=_STARTS.get(rule.id, rule.starts),
+        needs=tuple(_fold(word) for word in rule.needs),
+    )
+    for rule in _RULES
 )
 
 
@@ -292,21 +307,116 @@ def _looks_random(value: str, min_entropy: float) -> bool:
     return has_digit and has_alpha and shannon_entropy(value) >= min_entropy
 
 
+# Key-shaped placeholders from READMEs and config examples (ghp_ then 36 x's, AKIA then 16 X's,
+# a Slack prefix then your-bot-token, the AWS docs' key ID that ends in EXAMPLE) are not keys.
+# A match is a placeholder when its body, the part after its literal prefix, is:
+#   (a) one character repeated (any case, separators aside), or separators only;
+#   (b) or holds a placeholder word as a whole token, an edge or a separator on both sides;
+#   (c) or holds a word of six letters or more (sample, example, ...) or a run of eight or more
+#       x's that starts or ends the body or touches a separator;
+#   (d) or is a placeholder word followed only by one repeated character (dummy0000...).
+# These are tight on purpose: every drop is a silent miss, so a random key must almost never
+# look like one (a test runs 100,000 random bodies of each rule's shape). "your" or "xxxx" glued
+# to random characters does not count. FAKE, the marker in agentprint's own test keys, is not a
+# placeholder. A key head followed directly by a template is a placeholder too (see
+# _template_after). Output still redacts placeholders (see _matches).
+
+# Where each older rule's key body starts; a newer rule's body starts after its `starts`.
+_OLDER_PREFIXES = {
+    "anthropic": r"sk-ant-(?:api|admin)\d\d-",
+    "openai": r"sk-(?:proj|svcacct|admin)-|sk-",
+    "github": r"github_pat_|gh[pousr]_",
+    "aws": r"AKIA|ASIA",
+    "stripe": r"(?:sk|rk)_live_",
+    "slack": r"xox[baprs]-|xapp-\d-",
+    "google": r"AIza",
+    "deepseek": r"sk-",
+    "twilio": r"SK",
+    "telegram": r"[0-9]+:AA",
+}
+# Literal starts first, longest first, so sk-or-v1- wins over the sk- of the older rules.
+_KEY_PREFIX = re.compile(
+    "|".join(
+        [
+            *sorted({re.escape(s) for r in RULES for s in r.starts}, key=lambda s: (-len(s), s)),
+            *_OLDER_PREFIXES.values(),
+        ]
+    )
+)
+_SEPARATORS = "-_./+=:"
+_LONG_WORDS = ("sample", "example", "replace", "changeme", "redacted", "placeholder")
+_PLACEHOLDER_WORDS = ("your", "dummy", *_LONG_WORDS, "xxxx")  # each is in a placeholder's body
+_SEP = re.escape(_SEPARATORS)
+_WORD = rf"(?:your|dummy|{'|'.join(_LONG_WORDS)}|x{{4,}})"
+_LONG = rf"(?:{'|'.join(_LONG_WORDS)}|x{{8,}})"
+_EDGE_BEFORE, _EDGE_AFTER = rf"(?:^|(?<=[{_SEP}]))", rf"(?=[{_SEP}]|\Z)"
+_PLACEHOLDER_TOKEN = re.compile(  # (b) and (c), in the lowercased body
+    rf"{_EDGE_BEFORE}{_WORD}{_EDGE_AFTER}|{_EDGE_BEFORE}{_LONG}|{_LONG}{_EDGE_AFTER}"
+)
+_LEADING_WORD = re.compile(_WORD)
+
+
+def _one_character(text: str) -> bool:
+    """Is `text` one character repeated, separators aside (True for separators only, or none)?"""
+    first = text.lstrip(_SEPARATORS)[:1]
+    return not first or not text.replace(first, "").strip(_SEPARATORS)
+
+
+def is_placeholder(value: str) -> bool:
+    """Is this matched key an obvious placeholder (see above), not a key?"""
+    prefix = _KEY_PREFIX.match(value)
+    body = (value[prefix.end() :] if prefix else value).lower()
+    if _one_character(body):  # (a)
+        return True
+    if not any(map(body.__contains__, _PLACEHOLDER_WORDS)):  # a substring test is the fast no
+        return False
+    if _PLACEHOLDER_TOKEN.search(body):  # (b), (c)
+        return True
+    bare = body.lstrip(_SEPARATORS)
+    lead = _LEADING_WORD.match(bare)  # (d)
+    return lead is not None and _one_character(bare[lead.end() :])
+
+
+# A key head followed directly by a template, as in docs: xoxb-1234567890-<your-token>,
+# xoxb-1234567890-{SLACK_TOKEN}, xoxp-1234567890-${SLACK_USER_TOKEN}. Only when the bracketed
+# text holds a placeholder word or is an UPPER_SNAKE name (with an underscore inside <...>, so
+# <BR> is not one). A closing tag never counts, so a key inside XML (<token>KEY</token>) is
+# still reported.
+_TEMPLATE = re.compile(r"<(?!/)([^<>{}\s]{1,64})>|\$?\{([^<>{}\s]{1,64})\}")
+_UPPER_SNAKE = re.compile(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*")
+
+
+def _template_after(text: str, end: int) -> bool:
+    template = _TEMPLATE.match(text, end)
+    if template is None:
+        return False
+    angle, curly = template.groups()
+    inner = angle or curly or ""
+    if any(map(inner.lower().__contains__, _PLACEHOLDER_WORDS)):
+        return True
+    return _UPPER_SNAKE.fullmatch(inner) is not None and (curly is not None or "_" in inner)
+
+
 def _matches(
-    text: str, rules: tuple[SecretRule, ...] = RULES, pos: int = 0, endpos: int | None = None
+    text: str,
+    rules: tuple[SecretRule, ...] = RULES,
+    pos: int = 0,
+    endpos: int | None = None,
+    placeholders: bool = False,
 ) -> list[tuple[SecretMatch, int, int]]:
     """Every key in text[pos:endpos] (lookbehinds still see what comes before `pos`), with the
     span of the whole rule match (name and separator included for the generic rules), in text
     order. A rule never reports text an earlier rule claimed: the claimed spans are kept sorted,
-    so each check is a binary search, not a scan of every match so far."""
+    so each check is a binary search, not a scan of every match so far. Obvious placeholders are
+    left out unless `placeholders` (for redaction, which hides anything key-shaped)."""
     end_at = len(text) if endpos is None else endpos
     found: list[tuple[SecretMatch, int, int]] = []
     window = text[pos:end_at] if pos or end_at != len(text) else text
-    lower = window.lower() if any(r.needs for r in rules) else ""
+    folded = _fold(window) if any(r.needs for r in rules) else ""
     starts: list[int] = []  # value spans claimed by earlier rules, in text order (never overlap)
     ends: list[int] = []
     for rule in rules:
-        if rule.needs and not any(word in lower for word in rule.needs):
+        if rule.needs and not any(word in folded for word in rule.needs):
             continue
         if rule.starts and not any(word in window for word in rule.starts):
             continue
@@ -319,6 +429,8 @@ def _matches(
             value = m.group(rule.group)
             if rule.min_entropy and not _looks_random(value, rule.min_entropy):
                 continue
+            if not placeholders and (is_placeholder(value) or _template_after(text, end)):
+                continue
             mine.append((SecretMatch(rule.id, rule.name, value, start, end), m.start(), m.end()))
         if mine:  # one rule's matches never overlap each other (finditer)
             found += mine
@@ -329,8 +441,10 @@ def _matches(
     return sorted(found, key=lambda f: f[0].start)
 
 
-def find_secrets(text: str) -> list[SecretMatch]:
-    return [match for match, _, _ in _matches(text)]
+def find_secrets(text: str, *, placeholders: bool = False) -> list[SecretMatch]:
+    """Every key written out plainly in `text`, in text order. Obvious placeholders are left
+    out; with `placeholders`, they are kept (for redaction)."""
+    return [match for match, _, _ in _matches(text, placeholders=placeholders)]
 
 
 def redact(value: str) -> str:
@@ -340,11 +454,12 @@ def redact(value: str) -> str:
 # ---- keys hidden on purpose -------------------------------------------------------------------
 #
 # A key can be written so that no plain pattern sees it: cut by invisible characters, split into
-# string literals joined by an operator, folded over lines (backslash continuations, YAML block
-# scalars), or base64-encoded. `find_hidden` undoes each trick on a copy of the text (a "view")
-# and runs the same rules over it. A view drops the characters that hide a key (the "joins") and
-# keeps a map back to the text, so a hidden key is placed at its first character. Only matches
-# that span a join are reported: anything else was plain text all along.
+# string literals joined by an operator or side by side, cut by an empty quoted string, folded
+# over lines (backslash continuations, YAML block scalars), or base64-encoded (a token under 40
+# characters only when it is one whole key). `find_hidden` undoes each trick on a copy of the
+# text (a "view") and runs the same rules over it. A view drops the characters that hide a key
+# (the "joins") and keeps a map back to the text, so a hidden key is placed at its first
+# character. Only matches that span a join are reported: anything else was plain text all along.
 #
 # The same tricks written inside a JSON string (a transcript line) are escaped (\u200b, \", \n);
 # such a string is decoded and read again. Every step is linear in the text and capped below.
@@ -428,6 +543,15 @@ _CHAINS = (
 )
 _PIECE = re.compile(_LITERAL)
 
+# An empty quoted string inside a word: a shell reads abc""def and abc''def as abcdef, and
+# "abc""def" is two literals side by side. Only between letters, digits, `_`, `-` or `.`, so
+# `x = ""`, f("", "") and a CSV "" escape next to a space or a quote are left alone. A run of
+# them (abc""''def) is one join.
+_WORD_CHAR = r"[A-Za-z0-9_.\-]"
+_EMPTY_QUOTES = tuple(
+    re.compile(rf"{q}(?<={_WORD_CHAR}{q})(?:\"\"|'')*+(?={_WORD_CHAR})") for q in ('""', "''")
+)
+
 _CONTINUATION = re.compile(r"\\\r?\n[ \t]*+")
 
 # The end of a YAML block scalar header ("key: |", "key: >-", "- |2"), with an optional comment;
@@ -444,6 +568,13 @@ _FOLD = re.compile(r"[ \t\r]*+\n[ \t\r\n]*+")
 _BASE64_CHARS = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
 _BASE64_MASK = bytes(ord("A") if b in _BASE64_CHARS else ord(".") for b in range(256))
 _MIN_BASE64 = 40
+# A shorter token (24 to 39 characters, so 18 to 29 bytes) is read only when it is one whole
+# key. The only keys that short are AWS key IDs, Slack tokens and short GitLab tokens (a test
+# checks every rule's shortest match). A key's first three characters encode to the token's
+# first four, so only a token that starts like the base64 of one of these is decoded.
+_MIN_SHORT_BASE64 = 24
+_SHORT_KEY_STARTS = ("AKI", "ASI", "xox", "xap", "glp")
+_SHORT_BASE64_LEADS = tuple(base64.b64encode(s.encode()).decode() for s in _SHORT_KEY_STARTS)
 _NOT_LEAD = re.compile(r"[^A-Za-f]")  # base64 of ASCII text starts each 4 characters with A-f
 _UPPER = re.compile(r"[A-Z]")
 _LOWER = re.compile(r"[a-z]")
@@ -452,12 +583,14 @@ _CONTROL_BYTES = bytes(b for b in range(32) if b not in b"\t\n\r") + b"\x7f"
 # A double-quoted string with at least one backslash escape (JSON, and YAML and TOML too).
 _ESCAPED_STRING = re.compile(r'"[^"\\\n]*+(?:\\.[^"\\\n]*+)++"')
 # The tricks above as they look inside such a string: an escaped invisible character, an escaped
-# backslash-newline, escaped quotes joined by an operator or a space, the escaped newline that
-# ends a YAML block header.
+# backslash-newline, escaped quotes joined by an operator or a space, two escaped quotes inside
+# a word (abc\"\"def: "a""b" side by side, or an empty string), the escaped newline that ends a
+# YAML block header.
 _JSON_HINT = re.compile(
     r"\\(?:u(?:00[aA][dD]|180[eE]|200[b-fB-F]|202[a-eA-E]|206[0-46-9]|[fF][eE][fF][fF])"
     r"|\\\\n"
     r'|"[ \t]*+\+[ \t]*+\\"|"[ \t]++(?:\.\.?+[ \t]++)?+\\"'
+    rf'|"\\"(?<={_WORD_CHAR}\\"\\")(?={_WORD_CHAR})'
     r"|n(?:(?<=[:-] [|>]\\n)|(?<=[:-] [|>][1-9+-]\\n)))"
 )
 
@@ -489,6 +622,13 @@ def _split(text: str) -> Iterator[Join]:
                 if previous is not None:
                     yield previous.end() - 1, piece.start() + 1, "split"
                 previous = piece
+
+
+def _emptied(text: str) -> Iterator[Join]:
+    """Each run of empty quoted strings inside a word."""
+    for pattern in _EMPTY_QUOTES:
+        for m in pattern.finditer(text):
+            yield m.start(), m.end(), "split"
 
 
 def _continued(text: str) -> Iterator[Join]:
@@ -543,7 +683,7 @@ def _folded(text: str) -> Iterator[Join]:
             yield fold.start(), fold.end(), "folded"
 
 
-_COLLECTORS = (_invisible, _split, _continued, _folded)
+_COLLECTORS = (_invisible, _split, _emptied, _continued, _folded)
 
 
 def _windows(text: str, joins: list[Join]) -> Iterator[tuple[int, int, list[Join]]]:
@@ -576,9 +716,13 @@ def _windows(text: str, joins: list[Join]) -> Iterator[tuple[int, int, list[Join
         yield start, end, group
 
 
-# Every generic match holds one of these words; a view without any skips the (slow) generic rules.
-_GENERIC_WORDS = ("key", "secret", "token", "passw", "bearer")
+# Every generic match holds one of these words (folded); a view without any skips the (slow)
+# generic rules.
+_GENERIC_WORDS = tuple(word for rule in RULES if rule.id == "generic" for word in rule.needs)
 _SPECIFIC_RULES = tuple(rule for rule in RULES if rule.id != "generic")
+# No rule matches fewer characters than this (a Slack token: xoxb- and ten more; a test checks
+# every rule), so a shorter view holds no key.
+_SHORTEST_MATCH = 12
 
 
 @dataclass
@@ -651,10 +795,13 @@ def _in_view(view: _View, plain_wins: bool) -> Iterator[SecretMatch]:
     plain key: a view joins pieces with no separator, so a rule with a loose length (anthropic,
     openai, generic, ...) would read a plain key plus the next word as one longer key, and the
     plain key is what is reported. Redaction keeps them, to hide every character either way."""
-    lower = view.text.lower()
-    rules = RULES if any(word in lower for word in _GENERIC_WORDS) else _SPECIFIC_RULES
+    if len(view.text) < _SHORTEST_MATCH:
+        return
+    folded = _fold(view.text)
+    rules = RULES if any(word in folded for word in _GENERIC_WORDS) else _SPECIFIC_RULES
     cuts = view.cuts
-    for match, full_start, full_end in _matches(view.text, rules):
+    # Redaction (plain_wins off) keeps placeholders too, so anything key-shaped is hidden.
+    for match, full_start, full_end in _matches(view.text, rules, placeholders=not plain_wins):
         k = bisect_right(cuts, full_start)
         if k == len(cuts) or cuts[k] >= full_end:
             continue  # no join inside: plain text, which find_secrets reads
@@ -708,11 +855,13 @@ def _decode(head: str) -> str | None:
     return data.decode("utf-8", errors="replace")
 
 
-def _base64_tokens(text: str) -> Iterator[tuple[int, int]]:
-    """(start, end) of each whole base64 token of at least _MIN_BASE64 characters (padding
-    included). A token may follow a JSON escape such as \\n; other escapes rule it out."""
-    mask = text.encode("ascii", "replace").translate(_BASE64_MASK)
-    run = b"A" * _MIN_BASE64
+def _base64_tokens(
+    text: str, mask: bytes, shortest: int = _MIN_BASE64, longest: int | None = None
+) -> Iterator[tuple[int, int]]:
+    """(start, end) of each whole base64 token of `shortest` characters or more, and fewer than
+    `longest` (padding not counted, but included in the span). `mask` is the text's base64
+    mask. A token may follow a JSON escape such as \\n; other escapes rule it out."""
+    run = b"A" * shortest
     pos = 0
     for _ in range(MAX_RUNS):
         start = mask.find(run, pos)
@@ -725,7 +874,7 @@ def _base64_tokens(text: str) -> Iterator[tuple[int, int]]:
                 continue
             start += 1
         pad = len(text[end : end + 3]) - len(text[end : end + 3].lstrip("="))
-        if pad < 3 and end - start >= _MIN_BASE64:
+        if pad < 3 and shortest <= end - start and (longest is None or end - start < longest):
             yield start, end + pad
 
 
@@ -733,7 +882,8 @@ def base64_texts(text: str, budget: Budget) -> Iterator[tuple[int, int, str]]:
     """(start, end, decoded) for each base64 token of `text` that decodes to text, within the
     limits of the hidden-key search: MAX_RUNS tokens looked at, budget.blobs of them decoded,
     each to at most MAX_BLOB_CHARS characters of base64 (AP010 reads the same blobs)."""
-    for start, end in _base64_tokens(text):
+    mask = text.encode("ascii", "replace").translate(_BASE64_MASK)
+    for start, end in _base64_tokens(text, mask):
         if budget.blobs <= 0:
             return
         head = text[start : min(end, start + MAX_BLOB_CHARS + 2)]
@@ -745,10 +895,25 @@ def base64_texts(text: str, budget: Budget) -> Iterator[tuple[int, int, str]]:
             yield start, end, decoded
 
 
-def _in_base64(text: str, budget: Budget) -> Iterator[SecretMatch]:
+def _in_base64(text: str, budget: Budget, placeholders: bool = False) -> Iterator[SecretMatch]:
     for start, end, decoded in base64_texts(text, budget):
-        for found in find_secrets(decoded):
+        for found in find_secrets(decoded, placeholders=placeholders):
             yield SecretMatch(found.rule_id, found.name, found.value, start, end, "base64")
+    # Shorter tokens, after the long ones so they never take a long one's place in the budget.
+    mask = text.encode("ascii", "replace").translate(_BASE64_MASK)
+    for start, end in _base64_tokens(text, mask, _MIN_SHORT_BASE64, _MIN_BASE64):
+        if budget.blobs <= 0:
+            return
+        if not text.startswith(_SHORT_BASE64_LEADS, start):
+            continue
+        budget.blobs -= 1
+        decoded = _decode(text[start:end])
+        if decoded is None:
+            continue
+        key = decoded.removesuffix("\n").removesuffix("\r")  # `echo key | base64` adds one
+        found = find_secrets(key, placeholders=placeholders)
+        if len(found) == 1 and found[0].value == key:  # the whole text is one key
+            yield SecretMatch(found[0].rule_id, found[0].name, key, start, end, "base64")
 
 
 def _string_around(text: str, at: int, floor: int) -> tuple[int, int] | None:
@@ -796,7 +961,7 @@ def _hidden_in(
     yield from _joined(text, plain_wins)
     if nested:
         return
-    yield from _in_base64(text, budget)
+    yield from _in_base64(text, budget, placeholders=not plain_wins)
     for start, end, decoded in _in_json_strings(text, budget):
         for found in _hidden_in(decoded, budget, plain_wins, nested=True):
             yield SecretMatch(found.rule_id, found.name, found.value, start, end, found.obfuscation)

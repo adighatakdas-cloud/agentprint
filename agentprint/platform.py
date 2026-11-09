@@ -1,7 +1,7 @@
 """Which operating system agentprint runs on, in one place so tests can swap it.
 
 Tests monkeypatch `is_windows` (never `os.name`, which breaks pathlib), and callers reach it as
-`platform.is_windows()` at call time. What cannot be checked on Windows yet travels with the result
+`platform.is_windows()` at call time. What a sweep could not check travels with the result
 (scan_notes), so a silent no-op never reads as a clean result.
 """
 
@@ -10,12 +10,12 @@ from __future__ import annotations
 import contextlib
 import os
 import sys
+from collections.abc import Iterable
 from pathlib import Path, PurePath
 from typing import Any
 
 from . import unread
 
-NOT_CHECKED_WINDOWS = "File permissions (AP008) are not checked on Windows yet."
 NO_HOOKS_WINDOWS = "Hooks are not installed on Windows yet; the MCP server and the note are."
 
 
@@ -42,11 +42,27 @@ def use_utf8_streams() -> None:
                 reconfigure(encoding="utf-8", errors=errors)
 
 
+# What the latest sweep's checks could not look at, by check id (AP008 on Windows: files whose
+# access list could not be read). Each check sets or clears its own notes on every run.
+_RUN_NOTES: dict[str, tuple[str, ...]] = {}
+
+
+def set_run_notes(check_id: str, notes: Iterable[str]) -> None:
+    """A check says what it could not check in this sweep (nothing: it checked everything)."""
+    notes = tuple(notes)
+    if notes:
+        _RUN_NOTES[check_id] = notes
+    else:
+        _RUN_NOTES.pop(check_id, None)
+
+
 def scan_notes() -> tuple[str, ...]:
-    """What the last sweep could not check: on Windows, file permissions; anywhere, each file it
-    could not read (a locked database: unread.py). Empty when everything was checked. Shown in
-    every output format."""
-    return ((NOT_CHECKED_WINDOWS,) if is_windows() else ()) + unread.notes()
+    """What the latest sweep could not check on this machine, one line each: each check's own
+    notes (on Windows, AP008 files it could not read) and each file it could not read at all (a
+    locked database: unread.py). Empty when it checked everything. Shown in every output format."""
+    return tuple(note for check_id in sorted(_RUN_NOTES) for note in _RUN_NOTES[check_id]) + tuple(
+        unread.notes()
+    )
 
 
 def drive_safe_parts(path: PurePath) -> tuple[str, ...]:

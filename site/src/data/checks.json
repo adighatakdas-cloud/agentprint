@@ -52,7 +52,7 @@
     "id": "AP008",
     "title": "Agent data readable by other users",
     "severity": "medium; high for key stores",
-    "summary": "Agent history, settings or a key store can be read by other users on this machine (macOS and Linux).",
+    "summary": "Agent history, settings or a key store can be read by other users on this machine (macOS, Linux and Windows).",
     "slug": "ap008"
   },
   {

@@ -2,7 +2,8 @@
 
 - Hook: `beforeShellExecution` in ~/.cursor/hooks.json (`{"version": 1, "hooks": {...}}`); the
   entry's `matcher` is a regex on the full command string, so agentprint only runs for commands
-  that start a publish or push. Input has `command` and `cwd`. Answer is JSON with
+  that start a publish or push, or that run a file a publish can hide in (a script, a make,
+  just or task recipe, `npm version`). Input has `command` and `cwd`. Answer is JSON with
   `permission` ("allow" | "deny" | "ask") plus snake_case `user_message` / `agent_message`;
   results merge as "deny wins over ask, ask wins over allow"; exit 0 with invalid or empty JSON
   blocks, exit 2 blocks, other non-zero codes fail open. https://cursor.com/docs/hooks
@@ -53,11 +54,12 @@ NAME = "cursor"
 # Cursor matches this regex against the whole command line (it's JavaScript; this pattern uses
 # only syntax shared with Python's `re`, which the tests use). The tool must sit where a
 # command starts, so `git stash push`, `echo npm publish` and quoted text don't fire the hook.
-_COMMAND_START = (
+_PROGRAM_START = (
     r"(?:^|[;&|({!`\n]|\$\(|\b(?:do|then|else|xargs|sudo|env|exec|eval|nohup|time|npx|pnpx|"
-    r"bunx|uvx|corepack)\s|\btimeout\s+\S+\s|\bpython[0-9.]*\s+-m\s)\s*(?:\w+=\S*\s+)*(?:\S*/)?"
+    r"bunx|uvx|corepack)\s|\btimeout\s+\S+\s|\bpython[0-9.]*\s+-m\s)\s*(?:\w+=\S*\s+)*"
 )
-MATCHER = _COMMAND_START + (
+_COMMAND_START = _PROGRAM_START + r"(?:\S*/)?"
+_PUBLISHES = (
     r"(?:(?:npm|pnpm|yarn|bun)\b[^;&|\n]*?\b(?:publish|release|deploy|ship)\b"
     r"|(?:uv|poetry|hatch|flit)\b[^;&|\n]*?\bpublish\b"
     r"|twine\b[^;&|\n]*?\bupload\b"
@@ -65,6 +67,20 @@ MATCHER = _COMMAND_START + (
     r"|(?:np|semantic-release|release-it)(?:\s|$)"
     r"|git(?:\s+-\S+(?:\s+[^-\s]\S*)?)*\s+push\b)"
 )
+# Commands that can publish from a file the guard reads (Ruling X7): every form
+# agentprint.following follows. make, just and task recipes, `npm version` hooks, and scripts
+# run as ./x, `bash x`, `python x`, `tsx x`, `deno run x`, `uv run x`, `pdm run x`...
+_RUNS_A_FILE = (
+    r"(?:(?:g?make|just|go-task|task)(?:\s|$)"
+    r"|(?:npm|pnpm|yarn|bun)(?:\s+-\S+)*\s+version\b"
+    r"|\S*/\S"
+    r"|(?:sh|bash|zsh|dash|ksh|fish|python[0-9.]*|node|nodejs|tsx|ts-node|bun|ruby|perl)"
+    r"(?:\s+-\S+)*\s+[^-\s]"
+    r"|deno\s+(?:run|eval)\b"
+    r"|(?:source|\.)\s+\S"
+    r"|(?:uv|poetry|pdm|pipenv|hatch|rye)\s+run\s+\S)"
+)
+MATCHER = rf"(?:{_COMMAND_START}{_PUBLISHES}|{_PROGRAM_START}{_RUNS_A_FILE})"
 RULE = f"""\
 ---
 description: agentprint security check before publishing a package or pushing

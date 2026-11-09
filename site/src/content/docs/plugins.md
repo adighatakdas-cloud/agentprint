@@ -11,16 +11,18 @@ For each agent, pick one. With both, the same check runs twice and the agent see
 
 ## What each plugin includes
 
-| Agent | Hook | MCP server | Note | Formats |
-|---|---|---|---|---|
-| Claude Code | yes | yes | as a skill | as documented |
-| Cursor | yes | yes | always-on rule | as documented |
-| Codex | yes | yes | as a skill | docs-verified only |
-| GitHub Copilot CLI | yes | yes | as a skill | docs-verified only |
-| Gemini CLI | yes | yes | context file | docs-verified only |
-| Google Antigravity | yes | yes | always-on rule | as documented |
-| Hermes Agent | yes (after you enable it) | no: add it to `config.yaml` yourself | as a skill | docs-verified only |
-| VS Code | no | yes | no | docs-verified only (the link) |
+| Agent | Hook | MCP server | Note | Formats | Run in the real agent |
+|---|---|---|---|---|---|
+| Claude Code | yes | yes | as a skill | as documented | yes: blocks a leaky publish; passes `claude plugin validate` |
+| Cursor | yes | yes | always-on rule | as documented | not yet |
+| Codex | yes | yes | as a skill | docs-verified only | not yet |
+| GitHub Copilot CLI | yes | yes | as a skill | docs-verified only | yes: blocks a leaky publish |
+| Gemini CLI | yes | yes | context file | docs-verified only | yes: blocks a leaky publish |
+| Google Antigravity | yes | yes | always-on rule | as documented | not yet |
+| Hermes Agent | yes (after you enable it) | no: add it to `config.yaml` yourself | as a skill | docs-verified only | yes: blocks a leaky publish |
+| VS Code | no | yes | no | docs-verified only (the link) | not yet |
+
+**Run in the real agent** means CI loads the plugin into that agent's real program, driven by a scripted mock model (no accounts), and checks that a publish with a leaked key is blocked and a clean one runs. A format can be docs-verified only and still pass that run: the run proves the plugin works today, the docs label says which parts the agent's docs don't spell out.
 
 **As documented** means every file uses a shape the agent's official docs show (for Antigravity, its [Build plugins](https://antigravity.google/docs/build-plugins/) page: `plugin.json`, `hooks.json`, `mcp_config.json` and `rules/` at the plugin's root). **Docs-verified only** means the plugin is built from the docs, but a part of its format is not shown there, so agentprint uses the closest documented shape:
 

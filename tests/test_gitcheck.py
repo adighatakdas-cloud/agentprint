@@ -6,6 +6,7 @@ import pytest
 
 from agentprint.checks.ap007_local_not_ignored import LocalFileNotIgnored
 from agentprint.gitcheck import check_push
+from agentprint.secrets import redact
 from tests import fakes
 from tests.conftest import set_home
 
@@ -63,6 +64,23 @@ def test_key_in_tracked_shared_settings_blocks(repo):
     _git(repo, "add", "-A")
     [finding] = check_push(repo)
     assert finding.check_id == "AP005" and finding.location == str(repo / ".mcp.json")
+
+
+def test_readme_placeholders_in_a_tracked_mcp_config_do_not_block(repo):
+    env = {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "gh" + "p_" + "x" * 36,
+        "SLACK_BOT_TOKEN": "xo" + "xb-" + "your-bot-token",
+        "AWS_ACCESS_KEY_ID": "AK" + "IA" + "X" * 16,
+        "OPENAI_API_KEY": "sk-" + "proj-" + "x" * 40,
+    }
+    _write(repo / ".mcp.json", json.dumps({"mcpServers": {"x": {"env": env}}}, indent=2))
+    _git(repo, "add", "-A")
+    assert check_push(repo) == []
+    env["REAL"] = fakes.GITHUB  # a real-shaped key next to them still blocks
+    _write(repo / ".mcp.json", json.dumps({"mcpServers": {"x": {"env": env}}}, indent=2))
+    _git(repo, "add", "-A")
+    [finding] = check_push(repo)
+    assert finding.check_id == "AP005" and redact(fakes.GITHUB) in finding.detail
 
 
 def test_untracked_shared_settings_are_not_reported_as_pushed(repo):
