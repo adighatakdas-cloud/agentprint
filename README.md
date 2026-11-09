@@ -105,6 +105,8 @@ gitleaks and trufflehog the same way on a labelled corpus, with its method and l
 - It only ever blocks (BLOCK or CLEAR); your agent's own approval rules still apply.
 - Strict mode (`agentprint install --strict`) also blocks a publish or push agentprint can't check.
 - `agentprint uninstall` takes out exactly what `install` added.
+- `agentprint protect` adds a second check at git and npm themselves (a pre-push hook and
+  `prepublishOnly`), so a push hidden from the agent hook is still caught. `--undo` takes it out.
 - Rather add it as a plugin? Claude Code, Codex, Copilot CLI, Gemini CLI, Cursor, Antigravity
   and Hermes each have one: see [Plugins](https://adighatakdas-cloud.github.io/agentprint/plugins/).
 
