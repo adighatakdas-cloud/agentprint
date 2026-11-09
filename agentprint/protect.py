@@ -713,14 +713,12 @@ def _protect_npm(package: Path, entries: dict[str, dict], echo: Echo, strict: bo
     atomic_write(package, new)
     entry: dict[str, object] | None = entries.get(_key(package))
     undo = entry.get("undo") if entry is not None else None
-    if (
-        entry is None
-        or entry.get("sha256") != _sha(old.encode("utf-8"))
-        or not isinstance(undo, list)
-    ):
-        entry = {"kind": "npm", "before_sha256": _sha(old.encode("utf-8")), "undo": []}
-    # A refresh (a newer pin) keeps the way back to the bytes before the first edit.
-    entry["undo"] = [patch, *(entry.get("undo") or [])]
+    if entry is None or entry.get("sha256") != _sha(old.encode("utf-8")):
+        undo = None
+    if not isinstance(undo, list):  # else a refresh (a newer pin): undo still goes back to before
+        entry, undo = {"kind": "npm", "before_sha256": _sha(old.encode("utf-8"))}, []
+    assert entry is not None
+    entry["undo"] = [patch, *undo]
     entry["sha256"] = _sha(new.encode("utf-8"))
     entries[_key(package)] = entry
     echo("npm: package.json scripts.prepublishOnly now runs agentprint pack before npm publish:")
