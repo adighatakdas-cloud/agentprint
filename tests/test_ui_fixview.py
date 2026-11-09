@@ -17,7 +17,6 @@ from agentprint.ui.theme import theme
 from tests import fakes
 
 
-
 def _console(width: int) -> Console:
     return Console(file=io.StringIO(), width=width, theme=theme({}), no_color=True, highlight=False)
 

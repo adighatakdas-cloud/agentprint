@@ -104,7 +104,7 @@ def test_unknown_keys_are_one_warning_and_the_rest_still_applies(tmp_path):
     config = load(tmp_path)
     assert len(config.warnings) == 1
     assert "unknown keys" in config.warnings[0]
-    assert "\"colour\"" in config.warnings[0] and "\"pth\" in ignore entry 1" in config.warnings[0]
+    assert '"colour"' in config.warnings[0] and '"pth" in ignore entry 1' in config.warnings[0]
     assert config.fail_on is FailOn.low and config.ignore[0].check == "AP007"
 
 
