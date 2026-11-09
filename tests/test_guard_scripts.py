@@ -506,3 +506,46 @@ def test_a_function_the_script_calls_is_read(leaky):
     _repo(leaky, {"release.sh": script})
     verdict = evaluate("./release.sh", leaky)
     assert verdict.block and "git push" not in verdict.reason
+
+
+# ---- an ANSI-C $'...' string with an apostrophe after it --------------------------------------
+
+P1 = "npm publish demo-1.0.0.tgz"
+
+
+@pytest.mark.parametrize(
+    ("command", "files"),
+    [
+        (f"echo $'it\\'s' && {P1} # don't", {}),
+        (f"echo $'it\\'s' && {P1} && echo don\\'t", {}),
+        (f"echo $'x\\'' ; {P1} ; echo '\\'", {}),
+        ("./r.sh", {"r.sh": f"#!/bin/bash\necho $'Releasing: it\\'s time'\n{P1}\n# that's all\n"}),
+        ("./r.sh", {"r.sh": f"#!/bin/bash\necho $'it\\'s'\nset -e\n{P1}\necho ok\n# don't\n"}),
+        ("./r.sh", {"r.sh": f"#!/bin/bash\necho $'it\\'s'\n{P1}\necho can\\'t\n"}),
+        ("make release", {"Makefile": f"release:\n\techo $$'it\\'s' && {P1} # don't\n"}),
+        (f"bash -c \"echo \\$'it\\\\'s' && {P1} # don't\"", {}),
+    ],
+    ids=["comment", "escaped-later", "backslash-quote", "script-comment", "script-comment-far",
+         "script-escaped", "make", "bash-c-double-quoted"],
+)  # fmt: skip
+def test_an_ansi_c_string_then_an_apostrophe_still_blocks(leaky, command, files):
+    _repo(leaky, files)
+    assert evaluate(command, leaky).block
+
+
+@pytest.mark.parametrize(
+    ("command", "files"),
+    [
+        ("./r.sh", {"r.sh": f"#!/bin/bash\necho $'it\\'s'\ncd pkg\n# it's\n{P1}\n"}),
+        (f"echo $'it\\'s' && cd pkg && echo don\\'t; {P1}", {}),
+    ],
+    ids=["script", "command-line"],
+)
+def test_an_ansi_c_string_does_not_hide_a_cd(tmp_path, command, files):
+    (tmp_path / "pkg").mkdir()
+    _tgz(tmp_path / "demo-1.0.0.tgz", CLEAN)
+    _tgz(
+        tmp_path / "pkg" / "demo-1.0.0.tgz", {**CLEAN, "package/.claude/settings.local.json": LEAKY}
+    )
+    _repo(tmp_path, files)
+    assert evaluate(command, tmp_path).block

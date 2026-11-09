@@ -117,6 +117,13 @@ def _scan(line: str, quote: str) -> tuple[str, str, list[tuple[bool, str]]]:
             out.append(line[i : i + 2])
             i += 2
             continue
+        elif line.startswith("$'", i):  # an ANSI-C string: \\' inside it doesn't end it
+            end = i + 2
+            while end < len(line) and line[end] != "'":
+                end += 2 if line[end] == "\\" else 1
+            out.append(line[i : end + 1])
+            i = end + 1
+            continue
         elif char in "'\"":
             quote = char
         elif char == "#" and (i == 0 or line[i - 1] in " \t;&|()"):

@@ -320,10 +320,7 @@ def _parse_lines(command: str, cwd: Path, depth: int, seen: set) -> list[Risky]:
 
 def _parse_into(command: str, where: _Where, depth: int, seen: set, found: list[Risky]) -> _Where:
     """Add what `command` publishes to `found`; returns where the shell is after it."""
-    try:
-        tokens = _tokens(command)
-    except ValueError:  # $'it\'s' is a quote shlex can't read: try once without it
-        tokens = _tokens(_without_ansi_c(command))
+    tokens = _tokens(_without_ansi_c(command))  # quote-aware: a 'v1$' regex stays as it is
     state = where
     stack: list[_Where] = []
     segment: list[str] = []
@@ -351,8 +348,11 @@ def _tokens(command: str) -> list[str]:
 
 
 def _without_ansi_c(command: str) -> str:
-    """`command` with each ANSI-C `$'...'` string outside quotes made `''`. Only a `$'` that is
-    not inside a quote starts one: in `grep 'v1$' x` the `$'` is a regex end and a closing quote."""
+    """`command` as shlex can read it the way bash does: each ANSI-C `$'...'` string outside
+    quotes (shlex can't read its `\\'`) made `''`, and inside double quotes `\\$` and `\\``
+    made `$` and `` ` `` (shlex keeps the backslash; bash drops it, so `bash -c "\\$'x'"` runs
+    `$'x'`). Only a `$'` that is not inside a quote starts one: in `grep 'v1$' x` the `$'` is a
+    regex end and a closing quote."""
     out: list[str] = []
     quote = ""
     i = 0
@@ -360,7 +360,8 @@ def _without_ansi_c(command: str) -> str:
         char = command[i]
         if quote:
             if char == "\\" and quote == '"':
-                out.append(command[i : i + 2])
+                pair = command[i : i + 2]
+                out.append(pair[1:] if pair[1:] in {"$", "`"} else pair)
                 i += 2
                 continue
             quote = "" if char == quote else quote
