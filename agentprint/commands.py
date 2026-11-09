@@ -1792,14 +1792,15 @@ _TOOLISH = re.compile(
 _SCAN_SPECIAL = {"export", "local", "readonly", "declare", "typeset", "eval", "source", ".", "set",
                  "compgen"}  # fmt: skip
 # Programs whose arguments are never run: the words given to them are only text.
-_QUIET = {":", "true", "false", "test", "[", "[[", "grep", "egrep", "fgrep", "zgrep", "ag",
-          "ack", "head", "tail", "wc", "less", "more", "ls", "touch", "mkdir", "rm", "rmdir",
-          "cp", "mv", "chmod", "chown", "ln", "basename", "dirname", "sleep", "jq", "yq",
-          "sort", "uniq", "cut", "column", "diff", "cmp", "stat", "file", "du", "df", "which",
-          "type", "pwd", "date", "tr", "rev", "wait", "exit", "return", "printenv",
-          "cat"}  # fmt: skip
+# (Not `ack --pager`, `sort --compress-program`, `less`: those can start a program.)
+_QUIET = {":", "true", "false", "test", "[", "[[", "grep", "egrep", "fgrep", "zgrep", "head",
+          "tail", "wc", "ls", "touch", "mkdir", "rm", "rmdir", "cp", "mv", "chmod", "chown",
+          "ln", "basename", "dirname", "sleep", "jq", "uniq", "cut", "column", "diff", "cmp",
+          "stat", "file", "du", "df", "which", "type", "pwd", "date", "tr", "rev", "wait",
+          "exit", "return", "printenv", "cat"}  # fmt: skip
 # Programs that pass what they read on (or swallow it): a here-document fed to them is data.
 _SINKS = _QUIET | {"tee", "base64", "pbcopy", "wl-copy", "xclip", "gzip", "fold", "fmt", "nl",
+                   "sort",
                    "column", "md5sum", "sha256sum", "shasum", "envsubst", "tac",
                    "paste"}  # fmt: skip
 _WRAPS = {"sudo", "doas", "env", "command", "builtin", "nohup", "time", "exec", "nice", "stdbuf",
@@ -2209,6 +2210,10 @@ def _split_into(text: str, owner, literal: bool, tokens: list, strip_quotes: boo
         if assign and len(piece) > assign.end():
             piece = piece[assign.end() :].strip("'\"")
         tokens.append(_Tok(piece, owner, literal))
+        if piece.startswith("-") and "=" in piece:  # --pager=npm publish: the value is a word too
+            value = piece.partition("=")[2].strip("'\"")
+            if value:
+                tokens.append(_Tok(value, owner, literal))
 
 
 _ALL_TOOLS = set(_VERB_OF) | _RELEASERS | {"np"}

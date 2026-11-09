@@ -438,6 +438,18 @@ def test_a_publish_the_reader_cannot_follow_is_still_seen_by_the_backstop(tmp_pa
     assert risky.unsure and risky.label == "npm publish"
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ack --pager='npm publish demo-1.0.0.tgz' x",  # the pager runs
+        "sort --compress-program='npm publish demo-1.0.0.tgz' x",
+        "less x",  # control: nothing named, nothing to say
+    ],
+)
+def test_arguments_are_inert_only_for_programs_that_never_run_them(tmp_path, command):
+    assert bool(detect(command, tmp_path)) == ("publish" in command)
+
+
 def test_make_fills_in_at_run_time_names_a_publish(leaky):
     files = {"Makefile": "pub = $(1) publish\nrelease:\n\t$(call pub,npm)\n"}
     assert _blocks("make release", leaky, files)
