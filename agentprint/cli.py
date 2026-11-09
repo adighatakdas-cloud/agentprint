@@ -543,7 +543,8 @@ def pack(
         IfUnavailable,
         typer.Option(
             "--if-unavailable",
-            help="When the package can't be checked: block (exit 2) or allow (exit 0, one line).",
+            help="allow: if a tool agentprint needs (npm, uv) is missing, exit 0 with one line. "
+            "Verdicts then exit 3 (would leak) and 4 (can't check) instead of 1 and 2.",
         ),
     ] = IfUnavailable.block,
 ) -> None:

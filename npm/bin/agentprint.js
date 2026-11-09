@@ -54,8 +54,11 @@ function command(args, version, which = findExecutable) {
 }
 
 // `--if-unavailable allow` (what `agentprint protect` puts in a shared prepublishOnly): when
-// agentprint can't run here (no uv or pipx, or it fails to start), say so in one line and exit 0,
-// so a teammate or CI without uv is not blocked. Exit 1 (something would leak) still blocks.
+// agentprint can't run here (no uv or pipx, uvx can't fetch it, it crashes before a verdict),
+// say so in one line and exit 0, so a teammate or CI without uv is not blocked. In that mode
+// `agentprint pack` gives its verdicts their own codes: 3 = something would leak (exit 1 here),
+// 4 = the package could not be checked (exit 2 here). Any other code is not a verdict.
+const VERDICTS = { 0: 0, 3: 1, 4: 2 };
 function allowsUnavailable(args) {
   const at = args.indexOf('--if-unavailable');
   return args.includes('--if-unavailable=allow') || (at !== -1 && args[at + 1] === 'allow');
@@ -76,9 +79,13 @@ function main() {
     if (!allow) process.stderr.write(`${INSTALL_HINT}\n`);
     process.exit(unavailable('could not run: uv or pipx is not installed', allow));
   }
-  // No shell: arguments reach agentprint exactly as given. stdio is shared, so hook payloads on
-  // stdin and JSON/SARIF on stdout pass straight through.
-  const child = spawn(cmd.file, cmd.args, { stdio: 'inherit' });
+  // No shell: arguments reach agentprint exactly as given. stdin and stdout are shared, so hook
+  // payloads and JSON/SARIF pass straight through. In allow mode stderr is held back until the
+  // exit code says whether agentprint gave a verdict (then it is passed on) or did not run
+  // (then uv's or Python's errors are replaced by one line).
+  const child = spawn(cmd.file, cmd.args, { stdio: ['inherit', 'inherit', allow ? 'pipe' : 'inherit'] });
+  const held = [];
+  if (allow) child.stderr.on('data', (chunk) => held.push(chunk));
   // Ctrl-C already reaches the child (same process group); other signals are forwarded.
   process.on('SIGINT', () => {});
   for (const signal of ['SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
@@ -87,12 +94,17 @@ function main() {
     if (!allow) process.stderr.write(`agentprint: ${why}\n`);
     process.exit(unavailable(why, allow));
   });
-  child.on('exit', (code, signal) => {
-    if (signal) process.exit(128 + (os.constants.signals[signal] || 0));
-    if (allow && code !== 0 && code !== 1) {
-      process.exit(unavailable(`could not run (exit ${code})`, allow));
+  child.on('close', (code, signal) => {
+    if (signal) {
+      if (allow) process.stderr.write(Buffer.concat(held));
+      process.exit(128 + (os.constants.signals[signal] || 0));
     }
-    process.exit(code ?? 2);
+    if (!allow) process.exit(code ?? 2);
+    if (code in VERDICTS) {
+      process.stderr.write(Buffer.concat(held));
+      process.exit(VERDICTS[code]);
+    }
+    process.exit(unavailable(`could not run (exit ${code})`, allow));
   });
 }
 

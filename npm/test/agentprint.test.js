@@ -156,10 +156,19 @@ test('--if-unavailable allow lets the publish go when agentprint cannot run', un
   assert.equal(missing.status, 0);
   assert.match(missing.stderr, /^agentprint: could not run: uv or pipx is not installed; the publish goes on/);
   const dir = fakeDir('uvx');
-  assert.equal(run(dir, allow, { FAKE_EXIT: '2' }).status, 0); // uv or agentprint failed
-  assert.equal(run(dir, allow, { FAKE_EXIT: '1' }).status, 1); // a leak still blocks
-  assert.equal(run(dir, allow, { FAKE_EXIT: '0' }).status, 0);
-  assert.equal(run(fakeDir(), ['pack']).status, 2); // without the flag: fail closed, as before
+  // uvx could not fetch agentprint (exit 1 or 2), or Python crashed (exit 1): no verdict
+  for (const code of ['1', '2', '127']) {
+    const failed = run(dir, allow, { FAKE_EXIT: code });
+    assert.equal(failed.status, 0, code);
+    assert.equal(failed.stderr, `agentprint: could not run (exit ${code}); the publish goes on (--if-unavailable allow)\n`);
+  }
+  assert.equal(run(dir, allow, { FAKE_EXIT: '3' }).status, 1); // a BLOCK verdict still blocks
+  assert.equal(run(dir, allow, { FAKE_EXIT: '4' }).status, 2); // so does "could not check"
+  const ok = run(dir, allow, { FAKE_EXIT: '0' });
+  assert.equal(ok.status, 0);
+  assert.match(ok.stderr, /to-stderr/); // a verdict's own stderr is passed on
+  assert.equal(run(fakeDir(), ['pack']).status, 2); // without the flag: as before
+  assert.equal(run(dir, ['pack'], { FAKE_EXIT: '1' }).status, 1);
   assert.equal(run(dir, ['pack'], { FAKE_EXIT: '2' }).status, 2);
 });
 
