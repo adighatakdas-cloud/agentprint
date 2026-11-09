@@ -271,7 +271,8 @@ def _detect(command: str, cwd: Path, depth: int) -> list[Risky]:
         found = _parse(command, cwd, depth, seen)
     except ValueError:  # unbalanced quotes and similar: read a script line by line instead
         found = _parse_lines(command, cwd, depth, seen) if "\n" in command.strip() else []
-    for inner in [*_BACKTICK.findall(command), *_DOLLAR_PAREN.findall(command)]:
+    live = re.sub(r"'[^']*'", "''", command)  # single-quoted text is literal: no $(...) runs
+    for inner in [*_BACKTICK.findall(live), *_DOLLAR_PAREN.findall(live)]:
         found += detect(inner, cwd, depth + 1)
     known = seen | {(r.action, r.tool) for r in found}
     for risky in _backstop(command, cwd):

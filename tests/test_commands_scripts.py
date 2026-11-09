@@ -975,3 +975,15 @@ def test_eval_of_something_unknown_is_could_not_check_when_a_publish_is_named(co
 )
 def test_eval_of_ordinary_setup_stays_quiet(command):
     assert detect(command, CWD) == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git commit -m 'run `npm publish` later'",
+        "echo 'try $(npm publish) by hand'",
+        "node -e 'const m = /v(\\d+)/.exec(s); console.log(`npm ${m}`)'",
+    ],
+)
+def test_a_substitution_inside_single_quotes_is_text(command):
+    assert detect(command, CWD) == []
