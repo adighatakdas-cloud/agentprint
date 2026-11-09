@@ -683,6 +683,9 @@ def _options(tool: str, args: list[str], cwd: Path) -> _Options:
 
 
 def _node(tool: str, args: list[str], cwd: Path, found: list[Risky], depth: int, seen) -> None:
+    if tool == "bun" and {"-e", "--eval", "-p", "--print"} & set(args):  # bun -e '<code>'
+        found.extend(following._interpreted("bun", args, cwd, depth))
+        return
     opts = _options(tool, args, cwd)
     words = opts.words
     if not words or words[0] in NOT_PUBLISH:

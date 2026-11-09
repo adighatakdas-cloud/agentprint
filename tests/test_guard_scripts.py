@@ -649,3 +649,56 @@ def test_a_large_makefile_with_nothing_to_publish_stays_quiet(tmp_path):
 )
 def test_a_publish_through_a_variable_blocks_for_real(leaky, command):
     assert evaluate(command, leaky).block and evaluate(command, leaky, strict=True).block
+
+
+# ---- code in other languages: strings built from literals, commands built at run time ---------
+
+CODE_BYPASSES = [
+    'python3 -c \'import subprocess; x=["npm","pub"+"lish"]; subprocess.run(x)\'',
+    'python3 -c \'import subprocess; subprocess.run(["npm", "pub"+"lish"])\'',
+    'node -e \'require("child_process").execSync("npm " + "pub" + "lish")\'',
+    'python3 -c \'import os; os.system("".join(["npm ", "publish"]))\'',
+    'node -e \'require("child_process").execSync(["npm", "publish"].join(" "))\'',
+    'ruby -e \'system("npm " + "pub" + "lish")\'',
+    'perl -e \'system("npm " . "pub" . "lish")\'',
+    'php -r \'shell_exec("npm " . "pub" . "lish");\'',
+    'bun -e \'Bun.spawn(["npm", "pub" + "lish"])\'',
+    'deno eval \'new Deno.Command("npm", {args: ["pub" + "lish"]}).spawn()\'',
+    "python3 -c 'import subprocess,sys; subprocess.run([\"npm\", sys.argv[1]])' publish",
+    "node -e 'const v=process.argv[1]; require(\"child_process\").execSync(`npm ${v}`)' publish",
+    'python3 -c \'import subprocess; v="publish"; subprocess.run(f"npm {v}", shell=True)\'',
+]
+
+
+@pytest.mark.parametrize("command", CODE_BYPASSES)
+def test_a_publish_built_in_code_is_never_a_silent_pass(tmp_path, command):
+    verdict = evaluate(command, tmp_path)
+    assert verdict is not None and verdict.warning and not verdict.block
+    assert evaluate(command, tmp_path, strict=True).block
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'python3 -c \'import subprocess; subprocess.run(["git","status"])\'',
+        'python3 -c \'import subprocess, sys; subprocess.run(["git", "commit", "-m", '
+        'f"bump {sys.argv[1]}"])\' 1.2',
+        'node -e \'require("child_process").execSync("git status")\'',
+        'python3 -c \'print("pub" + "lic")\'',
+    ],
+)
+def test_ordinary_code_that_builds_strings_stays_quiet(tmp_path, command):
+    assert evaluate(command, tmp_path) is None
+    assert evaluate(command, tmp_path, strict=True) is None
+
+
+def test_a_followed_release_script_that_builds_its_command_is_could_not_check(tmp_path):
+    _repo(
+        tmp_path,
+        {
+            "release.py": 'import subprocess\nsubprocess.run(["npm", "pub" + "lish"])\n',
+            "release.mjs": 'import { execa } from "execa";\nawait execa("npm", [verb]);\n',
+        },
+    )
+    assert 'could not check "release.py"' in evaluate("python release.py", tmp_path).warning
+    assert 'could not check "release.mjs"' in evaluate("node release.mjs", tmp_path).warning

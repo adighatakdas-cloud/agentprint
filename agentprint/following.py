@@ -48,6 +48,8 @@ INTERPRETERS: dict[str, tuple[set[str], set[str]]] = {
              "--cert", "--env-file"}),  # `deno eval <code>` and `deno run <file>`
     "ruby": ({"-e"}, {"-r", "-I", "-C", "-E"}),
     "perl": ({"-e", "-E"}, {"-I", "-M", "-m"}),
+    "php": ({"-r"}, {"-c", "-d", "-z"}),
+    "bun": ({"-e", "--eval", "-p", "--print"}, {"-r", "--preload", "--cwd", "--config"}),
 }  # fmt: skip
 _MAKE_VALUES = {"-C", "--directory", "-f", "--file", "--makefile", "-I", "--include-dir", "-o",
                 "--old-file", "--assume-old", "-W", "--what-if", "--new-file", "--assume-new",
@@ -313,6 +315,99 @@ def _named(text: str) -> list[Hit]:
     return hits
 
 
+# ---- code in other languages ----------------------------------------------------------------
+
+_STRING = r"""(?:"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\$])*`)"""
+_JOINED = re.compile(rf"({_STRING})(?:\s*(?:\+|\.\.?)\s*|[ \t]+)({_STRING})")  # "a" + 'b', "a" "b"
+_LIST = rf"{_STRING}(?:\s*,\s*{_STRING})*\s*,?"
+_PY_JOIN = re.compile(rf"({_STRING})\.join\(\s*[\[(]\s*({_LIST})\s*[\])]\s*\)")  # "".join([...])
+_JS_JOIN = re.compile(rf"\[\s*({_LIST})\s*\]\.join\(\s*({_STRING})?\s*\)")  # [...].join("")
+_LITERAL_PART = re.compile(rf"\$?\{{\s*({_STRING})\s*\}}")  # `${"lish"}`, f"{'lish'}"
+# Where code starts a process. JS `exec`/`spawn` count only next to `child_process` (a RegExp's
+# .exec() and a class's `async exec ()` are not processes).
+_STARTS_PROCESS = re.compile(
+    r"subprocess\.\w+|\bos\.(?:system|popen|exec\w*|spawn\w*)|\bexeca(?:Sync)?\b|"
+    r"Deno\.(?:Command|run)|Bun\.(?:spawn\w*|\$)|\bsystem\s*\(|(?<!['\"])\bexec(?:\s+|\s*\(\s*)[\"'`]|"
+    r"%x[{(\[]|\bqx[{(/]|shell_exec|passthru|proc_open|\bpopen\s*\(|IO\.popen|Open3\."
+)
+_JS_PROCESS = re.compile(r"\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\s*\(")
+NEAR_PROCESS = 400  # characters between a process start and the command it builds
+_TOOL = r"(?:npm|pnpm|yarn|bun|twine|uv|poetry|hatch|flit|git|gh)"
+# A publishing tool whose arguments are built at run time: ["npm", verb], "npm " + verb,
+# `npm ${verb}`, f"npm {verb}", "npm {}".format(verb), "npm %s" % verb.
+_BUILT_FOR = [
+    re.compile(rf"""["']({_TOOL})["']\s*,\s*(?!["'\])\s])"""),
+    re.compile(rf"""["'`]({_TOOL})\s[^"'`\n]*["'`]\s*(?:\+|\.(?![\w.])|%)"""),
+    re.compile(rf"""`({_TOOL})\s[^`]*\$\{{"""),
+    re.compile(rf"""\bf["']({_TOOL})\s[^"'\n]*\{{"""),
+    re.compile(rf"""["']({_TOOL})\s[^"'\n]*(?:\{{\}}|%s)"""),
+]
+_BUILT = "it builds a `{tool}` command at run time, which agentprint can't read"
+MAX_NORMALISE = 8  # passes joining string literals
+
+
+def _content(literal: str) -> str:
+    return literal[1:-1]
+
+
+def _normalised(code: str) -> str:
+    """Code with strings built from literals joined: "pub" + "lish", 'npm ' . 'publish',
+    "".join(["npm ", "publish"]), ["pub", "lish"].join(""), `npm ${"publish"}`."""
+    for _ in range(MAX_NORMALISE):
+        before = code
+        code = _LITERAL_PART.sub(lambda m: _content(m.group(1)), code)
+        code = _PY_JOIN.sub(
+            lambda m: (
+                '"'
+                + _content(m.group(1)).join(_content(x) for x in re.findall(_STRING, m.group(2)))
+                + '"'
+            ),
+            code,
+        )
+        code = _JS_JOIN.sub(
+            lambda m: (
+                '"'
+                + (_content(m.group(2)) if m.group(2) else ",").join(
+                    _content(x) for x in re.findall(_STRING, m.group(1))
+                )
+                + '"'
+            ),
+            code,
+        )
+        code = _JOINED.sub(
+            lambda m: m.group(1)[0] + _content(m.group(1)) + _content(m.group(2)) + m.group(1)[0],
+            code,
+        )
+        if code == before:
+            break
+    return code
+
+
+def _code_flags(code: str, name: str, cwd: Path, program: str = "") -> list[c.Risky]:
+    """Code in another language, which agentprint does not read as commands: "could not check"
+    when it names a publish or push once strings built from literals are joined, or when it
+    starts a process for a publishing tool whose arguments it builds at run time."""
+    plain = _normalised(code)
+    hits = _named(code) + [hit for hit in _named(plain) if hit not in _named(code)]
+    if hits:
+        return _flag(hits, name, cwd, _CODE)
+    starts = [m.start() for m in _STARTS_PROCESS.finditer(plain)]
+    if "child_process" in plain:
+        starts += [m.start() for m in _JS_PROCESS.finditer(plain)]
+    if Path(program).name in {"ruby", "perl"}:
+        starts += [m.start() for m in re.finditer("`", plain)]
+    if not starts:
+        return []
+    for pattern in _BUILT_FOR:
+        for match in pattern.finditer(plain):
+            if any(abs(match.start() - at) <= NEAR_PROCESS for at in starts):
+                tool = match.group(1)
+                action = c.Action.push if tool in {"git", "gh"} else c.Action.publish
+                why = _BUILT.format(tool=tool)
+                return [c.Risky(action, tool, cwd, unsure=why, label=name)]
+    return []
+
+
 def _hits(text: str, cwd: Path) -> list[Hit]:
     """Shell text only scanned, not read as commands: named publishes and backstop hits."""
     hits = _named(text)
@@ -359,10 +454,10 @@ def _step(step: recipes.Step, name: str, cwd: Path, depth: int) -> list[c.Risky]
     """One script or recipe line from file `name`. Shell is read as commands; other languages
     are only scanned for a publish or push they name."""
     if not _is_shell(step.program):
-        return _flag(_named(step.text), name, cwd, _CODE)
+        return _code_flags(step.text, name, cwd, step.program)
     text, other = recipes.shell_text(step.text)
     text = recipes.called_only(text)  # a function's body runs only when it is called
-    found = [risky for body in other for risky in _flag(_named(body), name, cwd, _CODE)]
+    found = [risky for body in other for risky in _code_flags(body, name, cwd)]
     reading = _reading(cwd)
     if reading.peeking or reading.bytes + len(text) > MAX_BYTES:  # charged before it is read
         return found + _flag(_hits(text, cwd), name, cwd, _DEEP)
@@ -392,7 +487,7 @@ def command_line(command: str, cwd: Path) -> tuple[str, list[c.Risky]]:
     if "<<" not in command or "\n" not in command:
         return command, []
     text, other = recipes.shell_text(command)
-    return text, [r for body in other for r in _flag(_named(body), "here-document", cwd, _CODE)]
+    return text, [r for body in other for r in _code_flags(body, "here-document", cwd)]
 
 
 def too_deep(text: str, cwd: Path) -> list[c.Risky]:
@@ -562,7 +657,7 @@ def _interpreted(program: str, args: list[str], cwd: Path, depth: int) -> list[c
     code, values = INTERPRETERS[key]
     if key == "deno":
         if args[:1] == ["eval"]:
-            return _flag(_named(" ".join(args[1:])), "deno eval", cwd, _CODE)
+            return _code_flags(" ".join(args[1:]), "deno eval", cwd, "deno")
         if args[:1] != ["run"]:
             return []
         args = args[1:]
@@ -574,7 +669,7 @@ def _interpreted(program: str, args: list[str], cwd: Path, depth: int) -> list[c
             return c.detect(shlex.join(args[i + 1 :]), cwd, depth + 1)
         if flag in code:
             text = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
-            return _flag(_named(text), f"{program} {flag}", cwd, _CODE)
+            return _code_flags(text, f"{program} {flag}", cwd, program)
         if arg == "--":
             i += 1
             break
