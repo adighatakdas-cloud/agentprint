@@ -217,7 +217,10 @@ def _manager_advice(repo: Repo, why: str, strict: bool) -> list[str]:
         owner = "a folder inside the repository" if why == "managed" else "a folder you don't own"
         lines.append(f"  It is {owner}. To check every push, add this line to its {HOOK} hook:")
         lines.append(f"    {line}")
-    lines.append("  The line needs git's pre-push input on stdin (husky passes it on).")
+    lines.append(
+        "  It reads git's pre-push input on stdin (husky passes it on); without that input, "
+        "deleting a branch is checked too."
+    )
     return lines
 
 
