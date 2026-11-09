@@ -392,3 +392,13 @@ def test_windows_credential_paths():
     assert not engine.secret_location("~/.ssh/known_hosts")
     assert not engine.secret_location("C:\\Users\\me\\.ssh\\config")
     assert engine.secret_location("~/.ssh") and engine.secret_location(".kube/config")
+
+
+def test_not_fully_checked_has_its_own_advice():
+    from agentprint import advice
+    from agentprint.models import Finding
+
+    finding = Finding("AP010", Severity.LOW, ap010.TITLE, "a", "/x/SKILL.md", 9, "", "")
+    finding.detail = f"{ap010.NOT_CHECKED}: skill was not read to the end"
+    agent = advice.advise(finding, advice.Moment.scan)
+    assert "not checked" in agent.ask_human[0] and "hidden" not in agent.ask_human[0]

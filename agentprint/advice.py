@@ -377,6 +377,12 @@ EXTENSION_ASK = {
         "do not, remove the extension.",
         "If you do not know why this extension hides a command in base64, remove it.",
     ),
+    ap010.NOT_CHECKED: (
+        "Ask the human to look over the end of this extension: it is too long for agentprint to "
+        "read whole, so part of it was not checked.",
+        "Look over the end of this extension yourself: it is too long for agentprint to read "
+        "whole, so part of it was not checked.",
+    ),
 }
 PIN_ASK = (
     "Ask the human which exact version to pin (the one they use now, after checking its "
