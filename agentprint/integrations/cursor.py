@@ -64,6 +64,7 @@ _PROGRAM_START = (
 _COMMAND_START = _PROGRAM_START + r"(?:\S*/)?"
 _PUBLISHES = (
     r"(?:(?:npm|pnpm|yarn|bun)\b[^;&|\n]*?\b(?:publish|release|deploy|ship)\b"
+    r"|npm\b[^;&|\n]*?\bpu(?:b(?:l(?:is?)?)?)?\b"  # npm reads `npm pub` as npm publish
     r"|(?:uv|poetry|hatch|flit)\b[^;&|\n]*?\bpublish\b"
     r"|twine\b[^;&|\n]*?\bupload\b"
     r"|(?:changeset|lerna)\b[^;&|\n]*?\bpublish\b"
