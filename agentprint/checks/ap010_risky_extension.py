@@ -356,14 +356,15 @@ def scan_text(
     text: str, markdown: bool, piped: bool = True, data: object = None
 ) -> list[tuple[_Hit, int]]:
     """Each rule's strongest hit in one file's text (the first line among equals), with the
-    number of lines it was found on. `data` is the parsed file for TOML, YAML and JSON: its
+    number of lines it was found on at that severity (a low install fence does not add to a
+    medium finding's "seen N times"). `data` is the parsed file for TOML, YAML and JSON: its
     string values are read instead of its lines. A base64 blob's decoded command is preferred to
     the decode shape on the same line. The detail is written only for the hit that is kept."""
     first: dict[str, _Hit] = {}
-    lines: dict[str, set[int | None]] = {}
+    lines: dict[tuple[str, Severity], set[int | None]] = {}
 
     def add(rule: str, severity: Severity, line: int | None, said: Callable[[], str]) -> None:
-        lines.setdefault(rule, set()).add(line)
+        lines.setdefault((rule, severity), set()).add(line)
         best = first.get(rule)
         if (
             best is None
@@ -405,7 +406,7 @@ def scan_text(
         add(NOT_CHECKED, Severity.LOW, line_of(min(unread)), lambda s=said: s)
     low = plain.lower()
     if not any(word in low for word in TRIGGER):  # most files hold no shape's word at all
-        return [(hit, len(lines[rule])) for rule, hit in first.items()]
+        return [(hit, len(lines[rule, hit.severity])) for rule, hit in first.items()]
     cut: list[int] = []
     source = structured_blocks(plain, data, cut) if data is not None else blocks(plain, markdown)
     assigned: dict[str, str] = {}
@@ -433,7 +434,7 @@ def scan_text(
     if cut:
         said = "was not read to the end: it holds more values than agentprint reads"
         add(NOT_CHECKED, Severity.LOW, 1, lambda s=said: s)
-    return [(hit, len(lines[rule])) for rule, hit in first.items()]
+    return [(hit, len(lines[rule, hit.severity])) for rule, hit in first.items()]
 
 
 class RiskyExtension:
@@ -475,10 +476,12 @@ class RiskyExtension:
         found: dict[str, Finding] = {}
         for hook in hooks:
             for hit, count in scan_text(hook.command, markdown=False, piped=False):
-                if hit.rule in found:
-                    found[hit.rule].count += count
+                kept = found.get(hit.rule)
+                if kept is not None and kept.severity == hit.severity:
+                    kept.count += count  # "seen N times" counts one severity
+                if kept is not None and kept.severity >= hit.severity:
                     continue
-                line = _hook_line(artifact.path, hook)
+                line = _hook_line(artifact.path, hook)  # the first, or a stronger one
                 found[hit.rule] = _finding(
                     artifact, _Hit(hit.rule, hit.severity, line, hit.detail), "hook", count
                 )
