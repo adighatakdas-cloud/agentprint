@@ -21,7 +21,7 @@ from .guard import CannotCheck, check_package_path
 from .models import Finding
 from .pack import PackError
 from .report import to_agent
-from .sanitize import clean, safe_text
+from .sanitize import one_line, safe_text
 from .scanner import scan as run_scan
 
 INSTRUCTIONS = (
@@ -38,7 +38,8 @@ def _path(path: str) -> Path:
 
 
 def _cannot(exc: Exception) -> str:
-    return f"agentprint: could not check — {clean(str(exc))}"
+    """One line, every key masked: the error can hold npm's or uv's stderr."""
+    return f"agentprint: could not check — {one_line(exc)}"
 
 
 def _answer(

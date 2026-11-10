@@ -421,11 +421,9 @@ class IfUnavailable(StrEnum):
 
 def _one_line(error: Exception) -> str:
     """An error as one short line: its first line, keys masked (no tool's whole stderr)."""
-    from .guard import _masked
-    from .sanitize import clean
+    from .sanitize import one_line
 
-    first = (str(error).strip().splitlines() or [type(error).__name__])[0]
-    return clean(_masked(first), limit=200)
+    return one_line(error)
 
 
 # `pack --if-unavailable allow` exits with these instead of 1 and 2, so a wrapper (the npm one)
@@ -518,15 +516,15 @@ def run_pack_command(
 
 
 def _unchecked(error: PackError, allow: bool) -> None:
-    """Say a package could not be checked: the whole error, or (in allow mode, where a
-    wrapper reads it) one line."""
+    """Say a package could not be checked, in one line with every key masked (the error can
+    hold npm's or uv's stderr); in allow mode in the words a wrapper reads."""
     if allow:
         typer.echo(
             f"agentprint: could not check this package ({_one_line(error)}); the publish stops.",
             err=True,
         )
     else:
-        typer.secho(f"error: {error}", err=True, fg=typer.colors.RED)
+        typer.secho(f"error: {_one_line(error)}", err=True, fg=typer.colors.RED)
 
 
 @app.command()

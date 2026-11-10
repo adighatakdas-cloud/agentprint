@@ -74,6 +74,13 @@ def safe_text(text: str, limit: int | None = MAX_LEN) -> str:
     return clean(mask_keys(clean(mask_keys(text), None)), limit)
 
 
+def one_line(error: BaseException | str, limit: int = 200) -> str:
+    """An error (a tool's stderr: npm, uv, git) as one short line: its first line, every key in
+    it masked, cleaned. Never a tool's whole output."""
+    first = (str(error).strip().splitlines() or [type(error).__name__])[0]
+    return safe_text(first, limit)
+
+
 def safe_quote(text: str) -> str:
     """`safe_text()` as a one-line JSON string: a quoted value with no key in it."""
     return json.dumps(safe_text(text), ensure_ascii=False)
