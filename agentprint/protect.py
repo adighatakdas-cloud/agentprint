@@ -24,9 +24,12 @@ fails open when agentprint itself can't run there, unless strict; a finding alwa
 PyPI has no such boundary: twine and `uv publish` run no publish hook, so only the agent hook
 and `agentprint pack` cover Python publishes.
 
-Opt-in and reversible: what protect wrote is recorded in ~/.agentprint/protect.json (with
-package.json's original bytes), and `agentprint protect --undo` puts each file back exactly,
-or, when a file has changed since, leaves it alone and says what to remove by hand.
+Opt-in and reversible: what protect wrote is recorded in ~/.agentprint/protect.json, and
+`agentprint protect --undo` puts each file back exactly, or, when a file has changed since,
+leaves it alone and says what to remove by hand. For package.json the record is never a copy of
+the file: only the few pieces of text the edit replaced (an undo patch) and sha256 digests to
+check the result. A piece that would hold any part of a key is never stored: protect then
+leaves package.json alone and says what to add by hand (hard rule 2).
 
 Ruling (where the hook goes): `git rev-parse --git-path hooks`, which follows worktrees and
 core.hooksPath. A core.hooksPath inside the work tree belongs to a hook manager (husky,
@@ -46,6 +49,8 @@ import re
 import shlex
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from difflib import SequenceMatcher
+from itertools import accumulate
 from pathlib import Path, PureWindowsPath
 
 from . import __version__, platform
@@ -67,6 +72,7 @@ from .models import CannotCheck
 from .report import FailOn, _short, exit_code, to_agent
 from .safewrite import atomic_write
 from .sanitize import clean
+from .secrets import key_spans
 
 Echo = Callable[[str], None]
 
@@ -200,20 +206,35 @@ def manual_line(strict: bool) -> str:
 HOOK_ARGS = '--pre-push --remote "$1"'  # in a pre-push hook script: git's stdin and remote
 
 
+# AGENTPRINT_STRICT's yes-like values, as an sh `case` pattern (no `tr`: PATH may be bare).
+_STRICT_ENV = "1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]"
+
+
 def guarded_snippet(strict: bool, args: str = HOOK_ARGS) -> list[str]:
     """sh lines that run `manual_line` the way protect's own hook does: a BLOCK stops the push;
     if agentprint can't run (no uv on a teammate's machine), one line and the push goes on,
-    unless strict. Safe under `sh -e` (husky): no command here fails unless it should. `args`
-    tell push-check where the push comes from (git's stdin and the remote's name)."""
-    if strict:
-        last = 'echo "agentprint: the push check could not run (exit $s); push blocked" >&2; exit 1'
-    else:
-        last = 'echo "agentprint: the push check could not run (exit $s); push allowed" >&2'
+    unless strict (--strict, or AGENTPRINT_STRICT=1 where it runs). Safe under `sh -e`
+    (husky): no command here fails unless it should. `args` tell push-check where the push
+    comes from (git's stdin and the remote's name)."""
+    could_not = 'echo "agentprint: the push check could not run (exit $s); push'
     command = manual_line(strict) + (f" {args}" if args else "")
-    return [
+    run = [
         f"s=0; out=$({command}) || s=$?",
         f'case "$s:$out" in 0:|"0:{OK}") ;; *) printf \'%s\\n\' "$out" >&2 ;; esac',
-        f'case "$s:$out" in 0:*) ;; "1:agentprint: BLOCK"*) exit 1 ;; *) {last} ;; esac',
+    ]
+    if strict:
+        last = f'{could_not} blocked" >&2; exit 1'
+        return [
+            *run,
+            f'case "$s:$out" in 0:*) ;; "1:agentprint: BLOCK"*) exit 1 ;; *) {last} ;; esac',
+        ]
+    env = f'ap_strict=0; case "${{AGENTPRINT_STRICT:-}}" in {_STRICT_ENV}) ap_strict=1 ;; esac'
+    return [
+        env,
+        *run,
+        f'case "$s:$out:$ap_strict" in 0:*) ;; "1:agentprint: BLOCK"*) exit 1 ;; '
+        f'*:1) {could_not} blocked (strict mode)" >&2; exit 1 ;; *) {could_not} allowed" >&2 ;; '
+        "esac",
     ]
 
 
@@ -301,6 +322,18 @@ def _run_by(hook: bytes) -> str | None:
 SHARED = "  That file is usually committed, so this check then runs for every teammate and in CI."
 
 
+def lefthook_lines(strict: bool) -> list[str]:
+    """lefthook.yml lines that run the push check, with git's stdin and the remote passed on."""
+    return [
+        "pre-push:",
+        "  commands:",
+        "    agentprint:",
+        "      use_stdin: true",
+        "      run: |",
+        *(f"        {line}" for line in guarded_snippet(strict, "--pre-push --remote {1}")),
+    ]
+
+
 def _by_hand(repo: Repo, manager: str | None, strict: bool) -> list[str]:
     """Where and what to add by hand for `manager`, indented under the explanation. Hook
     manager files are shared, so what they run fails open (one line) unless strict."""
@@ -315,12 +348,7 @@ def _by_hand(repo: Repo, manager: str | None, strict: bool) -> list[str]:
         name = lefthook[0] if lefthook else "lefthook.yml"
         return [
             f"  To check every push, add this to {name}, then run `lefthook install`:",
-            "    pre-push:",
-            "      commands:",
-            "        agentprint:",
-            "          use_stdin: true",
-            "          run: |",
-            *(f"            {line}" for line in guarded_snippet(strict, "--pre-push --remote {1}")),
+            *(f"    {line}" for line in lefthook_lines(strict)),
             SHARED,
             unavailable,
         ]
@@ -434,6 +462,12 @@ def _key(path: Path) -> str:
 # ---- protect ----------------------------------------------------------------------------------
 
 
+ASK_PACKAGE_JSON = (
+    "package.json is shared with teammates: ask the human before committing it. Once it is "
+    "committed, every npm publish runs the check, theirs and CI's too."
+)
+
+
 def protect(
     path: Path,
     home: Path,
@@ -442,9 +476,11 @@ def protect(
     strict: bool = False,
     agentprint: list[str] | None = None,
     shared: bool = False,
+    asks: list[str] | None = None,
 ) -> int:
     """Add the git hook and the npm script. 0 = done (or already there), 1 = something needs
-    doing by hand (printed), 2 = nothing here to protect."""
+    doing by hand (printed), 2 = nothing here to protect. `asks` gets what only the human can
+    decide (for an AI agent to ask)."""
     if not path.is_dir():
         echo(f"error: {clean(str(path))} does not exist or is not a folder")
         return 2
@@ -467,7 +503,10 @@ def protect(
         else:
             echo("git: not a git repository, so no pre-push hook was added.")
         if package.is_file():
+            before = _bytes(package)
             needs_you += _layer("npm", echo, _protect_npm, package, entries, echo, strict)
+            if asks is not None and _bytes(package) != before:
+                asks.append(ASK_PACKAGE_JSON)
     finally:
         _save(home, entries)
     _python_note(path, echo)
@@ -621,6 +660,69 @@ def _by_hand_npm() -> str:
     )
 
 
+# Changed blocks of package.json longer than this are kept whole in the undo patch, not compared
+# character by character (that comparison is quadratic).
+MAX_CHAR_DIFF = 20_000
+HOLDS_A_KEY = (
+    "undoing the edit would mean keeping a copy of text in it that holds a key, and agentprint "
+    "never stores a key (remove the key from package.json and rotate it first)"
+)
+
+
+def _diff(new: str, old: str) -> list[tuple[int, int, int, int]]:
+    """(new start, new end, old start, old end) for each piece of `new` that differs from `old`:
+    lines first, then characters inside each changed block, so a re-indented file is still a
+    set of small pieces."""
+    a, b = new.splitlines(keepends=True), old.splitlines(keepends=True)
+    at, bt = list(accumulate(map(len, a), initial=0)), list(accumulate(map(len, b), initial=0))
+    out = []
+    for tag, i1, i2, j1, j2 in SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if tag == "equal":
+            continue
+        n0, n1, o0, o1 = at[i1], at[i2], bt[j1], bt[j2]
+        if (n1 - n0) + (o1 - o0) > MAX_CHAR_DIFF:
+            out.append((n0, n1, o0, o1))
+            continue
+        chars = SequenceMatcher(None, new[n0:n1], old[o0:o1], autojunk=False)
+        out += [
+            (n0 + x1, n0 + x2, o0 + y1, o0 + y2)
+            for t, x1, x2, y1, y2 in chars.get_opcodes()
+            if t != "equal"
+        ]
+    return out
+
+
+def _undo_patch(new: str, old: str) -> list[list] | None:
+    """How to turn `new` back into `old` exactly: [start, end, text] pieces of `new` to replace,
+    in order, each `text` taken from `old`. Never the file, only what differs. None when a piece
+    would hold any part of a key in `old` (hard rule 2)."""
+    keys = key_spans(old)
+    patch = []
+    for n0, n1, o0, o1 in _diff(new, old):
+        if any(start < o1 and o0 < end for start, end, _ in keys):
+            return None
+        patch.append([n0, n1, old[o0:o1]])
+    return patch
+
+
+def _patched(text: str, patch: object) -> str:
+    """`text` with an undo patch applied. Raises ValueError for a patch that doesn't fit."""
+    if not isinstance(patch, list):
+        raise ValueError("not a patch")
+    out, at = [], 0
+    for piece in patch:
+        if not (isinstance(piece, list) and len(piece) == 3):
+            raise ValueError("not a patch piece")
+        start, end, old = piece
+        if not (isinstance(start, int) and isinstance(end, int) and isinstance(old, str)):
+            raise ValueError("not a patch piece")
+        if not at <= start <= end <= len(text):
+            raise ValueError("a patch piece out of place")
+        out += [text[at:start], old]
+        at = end
+    return "".join([*out, text[at:]])
+
+
 def _protect_npm(package: Path, entries: dict[str, dict], echo: Echo, strict: bool) -> int:
     edit = _npm_edit(package, strict)
     try:
@@ -628,6 +730,9 @@ def _protect_npm(package: Path, entries: dict[str, dict], echo: Echo, strict: bo
         new = _through_edits(old, [edit])
         if new != old and _read_only(package):
             raise Unsupported("it is read-only")
+        patch = _undo_patch(new, old) if old is not None and new is not None else []
+        if patch is None:
+            raise Unsupported(HOLDS_A_KEY)
     except Unsupported as exc:
         echo(f"npm: package.json left as is because {exc}. To check every npm publish, add:")
         echo(f'  "scripts": {{ "prepublishOnly": "{npm_command(strict)}" }}')
@@ -640,8 +745,13 @@ def _protect_npm(package: Path, entries: dict[str, dict], echo: Echo, strict: bo
         return 0
     atomic_write(package, new)
     entry: dict[str, object] | None = entries.get(_key(package))
+    undo = entry.get("undo") if entry is not None else None
     if entry is None or entry.get("sha256") != _sha(old.encode("utf-8")):
-        entry = {"kind": "npm", "before": old}  # else: a refresh; undo still goes back to before
+        undo = None
+    if not isinstance(undo, list):  # else a refresh (a newer pin): undo still goes back to before
+        entry, undo = {"kind": "npm", "before_sha256": _sha(old.encode("utf-8"))}, []
+    assert entry is not None
+    entry["undo"] = [patch, *undo]
     entry["sha256"] = _sha(new.encode("utf-8"))
     entries[_key(package)] = entry
     echo("npm: package.json scripts.prepublishOnly now runs agentprint pack before npm publish:")
@@ -798,7 +908,18 @@ def _undo_npm(package: Path, entries: dict[str, dict], echo: Echo) -> int:
         echo("  " + _by_hand_npm())
         entries.pop(key)  # the job is yours now: agentprint keeps no copy of the file
         return 1
-    atomic_write(package, entry["before"])  # the original bytes, formatting and line ends
+    try:
+        text = current.decode("utf-8")
+        for patch in entry.get("undo") or [None]:
+            text = _patched(text, patch)
+    except (UnicodeDecodeError, ValueError):
+        text = None
+    if text is None or _sha(text.encode("utf-8")) != entry.get("before_sha256"):
+        echo("npm: the record of protect's edit to package.json does not fit it, so it was left")
+        echo("  as is. " + _by_hand_npm())
+        entries.pop(key)
+        return 1
+    atomic_write(package, text)  # the original bytes, formatting and line ends
     entries.pop(key)
     echo("npm: package.json is back exactly as it was.")
     return 0

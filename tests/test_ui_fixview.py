@@ -16,8 +16,6 @@ from agentprint.ui import fixview
 from agentprint.ui.theme import theme
 from tests import fakes
 
-HOME = Path.home()
-
 
 def _console(width: int) -> Console:
     return Console(file=io.StringIO(), width=width, theme=theme({}), no_color=True, highlight=False)
@@ -28,17 +26,18 @@ def _text(console: Console) -> list[str]:
 
 
 def _plan(*, folder_files: int = 3) -> Plan:
-    codex = HOME / ".codex"
+    home = Path.home()  # the test's own home (conftest): paths in it are shown as ~
+    codex = home / ".codex"
     locks = [codex / f"f{i}.jsonl" for i in range(folder_files)]
     ap008 = Finding(
         "AP008", Severity.MEDIUM, "t", "codex", str(codex), None, "d (mode 0644)", "chmod", 3
     )
     ap008.paths = tuple(locks)
     changes = [
-        Change("mask", HOME / ".claude" / "history.jsonl", 1, "AP001", redact(fakes.ANTHROPIC)),
+        Change("mask", home / ".claude" / "history.jsonl", 1, "AP001", redact(fakes.ANTHROPIC)),
         Change(
             "env",
-            HOME / ".claude.json",
+            home / ".claude.json",
             10,
             "AP005",
             "shown",
@@ -47,7 +46,7 @@ def _plan(*, folder_files: int = 3) -> Plan:
         ),
         Change(
             "ignore",
-            HOME / "code" / "app-that-does-not-exist" / ".gitignore",
+            home / "code" / "app-that-does-not-exist" / ".gitignore",
             None,
             "AP007",
             "shown",
@@ -125,7 +124,7 @@ def test_still_blocking_never_calls_a_key_masked():
         Severity.CRITICAL,
         "Secret in agent settings",
         "claude-code",
-        str(HOME / ".claude" / "settings.json"),
+        str(Path.home() / ".claude" / "settings.json"),
         3,
         f"OpenAI API key: {redact(fakes.OPENAI)}",
         "fix",

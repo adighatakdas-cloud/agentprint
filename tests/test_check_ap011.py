@@ -233,3 +233,20 @@ def test_review_pinned_forms_pass(argv):
 def test_review_unpinned_forms(argv, problem):
     hit = unpinned(_server(*argv))
     assert hit is not None and problem in hit.problem
+
+
+def test_a_key_glued_into_a_package_name_is_masked_in_every_detail(tmp_path):
+    """Review minor 1: `npx pkg-npm_…` holds a key the detector, wanting a word boundary,
+    does not report; safe_snippet now masks a glued key start the way mask_keys does."""
+    from tests import fakes
+
+    key = fakes.NEW["npm"]
+    project = tmp_path / "proj"
+    project.mkdir()
+    server = {"command": "npx", "args": ["-y", f"pkg-{key}"]}
+    (project / ".mcp.json").write_text(json.dumps({"mcpServers": {"a": server}}))
+    findings = _ap011(None, project)
+    assert findings
+    for finding in findings:
+        text = f"{finding.detail} {finding.fix} {finding.subject or ''}"
+        assert key[4:12] not in text and "npm_…(len 40)" in finding.detail

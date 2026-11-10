@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ..guard import Verdict
+from ..guard import COULD_NOT_START, Verdict, strict_block
 from .base import (
     INSTRUCTIONS,
     BlockEdit,
@@ -47,10 +47,15 @@ PLUGIN = """\
 // agentprint guard for OpenCode. Written by `agentprint install`; `agentprint uninstall`
 // deletes it. Before a shell command runs, it asks agentprint whether the command publishes a
 // package or pushes with problems. It blocks only on a "block" answer; if anything goes wrong
-// the command runs as usual.
+// the command runs as usual, unless strict mode is on (--strict below, or AGENTPRINT_STRICT=1):
+// then it is blocked.
 import { spawnSync } from "node:child_process"
 
 const HOOK = __HOOK__
+const STRICT =
+  HOOK.includes("--strict") ||
+  /^(1|true|yes|on)$/i.test(String(process.env.AGENTPRINT_STRICT || "").trim())
+const STRICT_BLOCK = __STRICT_BLOCK__
 
 function guard(command, cwd) {
   if (typeof command !== "string" || !command) return
@@ -61,9 +66,14 @@ function guard(command, cwd) {
       encoding: "utf8",
       timeout: 60000,
     })
+    if (run.error) throw run.error
     if (run.status !== 0 && run.stderr) console.warn(run.stderr.trim())
     reply = JSON.parse(run.stdout || "{}")
   } catch (err) {
+    if (STRICT) {
+      console.warn("agentprint: check failed, command blocked (strict mode):", err && err.message)
+      throw new Error(STRICT_BLOCK)
+    }
     console.warn("agentprint: check failed, command allowed:", err && err.message)
     return
   }
@@ -115,7 +125,9 @@ def edits(home: Path, env: Env, launch: Launch) -> list[Edit]:
         FileEdit(
             base / "plugins" / "agentprint.js",
             "hook plugin: check publish/push before a shell command runs",
-            PLUGIN.replace("__HOOK__", json.dumps(hook)),
+            PLUGIN.replace("__HOOK__", json.dumps(hook)).replace(
+                "__STRICT_BLOCK__", json.dumps(strict_block(COULD_NOT_START).reason.strip())
+            ),
         ),
         JsonEdit(
             _config_file(base),

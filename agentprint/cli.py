@@ -322,10 +322,11 @@ def _project(root: Path, sources: Sources | None, home: Path | None = None) -> P
     """The project's config and baseline (and with `home`, the personal baseline in it), each
     warning about them on stderr."""
     from .baseline import load
+    from .sanitize import safe_text
 
     project = load(root, sources, home)
-    for warning in project.warnings:
-        typer.secho(f"warning: {warning}", err=True, fg=typer.colors.YELLOW)
+    for warning in project.warnings:  # config and baseline text: keys masked, cleaned
+        typer.secho(f"warning: {safe_text(warning)}", err=True, fg=typer.colors.YELLOW)
     return project
 
 
@@ -420,11 +421,9 @@ class IfUnavailable(StrEnum):
 
 def _one_line(error: Exception) -> str:
     """An error as one short line: its first line, keys masked (no tool's whole stderr)."""
-    from .guard import _masked
-    from .sanitize import clean
+    from .sanitize import one_line
 
-    first = (str(error).strip().splitlines() or [type(error).__name__])[0]
-    return clean(_masked(first), limit=200)
+    return one_line(error)
 
 
 # `pack --if-unavailable allow` exits with these instead of 1 and 2, so a wrapper (the npm one)
@@ -452,9 +451,12 @@ def run_pack_command(
     missing (npm, uv) lets the publish go with one line; a package that can't be checked still
     blocks, and the exit codes are ALLOW_BLOCK_EXIT / ALLOW_UNCHECKED_EXIT instead of 1 / 2."""
     from .baseline import settle
+    from .guard import strict_requested
     from .pack import collect_each
 
     allow = if_unavailable is IfUnavailable.allow
+    # AGENTPRINT_STRICT=1: a missing tool no longer lets the publish go (strict fails closed).
+    tool_may_be_missing = allow and not strict_requested(os.environ)
     fmt = _auto_format(fmt, Format.agent, Format.table)
     project = _project(target if target.is_dir() else Path("."), sources)
     out = themed_console(dict(os.environ), plain=plain) if fmt is Format.table else None
@@ -468,7 +470,7 @@ def run_pack_command(
         listings, errors = [], [exc]
     missing_tool = bool(errors) and all(error.unavailable for error in errors)
     if not listings:
-        if allow and missing_tool:
+        if tool_may_be_missing and missing_tool:
             typer.echo(
                 f"agentprint: could not check this package ({_one_line(errors[0])}); the "
                 "publish goes on (--if-unavailable allow).",
@@ -502,7 +504,7 @@ def run_pack_command(
         return ALLOW_BLOCK_EXIT if allow else 1
     if code or not errors:
         return code
-    if allow and missing_tool:
+    if tool_may_be_missing and missing_tool:
         typer.echo(
             f"agentprint: could not check part of this package ({_one_line(errors[0])}); the "
             "publish goes on (--if-unavailable allow).",
@@ -514,15 +516,15 @@ def run_pack_command(
 
 
 def _unchecked(error: PackError, allow: bool) -> None:
-    """Say a package could not be checked: the whole error, or (in allow mode, where a
-    wrapper reads it) one line."""
+    """Say a package could not be checked, in one line with every key masked (the error can
+    hold npm's or uv's stderr); in allow mode in the words a wrapper reads."""
     if allow:
         typer.echo(
             f"agentprint: could not check this package ({_one_line(error)}); the publish stops.",
             err=True,
         )
     else:
-        typer.secho(f"error: {error}", err=True, fg=typer.colors.RED)
+        typer.secho(f"error: {_one_line(error)}", err=True, fg=typer.colors.RED)
 
 
 @app.command()
@@ -1097,6 +1099,11 @@ def push_check(
     raise typer.Exit(code)
 
 
+class ProtectFormat(StrEnum):
+    table = "table"
+    agent = "agent"
+
+
 @app.command()
 def protect(
     path: Annotated[Path, typer.Argument(help="Project folder. Default: this one.")] = Path("."),
@@ -1119,6 +1126,15 @@ def protect(
             "it then checks pushes from every repository that uses that folder.",
         ),
     ] = False,
+    fmt: Annotated[
+        ProtectFormat | None,
+        typer.Option(
+            "--format",
+            "-f",
+            help="agent: the report, then ask_human items for an AI agent to put to the human. "
+            "Default: agent inside an AI agent.",
+        ),
+    ] = None,
 ) -> None:
     """Check every git push and npm publish at git and npm themselves, for one project.
 
@@ -1133,11 +1149,18 @@ def protect(
         typer.secho("error: --undo takes no --strict or --global", err=True, fg=typer.colors.RED)
         raise typer.Exit(2)
     home = Path.home()
+    asks: list[str] = []
     code = (
         unprotect(path, home, typer.echo)
         if undo
-        else run_protect(path, home, typer.echo, strict=strict, shared=shared)
+        else run_protect(path, home, typer.echo, strict=strict, shared=shared, asks=asks)
     )
+    if _auto_format(fmt, ProtectFormat.agent, ProtectFormat.table) is ProtectFormat.agent:
+        typer.echo("ask_human:" + ("" if asks else " (nothing)"))
+        for ask in asks:
+            typer.echo(f"  - {ask}")
+        if asks:
+            typer.echo("Tell the human each ask_human item.")
     raise typer.Exit(code)
 
 
@@ -1266,6 +1289,8 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
         agents = []
         for s in states:
             agent = {"name": s.name, "label": s.label, "found": s.found, "armed": s.armed}
+            if s.mcp_only:  # Windows: install added the MCP server and the note, no hook
+                agent |= {"hook": False, "installed": "mcp-and-note"}
             if s.plugin:  # only when one is there, so the usual output stays as it was
                 agent["plugin"] = s.plugin  # "enabled", "disabled" or "unknown"
             agents.append(agent)
@@ -1280,7 +1305,7 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
         for s in swept:
             if s.found:
                 typer.echo(f"{clean(s.name)} scanned (agentprint install can't arm it yet)")
-        if any(s.found and not s.guarded for s in states):
+        if any(s.unarmed for s in states):
             typer.echo("Arm unarmed agents with: agentprint install")
         for note in notes:
             typer.echo(note)
@@ -1334,6 +1359,7 @@ def _protected_text(found: list[str]) -> str:
 
 def _status_word(s: AgentState) -> str:
     from .plugins import DISABLED, ENABLED, UNKNOWN
+    from .roster import MCP_ONLY
 
     if not s.found:
         return "not found"
@@ -1341,7 +1367,7 @@ def _status_word(s: AgentState) -> str:
         return "armed twice (plugin and install)"
     if s.plugin == ENABLED:
         return "armed (plugin)"
-    word = "armed" if s.armed else "unarmed"
+    word = "armed" if s.armed else MCP_ONLY if s.mcp_only else "unarmed"
     if s.plugin == UNKNOWN:
         return f"{word} (agentprint plugin found, not checked whether it is enabled)"
     if s.plugin == DISABLED:

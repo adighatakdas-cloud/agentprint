@@ -30,6 +30,11 @@ BLOCK_EXIT = 3  # guard's "block" for exit-code agents; the launcher turns it in
 Env = Mapping[str, str]
 
 
+LAUNCHER_GONE = (
+    "agentprint: the hook launcher is missing (agentprint install); blocked (strict mode)"
+)
+
+
 @dataclass(frozen=True)
 class Launch:
     """How agents start agentprint, decided once at install time."""
@@ -45,10 +50,16 @@ class Launch:
         """The command an agent's hook runs. If the launcher has gone missing (say ~/.agentprint
         was deleted) it still answers "allow" itself: exit 0 plus `allow`, the agent's own
         allow output, because some agents (Copilot) deny on any other exit and some (Cursor)
-        on empty output. Works whether the agent runs it through a shell or splits it."""
-        missing = (
-            f"{{ printf '%s\\n' {shlex.quote(allow.strip())}; exit 0; }}" if allow else "exit 0"
-        )
+        on empty output. In strict mode it gives the agent's own block answer instead (Ruling
+        X21). Works whether the agent runs it through a shell or splits it."""
+        if self.strict:
+            from ..plugins import strict_block_sh  # the agent modules are all loaded by now
+
+            missing = f'{{ echo "{LAUNCHER_GONE}" >&2; {strict_block_sh(agent)}; }}'
+        elif allow:
+            missing = f"{{ printf '%s\\n' {shlex.quote(allow.strip())}; exit 0; }}"
+        else:
+            missing = "exit 0"
         script = f'[ -x "$0" ] || {missing}; exec "$0" "$@"'
         argv = ("/bin/sh", "-c", script, self.hook, "--agent", agent, *self.hook_flags())
         return " ".join(shlex.quote(part) for part in argv)

@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import platform
 from .agents import ALL_AGENTS
 from .agents.base import Agent, AgentDoc
 from .install import State
@@ -25,14 +26,22 @@ class AgentState:
     name: str
     label: str
     found: bool
-    armed: bool  # by `agentprint install`
+    armed: bool  # by `agentprint install`: its hook (the tripwire), MCP server and note
     # The agentprint plugin: None (not there), or plugins.ENABLED / DISABLED / UNKNOWN.
     plugin: str | None = None
+    # On Windows install adds only the MCP server and the note (no hook yet): never "armed".
+    mcp_only: bool = False
 
     @property
     def guarded(self) -> bool:
-        """agentprint is in this agent: through install, or as a plugin known to be enabled."""
+        """agentprint's tripwire is in this agent: through install, or as a plugin known to be
+        enabled."""
         return self.armed or self.plugin == ENABLED
+
+    @property
+    def unarmed(self) -> bool:
+        """Found, and `agentprint install` would arm it (it has nothing of agentprint's)."""
+        return self.found and not self.guarded and not self.mcp_only
 
     @property
     def twice(self) -> bool:
@@ -57,16 +66,18 @@ SHORT_NAMES = {
 def roster(home: Path, env: Mapping[str, str]) -> list[AgentState]:
     try:
         files = State.load(home).files
-        armed = {entry.get("agent") for entry in files.values() if isinstance(entry, dict)}
+        installed = {entry.get("agent") for entry in files.values() if isinstance(entry, dict)}
     except (AttributeError, TypeError, ValueError):  # state.json is JSON of the wrong shape
-        armed = set()
+        installed = set()
+    windows = platform.is_windows()  # install adds no hook there: nothing is armed by it
     return [
         AgentState(
             name,
             SHORT_NAMES.get(name, integ.label),
             integ.installed(home, env),
-            name in armed,
+            name in installed and not windows,
             plugin_state(name, home, env),
+            mcp_only=name in installed and windows,
         )
         for name, integ in ALL_INTEGRATIONS.items()
     ]
@@ -105,7 +116,13 @@ def summary_line(states: list[AgentState], scanned: list[AgentState] | None = No
         return "no AI agents found on this machine"
     armed = sum(s.guarded for s in found)
     line = f"{armed} of {_plural(len(found), 'agent')} armed"
-    unarmed = [s.label for s in found if not s.guarded]
+    mcp_only = [s for s in found if s.mcp_only and not s.guarded]
+    if mcp_only:
+        line += f" · {len(mcp_only)} with {MCP_ONLY}"
+    unarmed = [s.label for s in found if s.unarmed]
     if unarmed:
         line += f" · {', '.join(unarmed)} {'is' if len(unarmed) == 1 else 'are'} not"
     return line
+
+
+MCP_ONLY = "MCP and note; no hook on Windows yet"

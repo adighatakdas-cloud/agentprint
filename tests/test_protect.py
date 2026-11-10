@@ -449,6 +449,85 @@ def test_undo_restores_package_json_byte_for_byte(package, home):
     assert path.read_bytes() == original.encode()
 
 
+def _runs(key, size=5):
+    return {key[i : i + size] for i in range(len(key) - size + 1)}
+
+
+def _state(home):
+    return (home / ".agentprint" / "protect.json").read_text(encoding="utf-8")
+
+
+ODD = {  # formats json.dumps would not write back the same: undo must still be exact
+    "compact": '{"name":"demo","scripts":{"deploy":"npm publish --//r/:_authToken=%s"}}',
+    "escapes": '{\n  "name": "d\\u00e9mo",\n  "scripts": {\n    "deploy": "echo %s \\/x"\n  }\n}\n',
+    "crlf-4": '{\r\n    "name": "demo",\r\n    "scripts": {\r\n        "deploy": "echo %s"\r\n'
+    "    }\r\n}\r\n",
+    "spaced": '{ "name" : "demo",\n\n  "scripts" : { "deploy" : "echo %s" } }\n',
+}
+
+
+@pytest.mark.parametrize("layout", ["2-space", *ODD])
+def test_protect_json_never_holds_a_key_from_package_json(package, home, layout):
+    """I2: the undo record is a patch of what changed plus digests, never the file, so a token
+    in another script is not copied into ~/.agentprint/protect.json. Undo stays exact."""
+    token = fakes.NEW["npm"]
+    if layout == "2-space":
+        data = {"name": "demo", "scripts": {"deploy": f"npm publish --token {token}"}}
+        original = json.dumps(data, indent=2) + "\n"
+    else:
+        original = ODD[layout] % token
+    path = package / "package.json"
+    path.write_bytes(original.encode())
+    code, text = run(package, home)
+    state = _state(home) if (home / ".agentprint" / "protect.json").exists() else ""
+    assert not [r for r in _runs(token) if r in state]
+    assert not [r for r in _runs(token) if r in text]
+    assert code == 0, text
+    assert path.read_bytes() != original.encode()
+    assert '"name"' not in state  # pieces of what changed, not a copy of the file
+    assert undo(package, home)[0] == 0
+    assert path.read_bytes() == original.encode()
+
+
+def test_package_json_is_left_alone_when_the_undo_would_hold_a_key(package, home, monkeypatch):
+    """When the way back can only be kept with the key's own text in it (here: changed blocks
+    kept whole, as for a huge re-indented file), protect refuses and changes nothing."""
+    monkeypatch.setattr(protect, "MAX_CHAR_DIFF", 0)
+    token = fakes.NEW["npm"]
+    original = ODD["compact"] % token
+    path = package / "package.json"
+    path.write_text(original, newline="")
+    code, text = run(package, home)
+    assert not [r for r in _runs(token) if r in text]
+    assert code == 1 and "left as is" in text and "holds a key" in text
+    assert path.read_text() == original
+    assert not (home / ".agentprint" / "protect.json").exists()
+
+
+def test_the_undo_patch_rebuilds_the_original_exactly():
+    for old in (*(t % "x" for t in ODD.values()), *(v for v, _ in VARIANTS.values())):
+        new = protect._through_edits(old, [protect._npm_edit(protect.Path("package.json"))])
+        assert new is not None
+        patch = protect._undo_patch(new, old)
+        assert patch is not None and protect._patched(new, patch) == old
+        assert "".join(piece[2] for piece in patch) != old  # pieces, not the file
+
+
+def test_undo_refuses_a_record_that_does_not_fit(package, home):
+    path = package / "package.json"
+    original = json.dumps({"name": "x"}, indent=2) + "\n"
+    path.write_text(original)
+    run(package, home)
+    state = json.loads(_state(home))
+    (entry,) = state["entries"].values()
+    entry["undo"] = [[[0, 10**6, ""]]]
+    (home / ".agentprint" / "protect.json").write_text(json.dumps(state))
+    edited = path.read_bytes()
+    code, text = undo(package, home)
+    assert code == 1 and "does not fit" in text
+    assert path.read_bytes() == edited
+
+
 def test_an_existing_prepublish_only_is_kept_and_runs_first(package, home):
     path = package / "package.json"
     original = json.dumps({"name": "x", "scripts": {"prepublishOnly": "npm test"}}, indent=2)
@@ -635,6 +714,20 @@ def test_allow_covers_a_missing_tool_but_never_a_finding(package, monkeypatch):
     assert _pack(package, "--if-unavailable", "allow").exit_code == 3
 
 
+def test_agentprint_strict_turns_the_missing_tool_allowance_off(tmp_path, monkeypatch):
+    """Ruling X21: with AGENTPRINT_STRICT=1 a missing uv (or npm) stops the publish: exit 4,
+    which the npm wrapper turns into 2."""
+    from agentprint import pack as pack_module
+
+    monkeypatch.setattr(pack_module.shutil, "which", lambda name: None)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\nversion = '1'\n")
+    relaxed = _pack(tmp_path, "--if-unavailable", "allow")
+    assert relaxed.exit_code == 0 and "the publish goes on" in relaxed.output
+    strict = _pack(tmp_path, "--if-unavailable", "allow", env={"AGENTPRINT_STRICT": "1"})
+    assert strict.exit_code == 4, strict.output
+    assert "the publish stops" in strict.output
+
+
 FAKE_UVX = """#!/bin/sh
 printf '%s\\n' "$FAKE_OUT"
 exit "${FAKE_EXIT:-0}"
@@ -669,6 +762,20 @@ def test_the_hook_manager_snippet_fails_open_under_sh_e(tmp_path, uvx, out, code
         assert f"push {'blocked' if strict else 'allowed'}" in done.stderr
     if out == "agentprint: OK":
         assert done.stderr == "after\n"  # quiet on a clean push
+
+
+@pytest.mark.posix_only
+@pytest.mark.parametrize("value, expected", [("1", 1), ("TRUE", 1), ("on", 1), ("0", 0), ("", 0)])
+def test_the_hook_manager_snippet_honours_agentprint_strict(tmp_path, value, expected):
+    """X21: strict fails closed in every layer. The shared snippet allows a push where
+    agentprint can't run, unless AGENTPRINT_STRICT is set where it runs (a CI job, say)."""
+    script = tmp_path / "pre-push"
+    script.write_text("\n".join(["#!/bin/sh", *guarded_snippet(False), "echo after >&2", ""]))
+    env = {"PATH": str(tmp_path / "empty"), "AGENTPRINT_STRICT": value}  # no uvx at all
+    sh = shutil.which("sh") or "/bin/sh"
+    done = subprocess.run([sh, "-e", str(script)], env=env, capture_output=True, text=True)
+    assert done.returncode == expected, done.stderr
+    assert f"push {'blocked (strict mode)' if expected else 'allowed'}" in done.stderr
 
 
 # ---- push-check -------------------------------------------------------------------------------
@@ -860,3 +967,27 @@ def test_status_and_scan_say_when_the_repo_is_protected(repo, home, monkeypatch)
     assert data["protected"] == ["git pre-push hook", "npm prepublishOnly"]
     table = CliRunner().invoke(app, [*status[:-1], "table", "--plain"]).output
     assert line in " ".join(table.split())
+
+
+def test_protect_format_agent_asks_the_human_about_the_shared_package_json(package, home):
+    """AI-first: an agent running protect learns what only the human can decide."""
+    (package / "package.json").write_text(json.dumps({"name": "x"}, indent=2) + "\n")
+    done = CliRunner().invoke(app, ["protect", str(package), "--format", "agent"])
+    assert done.exit_code == 0, done.output
+    lines = done.output.splitlines()
+    assert lines[-3:] == [
+        "ask_human:",
+        f"  - {protect.ASK_PACKAGE_JSON}",
+        "Tell the human each ask_human item.",
+    ]
+    again = CliRunner().invoke(app, ["protect", str(package), "--format", "agent"])
+    assert again.output.splitlines()[-1] == "ask_human: (nothing)"  # nothing changed
+    table = CliRunner().invoke(app, ["protect", str(package), "--undo"])
+    assert "ask_human" not in table.output  # a person's run reads as before
+
+
+def test_protect_defaults_to_the_agent_format_inside_an_agent(package, home, monkeypatch):
+    monkeypatch.setenv("CLAUDECODE", "1")
+    (package / "package.json").write_text(json.dumps({"name": "x"}, indent=2) + "\n")
+    done = CliRunner().invoke(app, ["protect", str(package)])
+    assert "package.json is shared with teammates" in done.output

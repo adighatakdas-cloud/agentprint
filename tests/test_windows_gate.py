@@ -80,12 +80,130 @@ def test_dry_run_on_windows_says_the_same(win, home):
 
 def test_status_and_uninstall_agree_on_windows(win, home):
     _run(home)
-    assert any(s.armed for s in roster(home, {}))
+    found = [s for s in roster(home, {}) if s.found]
+    assert not any(s.armed or s.guarded for s in found)  # no hook guards anything there
+    assert all(s.mcp_only and not s.unarmed for s in found)  # installed, nothing more to arm
     out = _run(home, fn=install.uninstall)
     assert "agentprint-hook" not in out
     assert not (home / ".agentprint").exists()
     assert not any("agentprint" in t for t in _files(home).values())
-    assert not any(s.armed for s in roster(home, {}))
+    assert not any(s.armed or s.mcp_only for s in roster(home, {}))
+
+
+def _status(home, *args):
+    from typer.testing import CliRunner
+
+    from agentprint.cli import app
+
+    done = CliRunner().invoke(app, ["status", "--home", str(home), *args])
+    assert done.exit_code == 0, done.output
+    return done.output
+
+
+def test_windows_status_never_says_armed_without_a_hook(win, home):
+    """I4: on Windows install adds the MCP server and the note only, and status says so in
+    every format instead of "armed"."""
+    _run(home)
+    agent = _status(home, "--format", "agent").splitlines()
+    assert "claude-code MCP and note; no hook on Windows yet" in agent
+    assert not any(line.endswith(" armed") for line in agent)
+    assert "Arm unarmed agents with: agentprint install" not in agent  # install can't do more
+    table = _status(home, "--plain")
+    assert "0 of 6 agents armed · 6 with MCP and note; no hook on Windows yet" in table
+    assert "MCP and note; no hook on Windows yet" in table.split("\n", 2)[2]
+    data = json.loads(_status(home, "--format", "json"))
+    claude = next(a for a in data["agents"] if a["name"] == "claude-code")
+    assert claude["armed"] is False and claude["hook"] is False
+    assert claude["installed"] == "mcp-and-note"
+
+
+def test_posix_status_json_is_unchanged(monkeypatch, home):
+    monkeypatch.setattr(platform, "is_windows", lambda: False)
+    monkeypatch.setattr(install, "resolve_agentprint", lambda: ["/opt/agentprint"])
+    _run(home)
+    data = json.loads(_status(home, "--format", "json"))
+    claude = next(a for a in data["agents"] if a["name"] == "claude-code")
+    assert set(claude) == {"name", "label", "found", "armed"} and claude["armed"] is True
+    assert "claude-code armed" in _status(home, "--format", "agent").splitlines()
+
+
+# ---- upgrading a 0.1.0 install, which put /bin/sh hooks on Windows too -------------------------
+
+
+def _old_install(monkeypatch, home):
+    """What 0.1.0 did on Windows: hooks and the launcher, like on POSIX (byte-identical to it)."""
+    monkeypatch.setattr(platform, "is_windows", lambda: False)
+    _run(home)
+    monkeypatch.setattr(platform, "is_windows", lambda: True)
+    launcher = home / ".agentprint" / "bin" / "agentprint-hook"
+    assert launcher.is_file()
+    assert "agentprint-hook" in (home / ".claude" / "settings.json").read_text()
+    return launcher
+
+
+def _hooks_left(home) -> list[str]:
+    return [name for name, text in _files(home).items() if "agentprint-hook" in text]
+
+
+def test_windows_uninstall_takes_out_hooks_an_older_install_left(win, monkeypatch, home):
+    before = _files(home)
+    _old_install(monkeypatch, home)
+    _run(home, fn=install.uninstall)
+    assert _hooks_left(home) == []
+    assert not (home / ".agentprint").exists()  # launcher, state and backups: all gone
+    assert _files(home) == before  # every file back as it was
+
+
+def test_windows_uninstall_keeps_the_record_while_a_hook_is_left(win, monkeypatch, home):
+    """A hook it could not take out keeps state.json and the backups: they are how a later
+    uninstall finds it."""
+    _old_install(monkeypatch, home)
+    settings = home / ".claude" / "settings.json"
+    settings.chmod(0o444)
+    try:
+        out = _run(home, fn=install.uninstall)
+    finally:
+        settings.chmod(0o644)
+    assert "read-only" in out
+    assert "agentprint-hook" in settings.read_text()
+    assert (home / ".agentprint" / "state.json").is_file()
+    assert (home / ".agentprint" / "backups").is_dir()
+    _run(home, fn=install.uninstall)  # once it can be written, the next uninstall finishes
+    assert _hooks_left(home) == [] and not (home / ".agentprint").exists()
+
+
+def test_windows_install_says_it_takes_out_older_hooks_and_does(win, monkeypatch, home):
+    before = _files(home)
+    launcher = _old_install(monkeypatch, home)
+    out = _run(home)
+    assert install.OLD_HOOKS_WINDOWS in out
+    assert _hooks_left(home) == [] and not launcher.exists()
+    assert "agentprint" in json.loads((home / ".cursor" / "mcp.json").read_text())["mcpServers"]
+    assert "agentprint" in (home / ".claude" / "CLAUDE.md").read_text()
+    assert install.OLD_HOOKS_WINDOWS not in _run(home)  # said once, when there were some
+    _run(home, fn=install.uninstall)
+    assert not (home / ".agentprint").exists()
+    assert _files(home) == before
+
+
+def test_windows_install_dry_run_names_older_hooks_and_changes_nothing(win, monkeypatch, home):
+    _old_install(monkeypatch, home)
+    files = _files(home)
+    out = _run(home, dry_run=True)
+    assert install.OLD_HOOKS_WINDOWS in out and "settings.json" in out
+    assert _files(home) == files
+
+
+def test_windows_install_names_a_hook_it_cannot_take_out(win, monkeypatch, home):
+    launcher = _old_install(monkeypatch, home)
+    settings = home / ".claude" / "settings.json"
+    settings.chmod(0o444)
+    try:
+        out = _run(home)
+    finally:
+        settings.chmod(0o644)
+    assert "Remove each hook entry that runs ~/.agentprint/bin/agentprint-hook" in out
+    assert launcher.exists()  # a hook still runs it
 
 
 def test_posix_install_does_not_print_the_windows_line(monkeypatch, home):

@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .report import FailOn
-from .sanitize import clean
+from .sanitize import safe_quote, safe_text
 
 CONFIG_FILE = ".agentprint.toml"
 PYPROJECT = "pyproject.toml"
@@ -199,20 +199,20 @@ def _find(root: Path, sources: Sources) -> tuple[Path | None, dict | None, list[
     for path, in_pyproject in candidates:
         if given is None and not path.is_file():
             continue
-        name = clean(str(path))
+        name = safe_text(str(path))
         try:
             raw = read_regular(path, MAX_CONFIG_BYTES)
         except (OSError, ValueError) as exc:
             if in_pyproject and given is None:
                 continue  # not a config file of ours, just the project's metadata
-            why = clean(_why(exc))
+            why = safe_text(_why(exc))
             return path, None, [f"could not read config {name}: {why}; using the defaults"]
         if in_pyproject and given is None and b"agentprint" not in raw:
             continue  # a pyproject.toml that never names agentprint is not ours to judge
         try:
             data = _read_toml(raw)
         except (ValueError, UnicodeDecodeError) as exc:
-            why = clean(_why(exc))
+            why = safe_text(_why(exc))
             return path, None, [f"could not read config {name}: {why}; using the defaults"]
         if not in_pyproject:
             return path, data, []
@@ -235,8 +235,10 @@ def load(root: Path, sources: Sources | None = None) -> Config:
     if table is None:
         baseline = sources.baseline or root / DEFAULT_BASELINE
         return Config(root, baseline=baseline, warnings=tuple(warnings))
-    name = clean(str(path))
-    unknown = [clean(str(key)) for key in table if key not in KEYS]
+    name = safe_text(str(path))
+    # Key names, values and reasons are the config writer's text, maybe a cloned repository's:
+    # shown with every key in them masked (hard rule 2), names and values as quoted data.
+    unknown = [safe_quote(str(key)) for key in table if key not in KEYS]
 
     fail_on = None
     if "fail_on" in table:
@@ -296,15 +298,18 @@ def _ignores(raw: object, name: str, unknown: list[str], warnings: list[str]) ->
             warnings.append(f"{where} is not a table; skipped")
             continue
         unknown += [
-            f"{clean(str(key))} (ignore entry {n + 1})" for key in entry if key not in IGNORE_KEYS
+            f"{safe_quote(str(key))} in ignore entry {n + 1}"
+            for key in entry
+            if key not in IGNORE_KEYS
         ]
         check, path, reason = entry.get("check"), entry.get("path"), entry.get("reason", NO_REASON)
         if not all(v is None or isinstance(v, str) for v in (check, path, reason)):
             warnings.append(f"{where}: check, path and reason must be text; skipped")
             continue
-        check = check.strip().upper() if check is not None else None
+        written, check = check, check.strip().upper() if check is not None else None
         if check is not None and (not CHECK_ID.fullmatch(check) or check not in known_ids):
-            warnings.append(f"{where}: unknown check {clean(check)!r}; skipped")
+            # As written (an upper-cased key would slip past the masking), keys masked.
+            warnings.append(f"{where}: unknown check {safe_quote(written or '')}; skipped")
             continue
         path = path.strip() if path is not None and path.strip() else None
         if check is None and path is None:
@@ -317,6 +322,6 @@ def _ignores(raw: object, name: str, unknown: list[str], warnings: list[str]) ->
         except ValueError as exc:
             warnings.append(f"{where}: path is {exc}; skipped")
             continue
-        reason = clean(reason or NO_REASON, 200)
+        reason = safe_text(reason or NO_REASON, 200)
         rules.append(Ignore(check, path, reason, pattern))
     return rules

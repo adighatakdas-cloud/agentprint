@@ -58,10 +58,17 @@ function command(args, version, which = findExecutable) {
 // say so in one line and exit 0, so a teammate or CI without uv is not blocked. In that mode
 // `agentprint pack` gives its verdicts their own codes: 3 = something would leak (exit 1 here),
 // 4 = the package could not be checked (exit 2 here). Any other code is not a verdict.
+// AGENTPRINT_STRICT=1 turns allow mode off: strict mode fails closed in every layer.
 const VERDICTS = { 0: 0, 3: 1, 4: 2 };
-function allowsUnavailable(args) {
+function allowsUnavailable(args, env = {}) {
+  if (strictRequested(env)) return false;
   const at = args.indexOf('--if-unavailable');
   return args.includes('--if-unavailable=allow') || (at !== -1 && args[at + 1] === 'allow');
+}
+
+// AGENTPRINT_STRICT's yes-like values, as agentprint itself reads them.
+function strictRequested(env) {
+  return /^(1|true|yes|on)$/i.test(String(env.AGENTPRINT_STRICT || '').trim());
 }
 
 function unavailable(why, allow) {
@@ -73,7 +80,9 @@ function unavailable(why, allow) {
 function main() {
   const { version } = require('../package.json');
   const args = process.argv.slice(2);
-  const allow = allowsUnavailable(args);
+  const allow = allowsUnavailable(args, process.env);
+  // Strict with the allow flag: agentprint's own verdict codes still map, anything else stops.
+  const verdicts = !allow && allowsUnavailable(args) ? VERDICTS : {};
   const cmd = command(args, version);
   if (cmd === null) {
     if (!allow) process.stderr.write(`${INSTALL_HINT}\n`);
@@ -99,7 +108,7 @@ function main() {
       if (allow) process.stderr.write(Buffer.concat(held));
       process.exit(128 + (os.constants.signals[signal] || 0));
     }
-    if (!allow) process.exit(code ?? 2);
+    if (!allow) process.exit(code in verdicts ? verdicts[code] : code ?? 2);
     if (code in VERDICTS) {
       process.stderr.write(Buffer.concat(held));
       process.exit(VERDICTS[code]);
@@ -110,4 +119,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { allowsUnavailable, command, findExecutable, pythonVersion };
+module.exports = { allowsUnavailable, command, findExecutable, pythonVersion, strictRequested };

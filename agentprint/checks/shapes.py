@@ -646,7 +646,9 @@ def _assign(block: str, assigned: dict[str, str]) -> None:
 # A run of characters a key can be made of (with the dots and colons some keys hold). One that
 # touches a line break or an edge of what is shown may be half a key split over two lines,
 # which no key pattern knows: it is masked (hard rule 2: masking too much of a display snippet
-# is fine, showing a piece of a key is not).
+# is fine, showing a piece of a key is not). It is shown as a bare CUT, not as a redact() stub
+# with a length: most such runs are ordinary words, which must not read as a redacted key.
+CUT = "\u2026"
 _KEY_RUN = re.compile(r"[A-Za-z0-9_\-+/=:.]{5,}")  # 5: a piece no longer than a stub
 _LEADING_RUN = re.compile(r"[A-Za-z0-9_\-+/=:.]+")
 
@@ -675,14 +677,14 @@ def _masked(text: str, spans: Iterable[tuple[int, int]], offset: int = 0) -> str
                 host = text.find("/", scheme + 3, end)
                 start = end if host < 0 else host
             if start < end:
-                out += [text[last:start], f"\u2026(len {end - start})"]
+                out += [text[last:start], CUT]
                 last = end
     return "".join([*out, text[last:]])
 
 
 def mask_fragments(text: str, breaks: Iterable[int] = ()) -> str:
     """`text` with every run of five or more key characters that touches a line break or either
-    end of it replaced by its length."""
+    end of it cut out (shown as CUT)."""
     return _masked(text, _fragments(text, list(breaks)))
 
 

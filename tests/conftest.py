@@ -43,9 +43,41 @@ def set_home(monkeypatch: pytest.MonkeyPatch, home: Path | str) -> None:
         monkeypatch.setenv(name, value)
 
 
+def _tool_caches() -> dict[str, str]:
+    """Where uv and npm keep their caches and Pythons under the real home folder. Kept for the
+    tests that run them: an isolated home would send them to the network."""
+    env, home = os.environ, Path.home()
+    if os.name == "nt":
+        local = Path(env.get("LOCALAPPDATA") or home / "AppData" / "Local")
+        roaming = Path(env.get("APPDATA") or home / "AppData" / "Roaming")
+        uv_cache, uv_python, npm = (
+            local / "uv" / "cache",
+            roaming / "uv" / "python",
+            local / "npm-cache",
+        )
+    else:
+        cache = Path(env.get("XDG_CACHE_HOME") or home / ".cache")
+        data = Path(env.get("XDG_DATA_HOME") or home / ".local" / "share")
+        uv_cache, uv_python, npm = cache / "uv", data / "uv" / "python", home / ".npm"
+    found = {"UV_CACHE_DIR": uv_cache, "UV_PYTHON_INSTALL_DIR": uv_python, "npm_config_cache": npm}
+    return {name: env.get(name) or str(path) for name, path in found.items()}
+
+
+_TOOL_CACHES = _tool_caches()
+XDG = {
+    "XDG_CONFIG_HOME": ".config",
+    "XDG_DATA_HOME": ".local/share",
+    "XDG_STATE_HOME": ".local/state",
+    "XDG_CACHE_HOME": ".cache",
+}
+
+
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "posix_only: needs POSIX modes, /bin/sh or symlinks")
     config.addinivalue_line("markers", "windows_only: needs Windows")
+    config.addinivalue_line(
+        "markers", "real_home: keeps the real home folder (the autouse isolation is off)"
+    )
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -57,6 +89,25 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip_posix)
         if not windows and "windows_only" in item.keywords:
             item.add_marker(skip_windows)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_home(request, tmp_path_factory, monkeypatch):
+    """Every test gets a throwaway home folder: HOME, USERPROFILE, APPDATA, LOCALAPPDATA and the
+    XDG folders all point inside it, so no test can read or write the developer's own agent
+    files, and subprocesses inherit the same. Git reads no global or system config (a
+    developer's core.hooksPath, init.templateDir or excludes file can't change an outcome).
+    Tests that set their own home still do; `@pytest.mark.real_home` opts out."""
+    if request.node.get_closest_marker("real_home"):
+        return
+    for name, value in _TOOL_CACHES.items():
+        monkeypatch.setenv(name, value)
+    home = tmp_path_factory.mktemp("home")
+    set_home(monkeypatch, home)
+    for name, sub in XDG.items():
+        monkeypatch.setenv(name, str(home / sub))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 
 @pytest.fixture(autouse=True)

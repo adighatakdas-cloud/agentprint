@@ -14,7 +14,7 @@ from rich.console import Console
 from . import __version__
 from .advice import Moment, advise
 from .models import KEY_CHECKS, Finding, Severity
-from .sanitize import clean, quote, safe_step
+from .sanitize import clean, quote, safe_step, safe_text
 from .secrets import mask_keys
 
 if TYPE_CHECKING:
@@ -74,9 +74,9 @@ def known_dicts(known: Sequence[Known], moment: Moment = Moment.scan) -> list[di
         data: dict[str, object] = {
             "check_id": k.finding.check_id,
             "severity": k.finding.severity.name.lower(),
-            "path": clean(k.path),
+            "path": safe_text(k.path),
             "via": k.via,
-            "reason": clean(k.reason),
+            "reason": safe_text(k.reason),
         }
         if k.finding.check_id in KEY_CHECKS:
             data["ask_human"] = advise(k.finding, moment).ask_human
@@ -99,7 +99,7 @@ def known_groups(known: Sequence[Known]) -> list[tuple[str, str, str, int]]:
     """(check id, via, reason, how many), in first-seen order."""
     groups: dict[tuple[str, str, str], int] = {}
     for k in known:
-        key = (k.finding.check_id, k.via, clean(k.reason))
+        key = (k.finding.check_id, k.via, safe_text(k.reason))  # config or baseline text
         groups[key] = groups.get(key, 0) + 1
     return [(*key, n) for key, n in groups.items()]
 

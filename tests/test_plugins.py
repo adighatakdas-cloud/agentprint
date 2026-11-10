@@ -20,6 +20,7 @@ import yaml
 
 from agentprint import __version__, hook, plugins
 from agentprint.checks.ap004_network_hook import network_indicator
+from agentprint.guard import COULD_NOT_START, strict_block
 from agentprint.integrations import ALL_INTEGRATIONS
 from agentprint.integrations.base import BLOCK_EXIT, INSTRUCTIONS, Launch
 from agentprint.secrets import find_secrets
@@ -237,6 +238,55 @@ def test_failing_uvx_fails_open_and_never_blocks(agent, tmp_path):
     assert result.returncode == 0
     assert result.stderr.splitlines()[-1] == plugins.FAILED.replace("$s", "2")
     assert result.stdout.strip() == ALL_INTEGRATIONS[agent].reply(None).stdout.strip()
+
+
+def _assert_strict_block(result, agent, line):
+    """Ruling X21: one line, then the agent's own block answer."""
+    assert result.stderr.splitlines()[0] == line
+    expected = ALL_INTEGRATIONS[agent].reply(strict_block(COULD_NOT_START))
+    if expected.stdout.strip():
+        assert result.returncode == 0 and result.stdout.strip() == expected.stdout.strip()
+    else:
+        assert result.returncode == 2 and "agentprint: BLOCK (strict mode)" in result.stderr
+
+
+@pytest.mark.posix_only
+@pytest.mark.parametrize("agent", sorted(HOOK_FILES))
+def test_strict_missing_uvx_blocks(agent, tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    env = {"HOME": str(tmp_path), "PATH": str(empty), "AGENTPRINT_STRICT": "1"}
+    result = subprocess.run(
+        _hook_command(agent), shell=True, input="{}", capture_output=True, text=True, env=env
+    )
+    _assert_strict_block(result, agent, plugins.NO_UVX_STRICT)
+
+
+@pytest.mark.posix_only
+@pytest.mark.parametrize("agent", sorted(HOOK_FILES))
+@pytest.mark.parametrize("value", ["1", "TRUE", "on"])
+def test_strict_failing_uvx_blocks(agent, tmp_path, value):
+    bin_dir = tmp_path / "bin"
+    fake_uvx(bin_dir, "while read -r _; do :; done; echo 'error: no network' >&2; exit 2")
+    env = {"HOME": str(tmp_path), "PATH": str(bin_dir), "AGENTPRINT_STRICT": value}
+    result = subprocess.run(
+        _hook_command(agent), shell=True, input="{}", capture_output=True, text=True, env=env
+    )
+    _assert_strict_block(result, agent, "error: no network")
+    assert plugins.FAILED_STRICT.replace("$s", "2") in result.stderr
+
+
+@pytest.mark.posix_only
+def test_strict_off_values_keep_the_plugin_hook_open(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    for value in ("", "0", "no"):
+        env = {"HOME": str(tmp_path), "PATH": str(empty), "AGENTPRINT_STRICT": value}
+        result = subprocess.run(
+            _hook_command("claude-code"), shell=True, input="{}", capture_output=True,
+            text=True, env=env,
+        )  # fmt: skip
+        assert result.returncode == 0 and result.stderr.splitlines() == [plugins.NO_UVX]
 
 
 @pytest.mark.posix_only
@@ -489,6 +539,25 @@ def test_hermes_finds_uvx_in_the_installer_folders_without_path(tmp_path, monkey
         "--from",
         f"agentprint=={__version__}",
     ]
+
+
+def test_hermes_blocks_when_agentprint_cannot_run_in_strict_mode(monkeypatch, capsys):
+    module = _hermes("agentprint_hermes_plugin_strict")
+    monkeypatch.setenv("AGENTPRINT_STRICT", "1")
+    assert module.check(tool_name="read_file", args={"path": "x"}) is None  # not a command
+    monkeypatch.setattr(module.shutil, "which", lambda name, path=None: None)
+    blocked = module.check(tool_name="terminal", args={"command": "ls"})
+    assert blocked == {"action": "block", "message": module.STRICT_BLOCK}
+    assert "agentprint: BLOCK (strict mode)" in module.STRICT_BLOCK
+    assert capsys.readouterr().err.splitlines() == [plugins.NO_UVX_STRICT]
+
+    def boom(*args, **kwargs):
+        raise subprocess.TimeoutExpired("uvx", module.TIMEOUT)
+
+    monkeypatch.setattr(module.shutil, "which", lambda name, path=None: "/usr/bin/uvx")
+    monkeypatch.setattr(module.subprocess, "run", boom)
+    assert module.check(tool_name="terminal", args={"command": "npm publish"})["action"] == "block"
+    assert "TimeoutExpired" in capsys.readouterr().err
 
 
 def test_hermes_ignores_other_tools_and_fails_open(monkeypatch, capsys):

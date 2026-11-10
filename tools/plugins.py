@@ -20,6 +20,7 @@ from pathlib import Path
 
 import agentprint
 from agentprint import plugins
+from agentprint.guard import COULD_NOT_START, strict_block
 from agentprint.integrations import ALL_INTEGRATIONS
 from agentprint.integrations.base import BLOCK_EXIT, INSTRUCTIONS, FileEdit, JsonEdit, Launch
 from agentprint.integrations.cursor import RULE as CURSOR_RULE
@@ -257,6 +258,19 @@ def antigravity() -> dict[Path, str]:
     }
 
 
+def _py_string(text: str, width: int = 72) -> str:
+    """`text` as a parenthesized Python string literal, in pieces cut after a space that keep
+    lines short."""
+    pieces, piece = [], ""
+    for word in text.split(" "):
+        if piece and len(piece) + len(word) > width:
+            pieces.append(piece)
+            piece = ""
+        piece += word + " "
+    pieces.append(piece[:-1])
+    return "(\n    " + "\n    ".join(json.dumps(p) for p in pieces) + "\n)"
+
+
 def hermes() -> dict[Path, str]:
     """https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins and .../hooks"""
     folder = PLUGIN / "hermes"
@@ -275,6 +289,8 @@ def hermes() -> dict[Path, str]:
         timeout="25",  # Hermes blocks a callback that runs past its 30 s default
         blocked=str(BLOCK_EXIT),
         no_uvx=json.dumps(plugins.NO_UVX),
+        no_uvx_strict=json.dumps(plugins.NO_UVX_STRICT),
+        strict_block=_py_string(strict_block(COULD_NOT_START).reason.strip()),
         uv_dirs=json.dumps([d.replace("$HOME/", "~/") for d in plugins.UV_DIRS]),
         name=NAME,
     )

@@ -30,7 +30,7 @@ from .gitcheck import check_push
 from .models import CannotCheck, Finding
 from .pack import PackageListing, PackError, read_archive, read_npm_project
 from .report import KNOWN_WORD, FailOn, exit_code, known_groups, to_agent
-from .sanitize import clean, quote
+from .sanitize import clean, quote, safe_text
 from .secrets import mask_keys
 
 ARCHIVES = (".whl", ".tar.gz", ".zip", ".tgz")
@@ -80,6 +80,11 @@ STRICT_HINT = (
     "Strict mode is on (AGENTPRINT_STRICT=1 or --strict), so a command agentprint cannot check "
     "is blocked. Fix the cause and retry, or ask the human to turn strict mode off."
 )
+
+
+# Why a hook in strict mode blocks when agentprint itself could not run (the launcher's and the
+# plugin hooks' own answer, written at install or build time).
+COULD_NOT_START = "agentprint could not start, so it could not check this command."
 
 
 def strict_requested(env: Mapping[str, str]) -> bool:
@@ -142,7 +147,7 @@ def _settle(
     except Exception as exc:  # noqa: BLE001 - never allow because of a bug: everything counts
         why = f"agentprint could not apply the project config ({type(exc).__name__})"
         return findings, default, [], [f"{why}; every finding counts."]
-    notes = [f"agentprint: {clean(note)}." for note in project.warnings]
+    notes = [f"agentprint: {safe_text(note)}." for note in project.warnings]
     if exit_code(findings, default) and not exit_code(settled.active, settled.fail_on):
         notes.append(_allowed_by_config(settled, project, default))  # say why it went through
     return settled.active, settled.fail_on, settled.known, notes
@@ -156,7 +161,7 @@ def _allowed_by_config(settled: Settled, project: Project, default: FailOn) -> s
         for check_id, via, reason, n in known_groups(settled.known)
     ]
     if exit_code(settled.active, default):
-        source = clean(str(project.config.source or "the project config"))
+        source = safe_text(str(project.config.source or "the project config"))
         parts.append(f"fail_on = {settled.fail_on.value} in {source}")
     return f"agentprint: allowed by project config: {'; '.join(parts)}."
 

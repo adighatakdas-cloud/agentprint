@@ -14,12 +14,15 @@
   language: python
   pass_filenames: false
 
-# The same repository check before `git push` instead of each commit. Install the hook type with
+# Before `git push`: the check `agentprint protect` sets up. It reads what the push uploads from
+# git's own objects (pre-commit names the refs in PRE_COMMIT_*), so a gitignored local file never
+# blocks a push. A finding stops the push; what it can't check lets the push go with one line,
+# unless strict (args: [--strict], or AGENTPRINT_STRICT=1). Install the hook type with
 # `pre-commit install --hook-type pre-push`, or list pre-push in default_install_hook_types.
 - id: agentprint-pre-push
-  name: agentprint scan (pre-push)
-  description: Block the push if agent settings files in this repository hold API keys.
-  entry: agentprint scan --no-home
+  name: agentprint push-check (pre-push)
+  description: Block the push if what it uploads holds personal agent files or API keys.
+  entry: agentprint push-check
   language: python
   pass_filenames: false
   always_run: true

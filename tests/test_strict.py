@@ -293,7 +293,7 @@ def test_default_install_does_not_run_the_version_check(tmp_path, monkeypatch):
     exe = _permanent(tmp_path, monkeypatch, "agentprint 0.1.0")
     output, launcher = _strict_install(tmp_path / "home")
     assert exe in launcher and not (tmp_path / "ran").exists()
-    assert "Strict mode" not in output
+    assert "Strict mode: a publish or push agentprint cannot check will be blocked." not in output
 
 
 def test_reported_version_of_a_missing_agentprint_is_none(tmp_path):

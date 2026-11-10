@@ -12,8 +12,9 @@ Ruling (no launcher in a plugin): the command is a one-line /bin/sh script that 
 launcher does. A missing uvx, or uvx failing (offline with an empty cache, say: uv's own errors
 exit 2, which Claude Code and Codex read as "block"), lets the command run: exit 0 with the
 agent's own allow output and one line on stderr, never a retry. `AGENTPRINT_STRICT=1` reaches
-`agentprint guard` where the agent passes its environment on. Cost if wrong: like the launcher,
-strict mode cannot block when agentprint never starts. POSIX only, like `install`'s hooks.
+`agentprint guard` where the agent passes its environment on, and there (Ruling X21: strict
+fails closed in every layer) a missing or failing agentprint blocks instead: one line, and the
+agent's own block answer. POSIX only, like `install`'s hooks.
 
 Ruling (status): a plugin counts as arming an agent only when the agent's own records say it is
 installed and enabled (Claude Code, Codex, Hermes Agent). A plugin folder alone, where the
@@ -40,6 +41,11 @@ PLUGIN_MARK = "agentprint-plugin"  # $0 of every plugin hook command
 UV_DIRS = ("$HOME/.local/bin", "$HOME/.cargo/bin")
 NO_UVX = "agentprint: uvx not found, so this command was not checked (install uv to turn it on)"
 FAILED = "agentprint: hook check failed (exit $s); the command was allowed"
+# Strict mode (AGENTPRINT_STRICT=1): the same failures block.
+NO_UVX_STRICT = "agentprint: uvx not found, so this command was not checked; blocked (strict mode)"
+FAILED_STRICT = "agentprint: hook check failed (exit $s); the command was blocked (strict mode)"
+# AGENTPRINT_STRICT's yes-like values (guard.strict_requested's), as an sh `case` pattern.
+STRICT_ENV = "1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]"
 
 
 def guard_argv(agent: str, version: str = __version__) -> tuple[str, ...]:
@@ -50,18 +56,35 @@ def mcp_argv(version: str = __version__) -> tuple[str, ...]:
     return ("uvx", "--from", f"agentprint=={version}", "agentprint", "mcp")
 
 
+def strict_block_sh(agent: str) -> str:
+    """sh that gives `agent` its own "block" answer for strict mode when agentprint can't run:
+    JSON on stdout (exit 0) where the agent reads that, else the reason on stderr and exit 2."""
+    from .guard import COULD_NOT_START, strict_block
+    from .integrations import ALL_INTEGRATIONS
+
+    verdict = strict_block(COULD_NOT_START)
+    reply = ALL_INTEGRATIONS[agent].reply(verdict)
+    if reply.stdout.strip() and reply.exit_code == 0:
+        return f"printf '%s\\n' {shlex.quote(reply.stdout.strip())}; exit 0"
+    return f"printf '%s\\n' {shlex.quote(verdict.reason.strip())} >&2; exit 2"
+
+
 def hook_command(agent: str, allow: str = "", version: str = __version__) -> str:
     """The command a plugin hook runs: `uvx --from agentprint==<version> agentprint guard
     --agent <agent>`, with the launcher's exit-code handling around it (see the ruling above).
-    `allow` is the agent's own "allow" output, printed when agentprint could not run."""
+    `allow` is the agent's own "allow" output, printed when agentprint could not run; with
+    AGENTPRINT_STRICT set, the agent's own block answer is given instead."""
     allowed = f"printf '%s\\n' {shlex.quote(allow.strip())}; " if allow.strip() else ""
     script = (
         f'PATH="$PATH:{":".join(UV_DIRS)}"; '
-        f'command -v uvx >/dev/null 2>&1 || {{ echo "{NO_UVX}" >&2; {allowed}exit 0; }}; '
+        f'st=0; case "${{AGENTPRINT_STRICT:-}}" in {STRICT_ENV}) st=1 ;; esac; '
+        f'b() {{ [ "$st" = 1 ] || return 0; echo "$1" >&2; {strict_block_sh(agent)}; }}; '
+        f'command -v uvx >/dev/null 2>&1 || {{ b "{NO_UVX_STRICT}"; echo "{NO_UVX}" >&2; '
+        f"{allowed}exit 0; }}; "
         f"out=$({' '.join(guard_argv(agent, version))}); s=$?; "
         f'case "$s" in 0) [ -n "$out" ] && printf "%s\\n" "$out"; exit 0 ;; '
         f'{BLOCK_EXIT}) [ -n "$out" ] && printf "%s\\n" "$out"; exit 2 ;; esac; '
-        f'echo "{FAILED}" >&2; {allowed}exit 0'
+        f'b "{FAILED_STRICT}"; echo "{FAILED}" >&2; {allowed}exit 0'
     )
     return " ".join(shlex.quote(part) for part in ("/bin/sh", "-c", script, PLUGIN_MARK))
 

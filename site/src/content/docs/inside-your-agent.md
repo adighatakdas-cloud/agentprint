@@ -58,7 +58,7 @@ By default a hook never gets in your way: if agentprint hits an internal error, 
 What strict mode does and does not cover:
 
 - A publish or push that agentprint cannot check is blocked. That includes a command agentprint cannot parse when it looks like a publish or push. An ordinary command it cannot parse still runs, with a note.
-- If agentprint fails to start at all (the launcher is missing, `uvx` is unavailable, or it crashes before `guard` runs), the command still runs.
+- If agentprint fails to start at all (the launcher is missing, `uvx` is unavailable or offline, or it crashes before `guard` runs), the command is blocked too, with one line saying why. That holds for every command the hook sees, not only publishes and pushes, until agentprint can run again: fix it, or run a plain `agentprint install` to leave strict mode. The plugins block the same way where `AGENTPRINT_STRICT=1` reaches them.
 - An unknown agent name still runs.
 - It is still limited to what agentprint can see: a secret assembled at run time, or one inside an arbitrary script, is not detected.
 
@@ -99,7 +99,7 @@ What `protect` adds:
 - **If the folder has a `package.json`**, its `scripts.prepublishOnly` runs `npx --yes agentprint-cli@<version> pack --fail-on high --if-unavailable allow` first. A `prepublishOnly` you already had stays and runs first (`yours && npx ...`). Running `protect` again after an upgrade moves the pin to the new version. `pack` lists the package with `npm pack --dry-run --ignore-scripts`, so it never starts itself again. The wrapper never takes `uvx` or `pipx` from `node_modules/.bin`.
 - **On Windows**, Git for Windows runs hooks with its own `sh`, so the same hook works there.
 
-**What you commit is shared.** `package.json`, and a hook manager's files (`.husky/pre-push`, `lefthook.yml`, `.pre-commit-config.yaml`), are usually committed. Once they are, the check runs for every teammate and in CI too, where uv may not be installed. So by default these fail open when agentprint itself can't run: no uv or pipx, uvx can't fetch agentprint, or it crashes before giving a verdict. The publish or push then goes on with one line. Anything agentprint did find still blocks, and so does a package it can't check (say a `pyproject.toml` that doesn't build). With `--strict` they block in every case. The one thing that still stops a publish is npx failing to fetch `agentprint-cli` itself, which needs the same registry the publish does.
+**What you commit is shared.** `package.json`, and a hook manager's files (`.husky/pre-push`, `lefthook.yml`, `.pre-commit-config.yaml`), are usually committed. Once they are, the check runs for every teammate and in CI too, where uv may not be installed. So by default these fail open when agentprint itself can't run: no uv or pipx, uvx can't fetch agentprint, or it crashes before giving a verdict. The publish or push then goes on with one line. Anything agentprint did find still blocks, and so does a package it can't check (say a `pyproject.toml` that doesn't build). With `--strict`, or with `AGENTPRINT_STRICT=1` set where they run (a CI job, say), they block in every case. The one thing that still stops a publish is npx failing to fetch `agentprint-cli` itself, which needs the same registry the publish does.
 
 With `--if-unavailable allow`, `agentprint pack` exits 3 for a leak and 4 for a package it can't check (instead of 1 and 2), so the npm wrapper can tell its verdict from uv or Python failing to start it. Each ecosystem in a folder is checked on its own, so a broken `pyproject.toml` never hides what the npm package would leak. Inside an npm `prepublishOnly`, `pack` checks only the npm package, since that is what npm is publishing.
 
@@ -134,7 +134,7 @@ Limits:
 - **Git LFS.** A git-lfs pre-push hook you already had runs first, and it uploads the LFS files before agentprint can block the push. agentprint reads only the small pointer files that git stores in their place.
 - **Submodules.** `git push --recurse-submodules` pushes each submodule with that submodule's own hooks. The hook `protect` adds checks only the repository it is in: run `agentprint protect` in each submodule too.
 
-**To undo it:** `agentprint protect --undo` takes out exactly what `protect` added. Your own pre-push hook goes back under its own name, and `package.json` comes back byte for byte. If you changed either file since, agentprint leaves it alone and says what to remove by hand. What `protect` wrote is recorded in `~/.agentprint/protect.json`. That includes a copy of `package.json` from before, which is dropped once undo is done or leaves the file to you.
+**To undo it:** `agentprint protect --undo` takes out exactly what `protect` added. Your own pre-push hook goes back under its own name, and `package.json` comes back byte for byte. If you changed either file since, agentprint leaves it alone and says what to remove by hand. What `protect` wrote is recorded in `~/.agentprint/protect.json`. For `package.json` that is only the few pieces of text the edit replaced and checksums of the file, never a copy of it. If one of those pieces would hold any part of a key, `protect` leaves `package.json` alone and prints the line to add by hand.
 
 ## Good to know
 

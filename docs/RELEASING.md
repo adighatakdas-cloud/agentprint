@@ -87,6 +87,13 @@ Do these once, before the first tag. Step 2 is a decision, the rest are clicks.
    `README.md` (it becomes the PyPI and npm page), and make sure `docs/demo.gif` has been
    rendered and committed (Actions → Demo GIF).
 2. Merge that change into `main` through a pull request, and wait for CI to pass.
+
+   **Order matters from here.** The plugin marketplaces read `main`, and every plugin hook on
+   it pins `agentprint==<version>`. From the merge until that version is on PyPI, a plugin
+   user's agent prints "agentprint: hook check failed … the command was allowed" on every
+   command the hook matches (and blocks them, for anyone with `AGENTPRINT_STRICT=1`). So do
+   steps 3 and 4 right after the merge: tag at once, and approve the `pypi` deployment as soon
+   as the Release workflow asks. If PyPI can't publish that day, hold the merge instead.
 3. Tag the merged commit and push the tag:
 
    ```bash

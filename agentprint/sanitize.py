@@ -61,3 +61,26 @@ def safe_step(text: str, limit: int = FIX_LEN) -> str:
 def quote(text: str) -> str:
     """`clean()` text rendered as a one-line JSON string: unmistakably a quoted value."""
     return json.dumps(clean(text), ensure_ascii=False)
+
+
+def safe_text(text: str, limit: int | None = MAX_LEN) -> str:
+    """Text a person or a repository wrote into a file agentprint reads (a config's key names,
+    values and ignore reasons; a baseline's paths and reasons), ready to show or store: every
+    key in it cut to its redact() stub, then `clean()`ed. Masked before cleaning (a key hidden
+    by invisible characters) and after (a key an escape sequence cut in two), and only then
+    shortened, so the cut never leaves part of a key behind."""
+    from .secrets import mask_keys  # the key rules are only compiled when there is such text
+
+    return clean(mask_keys(clean(mask_keys(text), None)), limit)
+
+
+def one_line(error: BaseException | str, limit: int = 200) -> str:
+    """An error (a tool's stderr: npm, uv, git) as one short line: its first line, every key in
+    it masked, cleaned. Never a tool's whole output."""
+    first = (str(error).strip().splitlines() or [type(error).__name__])[0]
+    return safe_text(first, limit)
+
+
+def safe_quote(text: str) -> str:
+    """`safe_text()` as a one-line JSON string: a quoted value with no key in it."""
+    return json.dumps(safe_text(text), ensure_ascii=False)

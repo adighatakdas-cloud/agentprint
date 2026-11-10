@@ -39,6 +39,7 @@ from agentprint.checks import ap006_package_leak as ap006
 from agentprint.checks import ap009_source_exposure as ap009
 from agentprint.fixreport import fixes, rows
 from agentprint.integrations import ALL_INTEGRATIONS
+from agentprint.protect import guarded_snippet, lefthook_lines
 from agentprint.report import FailOn
 from agentprint.roster import SHORT_NAMES, AgentState, swept_agents
 from agentprint.scanner import scan
@@ -455,8 +456,12 @@ def outputs() -> dict[Path, str]:
     )
     ci = pages.parent / "ci.md"
     text = ci.read_text(encoding="utf-8")
+    hooks = {  # the lines `agentprint protect` prints for a hook manager: one source
+        "lefthook": "\n".join(lefthook_lines(strict=False)),
+        "husky": "\n".join(guarded_snippet(strict=False)),
+    }
     for name, template in CI_BLOCKS.items():
-        block = plugin_files.fill(template, version=agentprint.__version__).rstrip("\n")
+        block = plugin_files.fill(template, version=agentprint.__version__, **hooks).rstrip("\n")
         text = replace_block(text, block, f"<!-- {name}:start -->", f"<!-- {name}:end -->", "ci.md")
     files[ci] = text
     files |= plugin_files.files()

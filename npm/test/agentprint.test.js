@@ -12,6 +12,7 @@ const {
   command,
   findExecutable,
   pythonVersion,
+  strictRequested,
 } = require('../bin/agentprint.js');
 const pkg = require('../package.json');
 
@@ -170,6 +171,27 @@ test('--if-unavailable allow lets the publish go when agentprint cannot run', un
   assert.equal(run(fakeDir(), ['pack']).status, 2); // without the flag: as before
   assert.equal(run(dir, ['pack'], { FAKE_EXIT: '1' }).status, 1);
   assert.equal(run(dir, ['pack'], { FAKE_EXIT: '2' }).status, 2);
+});
+
+test('AGENTPRINT_STRICT turns allow mode off: the publish stops', unixOnly, () => {
+  const allow = ['pack', '--fail-on', 'high', '--if-unavailable', 'allow'];
+  for (const value of ['1', 'TRUE', ' yes ', 'on']) {
+    const strict = { AGENTPRINT_STRICT: value };
+    assert.equal(allowsUnavailable(allow, strict), false, value);
+    assert.equal(strictRequested(strict), true, value);
+    const missing = run(fakeDir(), allow, strict);
+    assert.equal(missing.status, 2, value); // no uv or pipx: stopped, with the install hint
+    assert.match(missing.stderr, /uv/);
+    const dir = fakeDir('uvx');
+    assert.equal(run(dir, allow, { ...strict, FAKE_EXIT: '2' }).status, 2); // uv failed: stopped
+    assert.equal(run(dir, allow, { ...strict, FAKE_EXIT: '3' }).status, 1); // verdicts still map
+    assert.equal(run(dir, allow, { ...strict, FAKE_EXIT: '4' }).status, 2);
+    assert.equal(run(dir, allow, { ...strict, FAKE_EXIT: '0' }).status, 0);
+  }
+  for (const value of ['', '0', 'no']) {
+    assert.equal(allowsUnavailable(allow, { AGENTPRINT_STRICT: value }), true, value);
+    assert.equal(run(fakeDir(), allow, { AGENTPRINT_STRICT: value }).status, 0, value);
+  }
 });
 
 test('the flag is read in both spellings and passed on to agentprint', unixOnly, () => {
