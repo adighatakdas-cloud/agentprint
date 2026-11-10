@@ -1099,6 +1099,11 @@ def push_check(
     raise typer.Exit(code)
 
 
+class ProtectFormat(StrEnum):
+    table = "table"
+    agent = "agent"
+
+
 @app.command()
 def protect(
     path: Annotated[Path, typer.Argument(help="Project folder. Default: this one.")] = Path("."),
@@ -1121,6 +1126,15 @@ def protect(
             "it then checks pushes from every repository that uses that folder.",
         ),
     ] = False,
+    fmt: Annotated[
+        ProtectFormat | None,
+        typer.Option(
+            "--format",
+            "-f",
+            help="agent: the report, then ask_human items for an AI agent to put to the human. "
+            "Default: agent inside an AI agent.",
+        ),
+    ] = None,
 ) -> None:
     """Check every git push and npm publish at git and npm themselves, for one project.
 
@@ -1135,11 +1149,18 @@ def protect(
         typer.secho("error: --undo takes no --strict or --global", err=True, fg=typer.colors.RED)
         raise typer.Exit(2)
     home = Path.home()
+    asks: list[str] = []
     code = (
         unprotect(path, home, typer.echo)
         if undo
-        else run_protect(path, home, typer.echo, strict=strict, shared=shared)
+        else run_protect(path, home, typer.echo, strict=strict, shared=shared, asks=asks)
     )
+    if _auto_format(fmt, ProtectFormat.agent, ProtectFormat.table) is ProtectFormat.agent:
+        typer.echo("ask_human:" + ("" if asks else " (nothing)"))
+        for ask in asks:
+            typer.echo(f"  - {ask}")
+        if asks:
+            typer.echo("Tell the human each ask_human item.")
     raise typer.Exit(code)
 
 

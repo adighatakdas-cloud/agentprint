@@ -462,6 +462,12 @@ def _key(path: Path) -> str:
 # ---- protect ----------------------------------------------------------------------------------
 
 
+ASK_PACKAGE_JSON = (
+    "package.json is shared with teammates: ask the human before committing it. Once it is "
+    "committed, every npm publish runs the check, theirs and CI's too."
+)
+
+
 def protect(
     path: Path,
     home: Path,
@@ -470,9 +476,11 @@ def protect(
     strict: bool = False,
     agentprint: list[str] | None = None,
     shared: bool = False,
+    asks: list[str] | None = None,
 ) -> int:
     """Add the git hook and the npm script. 0 = done (or already there), 1 = something needs
-    doing by hand (printed), 2 = nothing here to protect."""
+    doing by hand (printed), 2 = nothing here to protect. `asks` gets what only the human can
+    decide (for an AI agent to ask)."""
     if not path.is_dir():
         echo(f"error: {clean(str(path))} does not exist or is not a folder")
         return 2
@@ -495,7 +503,10 @@ def protect(
         else:
             echo("git: not a git repository, so no pre-push hook was added.")
         if package.is_file():
+            before = _bytes(package)
             needs_you += _layer("npm", echo, _protect_npm, package, entries, echo, strict)
+            if asks is not None and _bytes(package) != before:
+                asks.append(ASK_PACKAGE_JSON)
     finally:
         _save(home, entries)
     _python_note(path, echo)

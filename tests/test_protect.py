@@ -967,3 +967,27 @@ def test_status_and_scan_say_when_the_repo_is_protected(repo, home, monkeypatch)
     assert data["protected"] == ["git pre-push hook", "npm prepublishOnly"]
     table = CliRunner().invoke(app, [*status[:-1], "table", "--plain"]).output
     assert line in " ".join(table.split())
+
+
+def test_protect_format_agent_asks_the_human_about_the_shared_package_json(package, home):
+    """AI-first: an agent running protect learns what only the human can decide."""
+    (package / "package.json").write_text(json.dumps({"name": "x"}, indent=2) + "\n")
+    done = CliRunner().invoke(app, ["protect", str(package), "--format", "agent"])
+    assert done.exit_code == 0, done.output
+    lines = done.output.splitlines()
+    assert lines[-3:] == [
+        "ask_human:",
+        f"  - {protect.ASK_PACKAGE_JSON}",
+        "Tell the human each ask_human item.",
+    ]
+    again = CliRunner().invoke(app, ["protect", str(package), "--format", "agent"])
+    assert again.output.splitlines()[-1] == "ask_human: (nothing)"  # nothing changed
+    table = CliRunner().invoke(app, ["protect", str(package), "--undo"])
+    assert "ask_human" not in table.output  # a person's run reads as before
+
+
+def test_protect_defaults_to_the_agent_format_inside_an_agent(package, home, monkeypatch):
+    monkeypatch.setenv("CLAUDECODE", "1")
+    (package / "package.json").write_text(json.dumps({"name": "x"}, indent=2) + "\n")
+    done = CliRunner().invoke(app, ["protect", str(package)])
+    assert "package.json is shared with teammates" in done.output
