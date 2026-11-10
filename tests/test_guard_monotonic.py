@@ -504,3 +504,241 @@ def test_adversarial_inputs_stay_fast(tmp_path, command, files):
 
     _files(tmp_path, files)
     assert timing.best_of(lambda: detect(command, tmp_path), times=2) < timing.bound(1.0)
+
+
+# ---- reader round 4: npm reads abbreviations ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("command", "files"),
+    [
+        ("npm pu demo-1.0.0.tgz", None),
+        ("npm pub demo-1.0.0.tgz", None),
+        ("npm publis demo-1.0.0.tgz", None),
+        ("npm --tag next publ demo-1.0.0.tgz", None),
+        ("bash -c 'npm publ demo-1.0.0.tgz'", None),
+        ("npm run rel", {"package.json": '{"scripts": {"rel": "npm pub demo-1.0.0.tgz"}}'}),
+        ("npm run-s rel", {"package.json": '{"scripts": {"rel": "npm publish demo-1.0.0.tgz"}}'}),
+        ("npm tes", {"package.json": '{"scripts": {"test": "npm publish demo-1.0.0.tgz"}}'}),
+        ("npm vers patch", {"package.json": '{"scripts": {"version": "npm pub demo-1.0.0.tgz"}}'}),
+    ],
+)  # fmt: skip
+def test_npm_abbreviations_are_the_commands_npm_runs(leaky, command, files):
+    _files(leaky, files)
+    assert evaluate(command, leaky).block  # checked for real: a leaky package blocks
+
+
+def test_an_npm_abbreviation_the_reader_does_not_follow_is_seen_by_the_backstop(tmp_path):
+    from agentprint.commands import scan_hits
+
+    assert scan_hits("npm --loglevel warn pub") == [(Action.publish, "npm")]
+    code = 'python3 -c \'import subprocess; subprocess.run(["npm", "publ"])\''
+    [risky] = detect(code, tmp_path)
+    assert risky.unsure and risky.tool == "npm"
+
+
+@pytest.mark.parametrize("command", ["npm p", "npm ci && flutter pub get", "npm i pug"])
+def test_words_that_only_look_like_an_npm_abbreviation_are_not_a_publish(tmp_path, command):
+    assert detect(command, tmp_path) == []
+
+
+# ---- reader round 4: a function called again is read again ----------------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "publish() { npm publish $FLAGS demo-1.0.0.tgz; }; "
+        "FLAGS=--dry-run; publish; FLAGS=; publish",
+        "pub() { npm publish $F demo-1.0.0.tgz; }; F=--dry-run; pub && F= && pub",
+        "run() { npm $V demo-1.0.0.tgz; }; V=pack; run; V=publish; run",
+        "rel() { npm publish ${DRY:+--dry-run} demo-1.0.0.tgz; }; DRY=1; rel; unset DRY; rel",
+        "run() { sh r.sh; }; echo 'npm test' > r.sh; run; "
+        "echo 'npm publish demo-1.0.0.tgz' > r.sh; run",
+        "f() { :; }; g() { f; }; g; f() { npm publish demo-1.0.0.tgz; }; g",
+    ],
+)  # fmt: skip
+def test_a_function_called_again_in_a_new_state_is_read_again(leaky, command):
+    assert evaluate(command, leaky).block
+
+
+def test_a_function_called_again_sets_its_variables_again(tmp_path):
+    _files(tmp_path, {"pkg/package.json": '{"name": "demo", "version": "1.0.0"}'})
+    command = "pick() { D=pkg; }; pick; D=.; pick; cd $D && npm publish"
+    [risky] = detect(command, tmp_path)
+    assert risky.cwd == tmp_path / "pkg" and not risky.unsure
+
+
+def test_a_call_past_the_budget_is_could_not_check(tmp_path, monkeypatch):
+    from agentprint import commands
+
+    monkeypatch.setattr(commands, "MAX_CALLS", 2)
+    command = "rel() { npm publish $F demo-1.0.0.tgz; }; F=--dry-run; rel; F=-q; rel; F=; rel"
+    assert any(r.unsure and r.label == "npm publish" for r in detect(command, tmp_path))
+    command = "set_cmd() { CMD='npm publish'; }; a() { :; }; a; a 1; set_cmd; $CMD"
+    assert any(r.unsure for r in detect(command, tmp_path))
+
+
+# ---- reader round 4: a script run again is read again when what it reads changed -------------
+
+REWRITES = [
+    "echo 'npm test' > r.sh; sh r.sh; echo 'npm publish demo-1.0.0.tgz' > r.sh; sh r.sh",
+    "echo 'npm test' > r.sh; sh r.sh; echo 'npm publish demo-1.0.0.tgz' >> r.sh; sh r.sh",
+    "cat > r.sh <<'EOF'\nnpm test\nEOF\nsh r.sh\n"
+    "cat > r.sh <<'EOF'\nnpm publish demo-1.0.0.tgz\nEOF\nsh r.sh",
+    "f() { echo hi; }; export -f f; echo f > r.sh; bash r.sh; "
+    "f() { npm publish demo-1.0.0.tgz; }; export -f f; bash r.sh",
+    "printf 'x:\\n\\techo hi\\n' > mk; make -f mk x; "
+    "printf 'x:\\n\\tnpm publish demo-1.0.0.tgz\\n' > mk; make -f mk x",
+]
+
+
+@pytest.mark.parametrize("command", REWRITES)
+def test_a_script_run_again_after_it_changed_is_read_again(leaky, command):
+    assert evaluate(command, leaky).block
+
+
+def test_a_script_run_again_with_other_inherited_text_is_read_again(leaky):
+    command = 'export CMD="$(git config x) test"; ./run.sh; '
+    command += 'export CMD="$(git config x) publish"; ./run.sh'
+    assert _blocks(command, leaky, {"run.sh": "#!/bin/sh\n$CMD\n"})
+
+
+# ---- reader round 4: an argument known only at run time stays unknown ------------------------
+
+TOOL = (
+    "#!/bin/bash\ncmd_build() { echo b; }\ncmd_release() { npm publish demo-1.0.0.tgz; }\n"
+    '"cmd_$1" "$@"\n'
+)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "for t in build release; do ./tool.sh $t; done",
+        'MODE=release; [ -n "$DRY" ] && MODE=build; ./tool.sh "$MODE"',
+        './tool.sh "$X"',
+        "bash tool.sh $(git config x)",
+        'f() { "cmd_$1"; }; cmd_release() { npm publish demo-1.0.0.tgz; }; f "$X"',
+        'cmd_release() { npm publish demo-1.0.0.tgz; }; "cmd_$1" "$@"',  # the agent's own "$1"
+    ],
+)
+def test_an_argument_known_only_at_run_time_stays_unknown_inside(leaky, command):
+    assert _blocks(command, leaky, {"tool.sh": TOOL})
+
+
+def test_a_known_argument_still_picks_one_function(leaky):
+    _files(leaky, {"tool.sh": TOOL})
+    assert evaluate("./tool.sh build", leaky) is None
+    assert evaluate("./tool.sh release", leaky).block
+
+
+# ---- reader round 4: allexport spellings, ${X:=word}, a shell fed an unknown variable --------
+
+RUN = {"run.sh": "#!/bin/sh\n$CMD\n"}
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "set -ae; CMD='npm publish demo-1.0.0.tgz'; ./run.sh",
+        "set -ea; CMD='npm publish demo-1.0.0.tgz'; sh run.sh",
+        "set -euo allexport; CMD='npm publish demo-1.0.0.tgz'; ./run.sh",
+    ],
+)
+def test_allexport_in_any_spelling_reaches_the_script(leaky, command):
+    _files(leaky, RUN)
+    assert evaluate(command, leaky).block
+
+
+def _backstop_only(text, cwd):
+    """What the backstop alone finds in `text`: nothing marked by the reader."""
+    from agentprint import commands, shell
+
+    nodes = shell.parse(shell.lex(text).tokens)
+    return [(r.action, r.tool) for r in commands._backstop(commands._Text(text, nodes, cwd))]
+
+
+def test_set_o_takes_its_option_name_not_a_positional_parameter(tmp_path):
+    text = "set -ea; CMD='npm publish x'; ./run.sh"
+    assert _backstop_only(text, tmp_path) == [(Action.publish, "npm")]
+    assert detect('set -euo pipefail; "cmd_$1"', tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ': "${CMD:=npm publish}"; $CMD demo-1.0.0.tgz',
+        ": ${CMD:=npm publish demo-1.0.0.tgz} && $CMD",
+        '[ -n "${CMD:=npm publish demo-1.0.0.tgz}" ] && $CMD',
+        'echo "${CMD:=npm publish demo-1.0.0.tgz}" >/dev/null; $CMD',
+    ],
+)
+def test_a_default_assignment_sets_the_variable(leaky, command):
+    assert _blocks(command, leaky)
+
+
+def test_a_default_assignment_to_a_known_empty_variable_is_checked_for_real(leaky):
+    assert evaluate('CMD=; : "${CMD:=npm publish demo-1.0.0.tgz}"; $CMD', leaky).block
+    assert evaluate(': "${VERSION:=1.0.0}"; echo $VERSION', leaky) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'CMD=\'npm publish demo-1.0.0.tgz\'; [ -n "$CI" ] || CMD=true; bash <<< "$CMD"',
+        "CMD='npm publish demo-1.0.0.tgz'; [ -n \"$CI\" ] || CMD=true; sh <<EOF\n$CMD\nEOF",
+        "CMD='npm publish demo-1.0.0.tgz'; [ -n \"$CI\" ] || CMD=true; bash -s <<EOF\nset -e\n"
+        "$CMD\nEOF",
+        "CMD='npm publish demo-1.0.0.tgz'; [ -n \"$CI\" ] || CMD=true; "
+        'source /dev/stdin <<< "$CMD"',
+    ],
+)
+def test_a_shell_fed_a_variable_known_only_at_run_time_is_could_not_check(leaky, command):
+    assert _blocks(command, leaky)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'CMD=\'npm publish x\'; [ -n "$CI" ] || CMD=true; bash <<< "$CMD"',
+        "CMD='npm publish x'; [ -n \"$CI\" ] || CMD=true; sh <<EOF\n$CMD\nEOF",
+    ],
+)
+def test_the_backstop_counts_a_variable_a_shell_reads_from_its_input(tmp_path, text):
+    assert _backstop_only(text, tmp_path) == [(Action.publish, "npm")]
+    quiet = 'MSG=\'hi\'; [ -n "$CI" ] || MSG=x; bash <<< "echo $MSG"'
+    assert detect(quiet, tmp_path) == [] and _backstop_only(quiet, tmp_path) == []
+
+
+# ---- reader round 4: a script path from the shell's own folder -------------------------------
+
+SCRIPTS = {
+    "scripts/release.sh": "#!/bin/sh\nnpm publish demo-1.0.0.tgz\n",
+    "scripts/up.sh": "#!/bin/sh\nnpm publish ../demo-1.0.0.tgz\n",
+}
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'bash "$PWD/scripts/release.sh"',
+        'bash "$(pwd)/scripts/release.sh"',
+        'source "$PWD/scripts/release.sh"',
+        'cd scripts && bash "$PWD/up.sh"',
+        'cd scripts; cd ..; cd "$OLDPWD" && sh ./up.sh',
+        "echo 'npm publish demo-1.0.0.tgz' > r.sh; sh \"$PWD/r.sh\"",
+        '"$(git rev-parse --show-toplevel)/scripts/release.sh"',
+        'ROOT=$(git rev-parse --show-toplevel); "$ROOT/scripts/release.sh"',
+    ],
+)
+def test_a_script_path_from_the_shells_own_folder_is_followed(leaky, command):
+    subprocess.run(["git", "init", "-q", str(leaky)], check=True)
+    _files(leaky, SCRIPTS)
+    assert evaluate(command, leaky).block  # followed and checked for real
+
+
+def test_a_computed_path_that_looks_like_a_release_is_could_not_check(tmp_path):
+    [risky] = detect('bash "$X/scripts/release.sh"', tmp_path)
+    assert risky.unsure and risky.label == "$X/scripts/release.sh"
+    assert detect('source "$HOME/.nvm/nvm.sh"; bash "$X/build.sh"', tmp_path) == []

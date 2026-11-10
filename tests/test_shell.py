@@ -64,6 +64,26 @@ def test_only_a_newline_ends_a_comment():
         assert heredocs(text) == []
 
 
+@pytest.mark.parametrize(
+    ("text", "regex"),
+    [
+        ("[[ x =~ ^(#|$) ]] || npm publish x", "^(#|$)"),
+        ("[[ $l =~ ^(a b)$ ]] && npm publish x", "^(a b)$"),
+        ("[[ x =~ (a|b) ]]&& npm publish x", "(a|b)"),
+    ],
+)
+def test_the_regex_after_a_match_operator_is_one_word(tmp_path, text, regex):
+    """bash keeps `(`, `|` and what is inside the parentheses (`#`, blanks) in the regex: a `#`
+    there is no comment, so the command after the test is still read."""
+    assert regex in words(text)
+    assert [(r.action, r.tool) for r in detect(text, tmp_path)] == [(Action.publish, "npm")]
+
+
+def test_a_regex_in_a_loop_that_reads_a_file_hides_nothing_after_it(tmp_path):
+    text = "while read -r l; do [[ $l =~ ^(#|$) ]] && continue; done < .env; npm publish x"
+    assert [(r.action, r.tool) for r in detect(text, tmp_path)] == [(Action.publish, "npm")]
+
+
 # ---- here-documents ---------------------------------------------------------------------------
 
 

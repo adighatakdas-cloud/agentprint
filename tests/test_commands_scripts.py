@@ -678,11 +678,17 @@ def test_an_unreadable_script_is_could_not_check_only_when_it_looks_like_a_relea
 @pytest.mark.parametrize(
     "command",
     ["./missing.sh", "bash missing.sh", "make", "just", "task", "python missing.py",
-     '"$DIR"/release.sh', "bash $SCRIPT", "bash", "./"],
+     '"$DIR"/build.sh', "bash $SCRIPT", "bash", "./"],
 )  # fmt: skip
 def test_nothing_to_read_is_not_a_publish(tmp_path, command):
     write(tmp_path, "release.sh", "npm publish\n", 0o755)
     assert detect(command, tmp_path) == []
+
+
+def test_a_release_script_through_a_path_known_only_at_run_time_is_could_not_check(tmp_path):
+    write(tmp_path, "release.sh", "npm publish\n", 0o755)
+    [risky] = detect('"$DIR"/release.sh', tmp_path)  # what is there is only known then
+    assert risky.unsure
 
 
 @pytest.mark.parametrize(
