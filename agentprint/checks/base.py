@@ -33,10 +33,11 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
 
 def safe_snippet(text: str, limit: int = 120) -> str:
     """Text taken from a scanned file, made safe to show: secrets redacted (every copy of a
-    hidden one too, with all the text it was hidden in), control and ANSI characters removed,
-    whitespace collapsed, length capped."""
+    hidden one too, with all the text it was hidden in, and a key start glued to other text),
+    control and ANSI characters removed, whitespace collapsed, length capped."""
     spans: list[SecretMatch] = []
     found = [*find_secrets(text, placeholders=True), *hidden_spans(text)]  # placeholders too
+    found += secrets.glued_spans(text)  # after the others: on a tie, their stub is kept
     found.sort(key=lambda m: m.start)
     for match in found:  # in text order; a hidden one may overlap a plain one
         if spans and match.start < spans[-1].end:
