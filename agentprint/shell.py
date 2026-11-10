@@ -69,6 +69,7 @@ class Word:
     consumed: set | None = None  # (action, tool) the reader checked through this word
     delegated: bool = False  # its text was read again elsewhere (bash -c, eval, a stdin...)
     flagged: bool = False  # already reported as "could not check"
+    filled: set | None = None  # what the reader filled it in as (None in it: not known then)
     _value: str | None = None
 
     @property

@@ -196,16 +196,22 @@ def _looks_like_release(*texts: str) -> bool:
 # ---- reading files --------------------------------------------------------------------------
 
 
-def _read(arg: str, cwd: Path) -> _File | None:
+def _read(arg: str, cwd: Path, run: bool = True) -> _File | None:
     """A file the command runs, read when it is inside the folder the agent's command runs in.
+
+    A file the command line wrote earlier is read as written, wherever it is, and even when its
+    name is only known at run time (`T=$(mktemp); cat > "$T"`; `bash "$T"`). `run`: it is read
+    as commands (not `cat`), so what was written is counted as read there.
 
     None when it is missing, not a regular file, outside that folder (symlinks resolved), named
     through a variable, or not text (a compiled program): none of those are followed."""
-    if not arg or c._UNKNOWABLE.search(arg):
+    if not arg:
         return None
     reading = _reading(cwd)
     if reading.virtual and (virtual := _virtual_path(arg, cwd)) in reading.virtual:
-        return _virtual_file(reading, virtual)  # written earlier by this same command line
+        return _virtual_file(reading, virtual, arg, run)  # written earlier by this command line
+    if c._UNKNOWABLE.search(arg):
+        return None
     try:
         real = (cwd / os.path.expanduser(arg)).resolve(strict=True)
     except (OSError, RuntimeError):
@@ -218,26 +224,48 @@ def _read(arg: str, cwd: Path) -> _File | None:
 
 
 def _virtual_path(arg: str, cwd: Path) -> Path:
-    return Path(os.path.normpath(_real(cwd) / os.path.expanduser(arg)))
+    """Where a file written or read by the command line is: symlinks in the folders that exist
+    resolved (each folder once per command line), so `$PWD/r.sh` and `r.sh` are the same file."""
+    joined = os.path.join(cwd, os.path.expanduser(arg))
+    head, tail = os.path.split(joined)
+    if tail in {"", ".", ".."}:
+        return Path(os.path.realpath(joined))
+    reading = _READING.get()
+    folders = reading.parsed if reading is not None else {}
+    key = ("folder", head)
+    real = folders.get(key)
+    if real is None:
+        real = folders[key] = os.path.realpath(head)
+    return Path(str(real)) / tail
 
 
-def _virtual_file(reading: _Reading, path: Path) -> _File | None:
+def _virtual_file(reading: _Reading, path: Path, arg: str, run: bool) -> _File | None:
     value = reading.virtual[path]
-    for origin in value.origins:  # what was written is read again: the backstop counts it there
-        origin.delegated = True
-    if reading.root not in path.parents:
-        return None
-    name = path.relative_to(reading.root).as_posix()
+    inside = reading.root == path or reading.root in path.parents
+    name = path.relative_to(reading.root).as_posix() if inside else arg
     if value.text is None:
         return _File(path, name, None, "unreadable")
+    if run:  # what was written is read again as commands: the backstop counts it there
+        for origin in value.origins:
+            origin.delegated = True
     return _File(path, name, value.text)
+
+
+def written(cwd: Path) -> set[str]:
+    """The names of the files the command line wrote in folder `cwd`."""
+    reading = _READING.get()
+    if reading is None or not reading.virtual:
+        return set()
+    here = _real(cwd)
+    return {path.name for path in reading.virtual if path.parent == here}
 
 
 def write_virtual(arg: str, cwd: Path, value, append: bool = False) -> None:
     """A file the command line writes (`cat > x.sh <<EOF`, `echo ... > x`, `tee x`): what a later
-    command in the same line reads or runs from it is this text, not what is on disk now."""
+    command in the same line reads or runs from it is this text, not what is on disk now. A name
+    only known at run time (`"$T"`) is kept as written: a later `bash "$T"` reads the same."""
     reading = _READING.get()
-    if reading is None or not arg or c._UNKNOWABLE.search(arg):
+    if reading is None or not arg or re.search(r"[*?]", arg):
         return
     path = _virtual_path(arg, cwd)
     if append:
@@ -255,8 +283,18 @@ def write_virtual(arg: str, cwd: Path, value, append: bool = False) -> None:
 
 def file_text(arg: str, cwd: Path) -> str | None:
     """A file's text when it is inside the folder and at most 64 KB (`cat file`, `< file`)."""
-    file = _read(arg, cwd)
+    file = _read(arg, cwd, run=False)
     return file.text if file is not None else None
+
+
+def file_origins(arg: str, cwd: Path) -> tuple:
+    """What a file the command line wrote was written from (empty for a file on disk): a
+    command that reads it and hands the text on carries them along."""
+    reading = _READING.get()
+    if reading is None or not reading.virtual or not arg:
+        return ()
+    value = reading.virtual.get(_virtual_path(arg, cwd))
+    return value.origins if value is not None else ()
 
 
 def _is_file(path: Path) -> bool:
@@ -938,7 +976,10 @@ def _find_up(start: Path, wanted: tuple[str, ...]) -> Path | None:
             entries = {entry.lower(): entry for entry in sorted(os.listdir(here), reverse=True)}
         except OSError:
             entries = {}
+        made = {entry.lower(): entry for entry in sorted(written(here), reverse=True)}
         for name in wanted:
+            if name in made:  # written by the command line: what it runs now
+                return here / made[name]
             if name in entries and _is_file(here / entries[name]):
                 return here / entries[name]
         if here == root or root not in here.parents:
@@ -1000,8 +1041,11 @@ def _make(args: list[str], cwd: Path, depth: int, stdin: str | None = None) -> l
         try:
             present = set(os.listdir(cwd))
         except OSError:
-            return []
+            present = set()
+        present |= written(cwd)  # a makefile the command line wrote
         files = [name for name in MAKEFILES if name in present][:1]
+        if not files:
+            return []
     loaded = _makefile(cwd, files)
     if not isinstance(loaded, tuple):
         return loaded

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import fnmatch
 import json
 import os
 import re
@@ -620,6 +621,13 @@ def _command(command, where: _Where, ctx: _Ctx, stdin: _Value | None) -> tuple[_
         return _simple(command, where, ctx, stdin)
     if isinstance(command, Function):
         return _define(command, where), _NOTHING
+    if command.redirects:  # `{ echo ...; } > run.sh`: what it prints goes into the file
+        after, out = _compound(command, where, ctx)
+        return after, _writes(command.redirects, where, out, {})
+    return _compound(command, where, ctx)
+
+
+def _compound(command: Compound, where: _Where, ctx: _Ctx) -> tuple[_Where, _Value]:
     kind = command.kind
     if kind == "group":
         return _list(command.bodies[0][0], where, ctx)
@@ -883,7 +891,7 @@ def _simple_read(
         values = {k: v for k, v in after.vars.items() if k not in names}
         values.update({k: v for k, v in where.vars.items() if k in names})
         after = replace(after, vars=values)
-    out = _writes(cmd, child, out, subs)
+    out = _writes(cmd.redirects, child, out, subs)
     _account(cmd, ctx.found[before:], seen, used)
     return after, out
 
@@ -1023,9 +1031,11 @@ def _stdin(cmd: Simple, where: _Where, subs: dict, ctx: _Ctx) -> _Value | None:
             unknown = _unknown_parts(redirect.target.parts, where, subs)
             stdin = _Value(text + "\n", origins, unknown=unknown)
         elif redirect.op == "<" and redirect.target is not None:
-            name = redirect.target.literal
+            args = _expand(redirect.target, where, subs, split=False)
+            name = args[0].text if args else ""
             text = following.file_text(name, where.cwd) if name else None
-            stdin = _Value(text) if text is not None else _UNKNOWN
+            written = following.file_origins(name, where.cwd)
+            stdin = _Value(text, written) if text is not None else _UNKNOWN
     return stdin
 
 
@@ -1083,17 +1093,56 @@ def _expand_text(parts: list[Part], where: _Where, subs: dict) -> str:
 _WRITES = {">", ">>", ">|", "&>", "&>>"}
 
 
-def _writes(cmd: Simple, where: _Where, out: _Value, subs: dict) -> _Value:
+def _writes(redirects: list, where: _Where, out: _Value, subs: dict) -> _Value:
     """`> file`: what the command prints goes into that file (read if the command line runs it
-    later), not down the pipe."""
-    for redirect in cmd.redirects:
+    later), not down the pipe. A name only known at run time (`> "$T"`) is kept as written."""
+    for redirect in redirects:
         if redirect.op not in _WRITES or redirect.fd not in {"", "1"} or redirect.target is None:
             continue
-        name = redirect.target.literal
+        args = _expand(redirect.target, where, subs, split=False)
+        name = args[0].text if args else ""
         if name and name not in {"/dev/null", "/dev/stderr", "/dev/stdout"}:
             following.write_virtual(name, where.cwd, out, append=redirect.op in {">>", "&>>"})
         out = _NOTHING
     return out
+
+
+_STDIN_FILES = {"/dev/stdin", "/dev/fd/0", "-"}
+
+
+def _sink_writes(program: str, args: list[_Arg], stdin: _Value | None, where: _Where) -> None:
+    """Programs that write what they read into a file named in their arguments:
+    `cp /dev/stdin run.sh`, `install /dev/stdin x`, `sort -o run.sh`, `uniq - run.sh`,
+    `dd of=run.sh`, `sponge run.sh`. The file holds that text afterwards."""
+    if stdin is None or not args:
+        return
+    words = _texts(args)
+    plain = [w for w in words if not w.startswith("-") or w == "-"]
+    value, target = stdin, ""
+    if program in {"cp", "install"} and len(plain) == 2 and plain[0] in _STDIN_FILES:
+        target = plain[1]
+    elif program == "sponge" and plain:
+        target = plain[0]
+    elif program == "dd" and not any(w.startswith("if=") for w in words):
+        target = next((w[3:] for w in words if w.startswith("of=")), "")
+    elif program == "sort":
+        for k, word in enumerate(words):
+            if word in {"-o", "--output"} and k + 1 < len(words):
+                target = words[k + 1]
+            elif word.startswith("--output="):
+                target = word.partition("=")[2]
+            elif word.startswith("-o") and len(word) > 2:
+                target = word[2:]
+        ordered = sorted(stdin.text.split("\n")) if stdin.text is not None else None
+        value = _Value("\n".join(ordered) if ordered is not None else None, stdin.origins, True)
+    elif program == "uniq" and len(plain) == 2 and plain[0] in _STDIN_FILES:
+        target = plain[1]
+        if stdin.text is not None:
+            lines = stdin.text.split("\n")
+            kept = [line for k, line in enumerate(lines) if not k or line != lines[k - 1]]
+            value = _Value("\n".join(kept), stdin.origins)
+    if target and target not in _STDIN_FILES and target != "/dev/null":
+        following.write_virtual(target, where.cwd, value)
 
 
 def _assignment(word: Word, where: _Where, subs: dict) -> tuple[str, bool, _Value, Word]:
@@ -1292,7 +1341,9 @@ def _expand(word: Word, where: _Where, subs: dict, split: bool = True) -> list[_
         and _budget(_size(where.args))
     ):
         # "$@": each argument one word, known or not
-        return [_Arg(arg, word, known=not isinstance(arg, Unknown)) for arg in where.args]
+        out = [_Arg(arg, word, known=not isinstance(arg, Unknown)) for arg in where.args]
+        _filled(word, out)
+        return out
     for part in word.parts:
         quoted = quoted or part.quoted
         if part.kind == "lit":
@@ -1344,7 +1395,22 @@ def _expand(word: Word, where: _Where, subs: dict, split: bool = True) -> list[_
             out.append(_Arg(text, word, tuple(origins), known))
     if not split and not out:
         out.append(_Arg("", word, tuple(origins), known))
+    _filled(word, out)
     return out
+
+
+MAX_FILLED_NAMES = 16  # texts remembered per word, for the backstop
+
+
+def _filled(word: Word, args: list[_Arg]) -> None:
+    """Note what a word was filled in as: the backstop matches a file written through a
+    variable (`> "$F"`) with the commands that run it (`bash "$G"`)."""
+    seen = word.filled if word.filled is not None else set()
+    if None not in seen:
+        seen |= {a.text if a.known else None for a in args} if args else {""}
+        if len(seen) > MAX_FILLED_NAMES:
+            seen = {None}
+    word.filled = seen
 
 
 # ---- what one command does -------------------------------------------------------------------
@@ -1453,6 +1519,7 @@ def _segment(
         )
     else:
         out = _prints(program, args[1:], stdin, run)
+        _sink_writes(program, args[1:], stdin, run)
     if not first.known:
         _dispatch(first, where, ctx)
     if len(found) == before and (named := _named_by_variable(words[0], program, rest, cwd)):
@@ -1830,6 +1897,7 @@ def _xargs(
     known (`echo publish | xargs npm`) they are filled in; when it is not, a publishing tool
     whose subcommand would come from it is "could not check"."""
     marker = ""
+    split: str | None = None  # -0 / -d: one word per NUL or delimiter, blanks kept
     i = 0
     while i < len(args) and args[i].text.startswith("-") and args[i].text != "--":
         text = args[i].text
@@ -1837,7 +1905,16 @@ def _xargs(
             marker = args[i + 1].text
             i += 2
             continue
-        if text.startswith("-I") or text.startswith("--replace="):
+        if text in {"-d", "--delimiter"} and i + 1 < len(args):
+            split = shell.ansi_c(args[i + 1].text.replace("'", "\\'"))[:1] or "\n"
+            i += 2
+            continue
+        if text in {"-0", "--null"}:
+            split = "\0"
+        elif text.startswith("--delimiter=") or (text.startswith("-d") and len(text) > 2):
+            value = text.partition("=")[2] if text.startswith("--") else text[2:]
+            split = shell.ansi_c(value.replace("'", "\\'"))[:1] or "\n"
+        elif text.startswith("-I") or text.startswith("--replace="):
             marker = text[2:] if text.startswith("-I") else text.partition("=")[2]
         elif text == "-i" or text.startswith("-i"):
             marker = text[2:] or "{}"
@@ -1853,7 +1930,10 @@ def _xargs(
                 filled = [replace(a, text=a.text.replace(marker, line)) for a in command]
                 _segment(filled, where, ctx, None, cmd, seen)
         else:
-            items = [_Arg(w, None, stdin.origins) for w in stdin.text.split()]
+            pieces = stdin.text.split() if split is None else stdin.text.split(split)
+            if split is not None and pieces and not pieces[-1]:
+                pieces.pop()  # the text ends with the delimiter
+            items = [_Arg(w, None, stdin.origins) for w in pieces]
             _segment(command + items, where, ctx, None, cmd, seen)
         return
     before = len(ctx.found)
@@ -1930,7 +2010,8 @@ def _prints(program: str, args: list[_Arg], stdin: _Value | None, where: _Where)
         texts = [following.file_text(name, where.cwd) for name in files]
         if any(t is None for t in texts) or not all(a.known for a in args):
             return _UNKNOWN
-        return _Value("".join(t or "" for t in texts))
+        written = tuple(o for name in files for o in following.file_origins(name, where.cwd))
+        return _Value("".join(t or "" for t in texts), written)
     if stdin is None:
         return _UNKNOWN
     literal = stdin.text is not None or stdin.built
@@ -2044,9 +2125,24 @@ _QUIET = {":", "true", "false", "test", "[", "[[", "grep", "egrep", "fgrep", "zg
           "exit", "return", "printenv", "cat"}  # fmt: skip
 # Programs that pass what they read on (or swallow it): a here-document fed to them is data.
 _SINKS = _QUIET | {"tee", "base64", "pbcopy", "wl-copy", "xclip", "gzip", "fold", "fmt", "nl",
-                   "sort",
+                   "sort", "dd", "sponge", "install",
                    "column", "md5sum", "sha256sum", "shasum", "envsubst", "tac",
                    "paste"}  # fmt: skip
+# Sinks that may write what they read into a file named in their words (`tee x`, `sort -o x`,
+# `cp /dev/stdin x`, `uniq - x`, `dd of=x`, `base64 -o x`).
+_FILE_WRITERS = {"tee", "cp", "install", "sort", "uniq", "dd", "sponge", "base64", "gzip"}
+_CLIPBOARD = {"pbcopy", "wl-copy", "xclip", "xsel"}
+# Programs that never run a file they are given or that the command line wrote (a written
+# file is "run" only by a shell, an interpreter, `source`, `./x`, make/just/npm for their own
+# files, an unknown program, or a program named through a variable).
+_NEVER_RUN = _SINKS | {"echo", "printf", "git", "gh", "cd", "pushd", "popd", "set", "shopt",
+                       "alias", "unalias", "umask", "unset", "export", "local", "declare",
+                       "typeset", "readonly", "read", "shift", "getopts", "hash", "kill",
+                       "jobs", "sed", "awk", "gawk", "curl", "wget", "tar", "zip", "unzip",
+                       "open", "mktemp", "realpath", "readlink", "rg", "mapfile",
+                       "readarray"}  # fmt: skip
+_SCRIPT_EXTS = {"sh", "bash", "zsh", "ksh", "fish", "py", "js", "mjs", "cjs", "ts", "mts", "cts",
+                "rb", "pl", "php", "command", "tool"}  # fmt: skip
 _WRAPS = {"sudo", "doas", "env", "command", "builtin", "nohup", "time", "exec", "nice", "stdbuf",
           "chronic", "unbuffer", "caffeinate", "ionice", "timeout", "gtimeout"}  # fmt: skip
 _MESSAGE = {"-m", "--message", "-F", "--file", "--body", "-b", "--title", "-t", "--notes", "-n",
@@ -2061,9 +2157,11 @@ class _Unit:
     simple: Simple | None = None
     doc: Heredoc | None = None
     needs: str = ""  # a variable that must be live for this text to matter ("" = always)
-    file: str = ""  # a file the text is written to: matters if the command line names it later
-    at: int = 0
+    file: tuple[str, ...] = ()  # files the text is written to ("?": a name known only then)
+    at: int = 0  # how many commands came before: a written file matters if a later one runs it
     assigns: frozenset[int] = frozenset()  # words that are VAR=value assignments
+    refs: tuple[str, ...] = ()  # variables the written text uses: live once the file runs
+    escapes: bool = False  # printed by echo/printf: `\n` there may be a line break
 
     def shapes(self) -> list[tuple[Action, str]]:
         return [(a, t) for a, t, _, _ in _shapes(self._tokens())]
@@ -2071,6 +2169,12 @@ class _Unit:
     def _tokens(self) -> list[_Tok]:
         if self.doc is not None and not self.words:
             return _raw_tokens(self.doc.body, self.doc)
+        if self.escapes:  # printf 'x\nnpm publish' > run.sh
+            tokens: list[_Tok] = []
+            for word in self.words:
+                text, literal = _render(word)
+                _split_into(shell.ansi_c(text.replace("'", "\\'")), word, literal, tokens)
+            return tokens
         return _view(self.words, self.assigns)
 
     def unaccounted(self) -> list[tuple[Action, str]]:
@@ -2091,6 +2195,9 @@ class _Unit:
         return out
 
 
+_Dest = object  # where text goes: True (nowhere that runs it), False, a variable, or _Files
+
+
 class _Scan:
     """Sort a parsed text into what can run (scanned) and what provably can't (left out)."""
 
@@ -2099,40 +2206,62 @@ class _Scan:
         self.refs: set[str] = set()
         self.exported: set[str] = set()
         self.indirect = False
-        self.seen: list[Word] = []  # every word, in order: is a written file named later?
+        # What each command may run, in order: (position, -1 inside a function body).
+        self.runs: list[tuple[int, object]] = []
+        self.loop: int | None = None  # where the outermost loop around this point starts
+        self.functions = 0  # inside a function body (it may run after anything)
+        self.index: _RunIndex | None = None  # built once the walk is done
+
+    def at(self) -> int:
+        """The position of text written here: inside a loop, the loop's start (a later pass
+        may run it)."""
+        return self.loop if self.loop is not None else len(self.runs)
+
+    def runs_file(self, unit: _Unit) -> bool:
+        """Can a command at or after the write run the file the text was written to?"""
+        if self.index is None:
+            self.index = _RunIndex(self.runs)
+        return self.index.runs(unit.file, unit.at)
 
     def live_names(self) -> set[str] | None:
         """Variables something may run, or None when that can't be told (all of them)."""
         if self.indirect:
             return None
-        return self.refs | self.exported
+        live = self.refs | self.exported
+        for unit in self.units:
+            if unit.refs and unit.file and self.runs_file(unit):
+                live = live | set(unit.refs)
+        return live
 
     def wanted(self, unit: _Unit, live: set[str] | None, all_live: bool) -> bool:
-        if unit.needs and not all_live and live is not None and unit.needs not in live:
-            return False
         if unit.file:
-            base = unit.file.rsplit("/", 1)[-1]
-            return any(base in word.value for word in self.seen[unit.at :])
-        return True
+            if self.runs_file(unit):
+                return True
+            if not unit.needs:
+                return False  # written to a file nothing runs: data
+        return not unit.needs or all_live or live is None or unit.needs in live
 
     # -- walking --
 
-    def nodes(self, nodes: list[AndOr], quiet: bool | str) -> None:
+    def nodes(self, nodes: list[AndOr], quiet: _Dest) -> None:
         for item in nodes:
             for pipeline in item.pipelines:
                 self.pipeline(pipeline, quiet)
 
-    def pipeline(self, pipeline: Pipeline, quiet: bool | str) -> None:
+    def pipeline(self, pipeline: Pipeline, quiet: _Dest) -> None:
         commands = pipeline.commands
-        dests: list[bool | str] = [quiet] * len(commands)
+        dests: list[_Dest] = [quiet] * len(commands)
         for i in range(len(commands) - 2, -1, -1):  # what each part prints goes to the next
             nxt = commands[i + 1]
             program = _static_program(nxt.words)[1] if isinstance(nxt, Simple) else None
-            dests[i] = dests[i + 1] if program in _SINKS else False
+            if program in _SINKS and isinstance(nxt, Simple):  # `| tee x`, `| sort > x`
+                dests[i] = _out(nxt.redirects, program, nxt.words, dests[i + 1])
+            else:
+                dests[i] = False
         for command, dest in zip(commands, dests, strict=True):
             self.command(command, dest)
 
-    def command(self, command, dest: bool | str) -> None:
+    def command(self, command, dest: _Dest) -> None:
         if isinstance(command, Simple):
             self.simple(command, dest)
         elif isinstance(command, Function):
@@ -2141,17 +2270,31 @@ class _Scan:
             closed = not isinstance(body, Compound) or body.closed
             if isinstance(record, _Func) and not record.reached and closed:
                 return  # a function nobody calls: its body never runs
-            self.command(command.body, dest)
+            self.functions += 1
+            try:
+                self.command(command.body, dest)
+            finally:
+                self.functions -= 1
         elif isinstance(command, Compound):
-            if command.kind in {"for", "select"} and command.head:
-                name = command.head[0].literal or ""
-                self._words(command.head[1:], dest, needs=name)
-            elif command.kind == "case" and command.head:
-                self._subs(command.head[0], False)
-            for body, _ in command.bodies:
-                self.nodes(body, dest)
-            for redirect in command.redirects:
-                self.redirect(redirect, None, None, dest)
+            loop = self.loop
+            if command.kind in {"for", "select", "while", "until"} and loop is None:
+                self.loop = len(self.runs)
+            try:
+                self._compound(command, dest)
+            finally:
+                self.loop = loop
+
+    def _compound(self, command: Compound, dest) -> None:
+        if command.kind in {"for", "select"} and command.head:
+            name = command.head[0].literal or ""
+            self._words(command.head[1:], dest, needs=name)
+        elif command.kind == "case" and command.head:
+            self._subs(command.head[0], False)
+        inner = _out(command.redirects, None, [], dest)  # `{ echo ...; } > run.sh`
+        for body, _ in command.bodies:
+            self.nodes(body, inner)
+        for redirect in command.redirects:
+            self.redirect(redirect, None, None, dest)
 
     def _words(self, words: list[Word], dest, needs: str = "", simple=None) -> None:
         if words:
@@ -2173,14 +2316,16 @@ class _Scan:
                     if isinstance(token, Word):
                         self._refs(token)
 
-    def _subs(self, word: Word, quiet: bool | str) -> None:
+    def _subs(self, word: Word, quiet: _Dest) -> None:
         for part in word.parts:
             if part.kind in {"sub", "array"} and part.tokens is not None:
                 self.nodes(shell.nodes_of(part), quiet if part.kind == "sub" else False)
 
-    def simple(self, cmd: Simple, dest: bool | str) -> None:
+    def simple(self, cmd: Simple, dest) -> None:
         words = cmd.words
-        self.seen.extend(words)
+        runs = _may_run_of(cmd)
+        if runs is not None:
+            self.runs.append((-1 if self.functions else len(self.runs), runs))
         if not cmd.redirects and words and words[0].value not in _SCAN_SPECIAL:
             for word in words:  # plain text naming no tool: nothing to find, nothing it sets
                 if len(word.parts) != 1 or word.parts[0].kind != "lit":
@@ -2192,13 +2337,16 @@ class _Scan:
         index, program = _static_program(rest)
         args = rest[index + 1 :] if program is not None else []
         quiet_words: set[int] = set()
+        done: set[int] = set()  # words whose substitutions are scanned already
         sets = bool(args) and args[0].literal == "-v"  # printf -v NAME: a variable, not output
-        if program in {"echo", "printf"} and dest is True and not sets:
+        out = _out(cmd.redirects, program, words, dest) if program in {"echo", "printf"} else dest
+        if program in {"echo", "printf"} and out is True and not sets:
             quiet_words = {id(w) for w in args}
-        elif program in {"echo", "printf"} and isinstance(dest, str) and dest and not sets:
-            for word in args:
-                self.units.append(_Unit([word], cmd, needs=dest))
-                self._subs(word, dest)
+        elif program in {"echo", "printf"} and out is not False and not sets:
+            for word in args:  # into a variable (`X=$(echo ...)`) or a file (`echo ... > x`)
+                self.units.append(replace(self._printed([word], cmd, None, out), escapes=True))
+                self._subs(word, out)
+                done.add(id(word))
             quiet_words = {id(w) for w in args}
         elif program in _QUIET or (
             program == "rg" and not any((w.literal or "").startswith("--pre") for w in args)
@@ -2239,7 +2387,8 @@ class _Scan:
                 self._subs(word, name.group(1))
         for word in rest:
             if id(word) in quiet_words:
-                self._subs(word, True)
+                if id(word) not in done:
+                    self._subs(word, True)
                 continue
             live.append(word)
             self._refs(word)
@@ -2259,6 +2408,18 @@ class _Scan:
         for redirect in cmd.redirects:
             self.redirect(redirect, cmd, program, dest)
 
+    def _printed(self, words: list[Word], cmd, doc, out) -> _Unit:
+        """Text printed into a variable (`out` its name) or into files (`_Files`)."""
+        if isinstance(out, _Files):
+            needs = out.rest if isinstance(out.rest, str) else ""
+            refs = [n for w in words for n in _names(w)]
+            if doc is not None and not doc.quoted:
+                refs += [n for p in shell.body_parts(doc) if p.kind == "var" for n in
+                         _names(Word([p]))]  # fmt: skip
+            return _Unit(list(words), cmd, doc=doc, needs=needs, file=out.names, at=self.at(),
+                         refs=tuple(refs))  # fmt: skip
+        return _Unit(list(words), cmd, doc=doc, needs=out if isinstance(out, str) else "")
+
     def redirect(self, redirect, cmd: Simple | None, program: str | None, dest) -> None:
         target = redirect.target
         if redirect.op in _WRITES and target is not None:
@@ -2268,50 +2429,305 @@ class _Scan:
             if target is not None:
                 self._subs(target, False)
             return
-        file = ""
-        if cmd is not None:
-            for other in cmd.redirects:
-                if other.op in _WRITES and other.target is not None and other.target.literal:
-                    file = other.target.literal
-        if program == "tee" and cmd is not None:
-            names = [
-                w.literal for w in _static_args(cmd.words) if w.literal and w.literal[0] != "-"
-            ]
-            file = names[0] if names else file
-        quiet = (
-            program in _SINKS
-            and (dest is True or file)
-            or (program == "git" and cmd is not None and _reads_message(cmd.words))
-            or (program == "gh" and cmd is not None and _reads_message(cmd.words))
-        )
-        needs = dest if isinstance(dest, str) and program in _SINKS else ""
+        doc = redirect.heredoc
+        if doc is not None and not doc.quoted:  # $(...) in an unquoted body runs, always
+            for part in shell.body_parts(doc):
+                if part.kind == "sub" and part.tokens is not None:
+                    self.nodes(shell.nodes_of(part), False)
+        elif target is not None:
+            self._subs(target, False)
+        words = [] if doc is not None or target is None else [target]
+        if cmd is not None and (program in {"git", "gh"} and _reads_message(cmd.words)):
+            return  # `git commit -F -`: the message
         if program == "read" and cmd is not None:
             names = [
                 w.literal for w in _static_args(cmd.words) if w.literal and w.literal[0] != "-"
             ]
-            needs, quiet = (names[-1] if names else "REPLY"), False
-        if redirect.heredoc is not None:
-            doc = redirect.heredoc
-            if quiet and not file:
-                return
-            if not doc.quoted:
+            self.units.append(_Unit(words, cmd, doc=doc, needs=names[-1] if names else "REPLY"))
+            return
+        out: object = False
+        if program in _SINKS:  # data, unless what it passes on or writes is run
+            out = _out(cmd.redirects if cmd is not None else [], program,
+                       cmd.words if cmd is not None else [], dest)  # fmt: skip
+        if out is True:
+            return
+        if out is False:  # read as commands or code: `sh <<EOF⏎$CMD⏎EOF` runs $CMD
+            if doc is not None and not doc.quoted:
                 for part in shell.body_parts(doc):
-                    if part.kind == "sub" and part.tokens is not None:
-                        self.nodes(shell.nodes_of(part), False)
-                    elif part.kind == "var" and not quiet:  # `sh <<EOF⏎$CMD⏎EOF` runs $CMD
+                    if part.kind == "var":
                         self._refs(Word([part]))
-            unit = _Unit([], cmd, doc=doc, needs=needs, file=file if quiet else "")
-            unit.at = len(self.seen)
-            self.units.append(unit)
-        elif target is not None:
-            self._subs(target, False)
-            if quiet and not file:
-                return
-            if not quiet:  # `bash <<< "$CMD"` runs $CMD
+            elif target is not None:
                 self._refs(target)
-            unit = _Unit([target], cmd, needs=needs, file=file if quiet else "")
-            unit.at = len(self.seen)
-            self.units.append(unit)
+            self.units.append(_Unit(words, cmd, doc=doc))
+            return
+        self.units.append(self._printed(words, cmd, doc, out))
+
+
+@dataclass(frozen=True)
+class _Files:
+    """Output that goes into files (as written; "?" for a name only known at run time), and on
+    to `rest` as well (True: nowhere that runs it; a variable's name)."""
+
+    names: tuple[str, ...]
+    rest: object = True
+
+
+def _out(redirects: list, program: str | None, words: list[Word], onward):
+    """Where a command's output goes: `onward` (the pipe, a variable, nowhere that runs it),
+    or into files, from `> file` and from the file arguments of `tee`, `sort -o`..."""
+    files: list[str] = []
+    passes = True
+    for redirect in redirects:
+        target = redirect.target
+        if target is None:
+            continue
+        if (redirect.op in _WRITES and redirect.fd in {"", "1"}) or redirect.op in {"&>", "&>>"}:
+            if target.literal == "/dev/stdout":
+                continue
+            passes = False
+            if target.literal not in {"/dev/null", "/dev/stderr"}:
+                files += _names_of(target)
+        elif redirect.op == ">&" and redirect.fd in {"", "1"} and target.literal != "1":
+            passes = False  # 1>&2: to the terminal
+    if program in _FILE_WRITERS:
+        files += _file_args(words)
+    elif program in _CLIPBOARD:  # pbcopy: whatever pastes it later may run it
+        files.append("?")
+    rest = onward if passes else True
+    if not files:
+        return rest
+    if rest is False:
+        return False  # it runs anyway
+    return _Files(tuple(dict.fromkeys(files)), rest)
+
+
+def _names_of(word: Word) -> list[str]:
+    """A file name as written, or what the reader filled it in as; "?" when only known then."""
+    if word.literal is not None:
+        return [word.literal]
+    if word.filled and None not in word.filled:
+        return [name for name in word.filled if name]
+    return ["?"]
+
+
+def _file_args(words: list[Word]) -> list[str]:
+    """The files a sink may write, from its words (`tee -a x`, `sort -o x`, `dd of=x`)."""
+    out: list[str] = []
+    for word in _static_args(words):
+        text = word.literal
+        if text is None:
+            out += _names_of(word)
+        elif text in _STDIN_FILES or text in {"/dev/null", "/dev/stdout", "/dev/stderr"}:
+            continue
+        elif text.startswith("-") or ("=" in text and text.partition("=")[0] in {"of", "if"}):
+            value = text.partition("=")[2]
+            if value and not text.startswith("if="):
+                out.append(value)
+        else:
+            out.append(text)
+    return out
+
+
+_ANY = "any file"  # what a command may run when that is only known at run time
+
+
+@dataclass(frozen=True)
+class _Runs:
+    """The files a command may run: `exact` for sure (a script it is given, make's makefile),
+    `maybe` (an unknown program's arguments, if they look like a script), `name` (an unknown
+    program: a written file of that name on the PATH)."""
+
+    exact: frozenset = frozenset()
+    maybe: frozenset = frozenset()
+    name: str = ""
+
+
+def _may_run_of(cmd: Simple):
+    """What files this command may run: None (none), `_ANY`, or `_Runs`."""
+    lead, rest = _leading_assignments(cmd.words)
+    if not rest:
+        return None
+    index, program = _static_program(rest)
+    if program is None:
+        return _ANY if index < len(rest) else None  # `$CMD`, `"$(...)"`: any program at all
+    head, args = rest[index], rest[index + 1 :]
+    text = head.literal or ""
+    if "/" in text:  # ./release.sh, bin/rel: that file
+        return _Runs(frozenset({text}), _maybe(args))
+    if program in SHELLS:
+        return _shell_runs(args, cmd)
+    if program in {"source", "."}:
+        return _operand(args[0]) if args else None
+    if program in {"eval", "trap"}:
+        return _code_runs(args)
+    if program in following.MAKES:
+        files = _option_words(args, {"-f", "--file", "--makefile"})
+        return _Runs(frozenset({"makefile", "gnumakefile", "*.mk", *files}))
+    if program == "just":
+        files = _option_words(args, {"-f", "--justfile"})
+        return _Runs(frozenset({"justfile", ".justfile", "*.just", *files}))
+    if program in following.TASKS:
+        return _Runs(frozenset({*following.TASKFILES, *_option_words(args, {"-t"})}))
+    if program in NODE or program in LAUNCHERS:  # their scripts, from package.json
+        files = [w.literal for w in args if (w.literal or "").endswith(_JS_FILES)]
+        return _Runs(frozenset({"package.json", *files}))
+    if following._interpreter(program):
+        return _interpreter_runs(program, args)
+    if program in {"xargs", "parallel"}:
+        return _ANY if args else None
+    if program == "find":
+        doing = {"-exec", "-execdir", "-ok", "-okdir"}
+        return _ANY if any(w.literal in doing for w in args) else None
+    if program in _NEVER_RUN or program in _DECLARERS:
+        return None
+    return _Runs(frozenset(), _maybe(args), program)  # a program agentprint does not know
+
+
+def _maybe(args: list[Word]) -> frozenset:
+    return frozenset(
+        name for w in args for name in _names_of(w) if name != "?" and not name.startswith("-")
+    )
+
+
+def _operand(word: Word):
+    names = _names_of(word)
+    return _ANY if "?" in names else _Runs(frozenset(names))
+
+
+_CODE_SPLIT = re.compile(r"[\s;&|()<>`'\"]+")
+
+
+def _code_runs(words: list[Word]):
+    """Code read as commands (`eval`, `bash -c`): the words in it may name a written file."""
+    texts: list[str] = []
+    for word in words:
+        names = _names_of(word)
+        if "?" in names:
+            return _ANY
+        texts += names
+    return _Runs(frozenset(t for text in texts for t in _CODE_SPLIT.split(text) if t))
+
+
+def _shell_runs(args: list[Word], cmd: Simple):
+    i = 0
+    while i < len(args):
+        text = args[i].literal
+        if text is None:
+            return _operand(args[i])
+        if text in following._SHELL_VALUES:
+            i += 2
+            continue
+        if text.startswith(("-", "+")) and text != "-":
+            if text.startswith("-") and not text.startswith("--") and "c" in text[1:]:
+                return _code_runs(args[i + 1 : i + 2])
+            if text.startswith("-") and not text.startswith("--") and "s" in text[1:]:
+                break  # commands from stdin
+            i += 1
+            continue
+        if text == "-":
+            break
+        return _operand(args[i])
+    for redirect in cmd.redirects:  # `bash <<EOF` / `bash <<< "..."`: that text
+        if redirect.heredoc is not None and redirect.heredoc.quoted:
+            return _Runs(frozenset(t for t in _CODE_SPLIT.split(redirect.heredoc.body) if t))
+        if redirect.op == "<<<" and redirect.target is not None:
+            return _code_runs([redirect.target])
+    return _ANY
+
+
+def _interpreter_runs(program: str, args: list[Word]):
+    texts = [w.literal if w.literal is not None else "$" for w in args]
+    kind, i = following.interpreter_input(program, texts)
+    if i is None or i >= len(args):
+        return _ANY if kind == "stdin" else None
+    if kind == "code":
+        return _code_runs([args[i]])
+    if kind == "module":
+        module = texts[i]
+        tail = module.rsplit(".", 1)[-1]
+        return _Runs(frozenset({module + ".py", tail + ".py", "__main__.py"}))
+    if kind == "file":
+        return _operand(args[i])
+    return _ANY
+
+
+def _option_words(args: list[Word], options: set[str]) -> list[str]:
+    out = []
+    for k, word in enumerate(args):
+        text = word.literal or ""
+        name, eq, value = text.partition("=")
+        if name in options and eq:
+            out.append(value)
+        elif text in options and k + 1 < len(args):
+            out += _names_of(args[k + 1])
+    return out
+
+
+MAX_PATTERNS = 64  # glob patterns compared one by one; past it, any such command runs any file
+
+
+class _RunIndex:
+    """What the commands of a text may run, by file name: the last position each name (or any
+    file at all) may be run at, so each written file is looked up once, not against each
+    command. A command inside a function body counts after every write."""
+
+    def __init__(self, runs: list[tuple[int, object]]) -> None:
+        never = -1
+        self.any = never  # the last command that may run any file
+        self.some = never  # the last command that runs a file it names (a "?" write may be it)
+        self.exact: dict[str, int] = {}
+        self.path: dict[str, int] = {}  # unknown programs: a written file of that name
+        self.maybe: dict[str, int] = {}
+        self.patterns: list[tuple[int, str, bool]] = []
+        for where, what in runs:
+            at = 1 << 62 if where < 0 else where
+            if what == _ANY:
+                self.any = max(self.any, at)
+                continue
+            assert isinstance(what, _Runs)
+            if what.exact:
+                self.some = max(self.some, at)
+            if what.name:
+                self._note(self.path, what.name, at, False)
+            for name in what.exact:
+                self._note(self.exact, name, at, False)
+            for name in what.maybe:
+                self._note(self.maybe, name, at, True)
+        if len(self.patterns) > MAX_PATTERNS:
+            self.any = max([self.any, *(at for at, _, _ in self.patterns)])
+            self.patterns = []
+
+    def _note(self, names: dict[str, int], name: str, at: int, maybe: bool) -> None:
+        base = name.rstrip("/").rsplit("/", 1)[-1].lower()
+        if "*" in base or "?" in base or "[" in base:
+            self.patterns.append((at, base, maybe))
+        else:
+            names[base] = max(names.get(base, -1), at)
+
+    def runs(self, files: tuple[str, ...], at: int) -> bool:
+        if self.any >= at:
+            return True
+        for name in files:
+            if name == "?":  # written to a name only known at run time: maybe a file run later
+                if self.some >= at:
+                    return True
+                continue
+            base = name.rstrip("/").rsplit("/", 1)[-1].lower()
+            scripty = _scripty(base)
+            if self.exact.get(base, -1) >= at or self.path.get(base, -1) >= at:
+                return True
+            if scripty and self.maybe.get(base, -1) >= at:
+                return True
+            for where, pattern, maybe in self.patterns:
+                if where >= at and (scripty or not maybe) and fnmatch.fnmatchcase(base, pattern):
+                    return True
+        return False
+
+
+def _scripty(base: str) -> bool:
+    """A file name a program could run as a script: a script extension, or none at all."""
+    stem = base.lstrip(".")
+    return "." not in stem or stem.rsplit(".", 1)[-1] in _SCRIPT_EXTS
 
 
 def _sets_allexport(text: str) -> bool:
@@ -2870,8 +3286,14 @@ def _scripts(cwd: Path) -> dict[str, str]:
     key = ("scripts", cwd, reading.writes if reading is not None else 0)
     if reading is not None and key in reading.parsed:
         return reading.parsed[key]  # type: ignore[return-value]
+    written = None
+    if reading is not None and "package.json" in following.written(cwd):
+        written = following._read("package.json", cwd)  # the scripts run: read as commands
     try:
-        data = json.loads((cwd / "package.json").read_text(encoding="utf-8"))
+        if written is not None:
+            data = json.loads(written.text) if written.text is not None else {}
+        else:
+            data = json.loads((cwd / "package.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         data = {}
     scripts = data.get("scripts") if isinstance(data, dict) else None
