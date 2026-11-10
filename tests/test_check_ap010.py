@@ -449,7 +449,9 @@ def test_agentprints_own_docs_are_clean():
         path
         for folder in ("docs", "site/src/content/docs", "plugins")
         for path in (ROOT / folder).rglob("*")
-        if path.is_file() and "private" not in path.parts and path.suffix not in ap010._NOT_TEXT
+        if path.is_file()
+        and "private" not in path.relative_to(ROOT).parts  # docs/private; not /private/tmp
+        and path.suffix not in ap010._NOT_TEXT
     ]
     files += [ROOT / name for name in ("README.md", "CONTRIBUTING.md", "SECURITY.md")]
     assert len(files) > 40
