@@ -153,31 +153,84 @@ def _native_allows() -> str:
     return "\n".join(arms)
 
 
+COULD_NOT_START = "agentprint could not start, so it could not check this command."
+
+
+def _printf(text: str) -> str:
+    """`text` as a printf format that prints it as is."""
+    return text.replace("\\", "\\\\").replace("%", "%%")
+
+
+def _native_blocks() -> tuple[str, str]:
+    """For strict mode when agentprint can't start: the block reason (plain, and as it reads
+    inside a JSON string) as sh assignments, and `case` arms giving each agent its own "block"
+    answer with it: JSON on stdout (exit 0) where the agent reads that, else the reason on
+    stderr and exit 2. Built from the agent modules' own replies at install time."""
+    from .guard import strict_block
+
+    verdict = strict_block(COULD_NOT_START)
+    reason = verdict.reason.strip()
+    escaped = json.dumps(reason)[1:-1]
+    values = f"reason={shlex.quote(reason)}\n  escaped={shlex.quote(escaped)}"
+    arms = []
+    for name, integration in ALL_INTEGRATIONS.items():
+        reply = integration.reply(verdict)
+        out = reply.stdout.strip()
+        if out and reply.exit_code == 0 and _printf(escaped) in _printf(out):
+            form = _printf(out).replace(_printf(escaped), "%s") + "\\n"
+            arms.append(f'  {name}) printf {shlex.quote(form)} "$escaped"; exit 0 ;;')
+        elif out and reply.exit_code == 0:
+            arms.append(f"  {name}) printf '%s\\n' {shlex.quote(out)}; exit 0 ;;")
+        else:
+            arms.append(f"  {name}) printf '%s\\n' \"$reason\" >&2; exit 2 ;;")
+    return values, "\n".join(arms)
+
+
 def launcher_script(agentprint: list[str]) -> str:
     command = " ".join(shlex.quote(part) for part in agentprint)
+    values, arms = _native_blocks()
     return f"""#!/bin/sh
 # {HOOK_MARK}: Written by `agentprint install`; `agentprint uninstall` deletes it.
 # Every agent hook agentprint installs runs this script. It starts agentprint's check before a
 # package publish or git push, and makes sure a missing or broken agentprint can never block
-# your agent: any failure lets the command through (exit 0, the agent's own "allow").
+# your agent: any failure lets the command through (exit 0, the agent's own "allow"), unless
+# the hook passes --strict or AGENTPRINT_STRICT=1 is set: then a failure blocks the command.
 agent=""
 previous=""
+strict=0
 for arg in "$@"; do
   [ "$previous" = "--agent" ] && agent="$arg"
+  [ "$arg" = "--strict" ] && strict=1
   previous="$arg"
 done
+case "${{AGENTPRINT_STRICT:-}}" in
+  {_STRICT_ENV}) strict=1 ;;
+esac
 out=$({command} guard "$@")
 status=$?
 case "$status" in
   0) [ -n "$out" ] && printf '%s\\n' "$out"; exit 0 ;;
   {BLOCK_EXIT}) [ -n "$out" ] && printf '%s\\n' "$out"; exit 2 ;;
 esac
+if [ "$strict" = 1 ]; then
+  echo "agentprint: hook check failed (exit $status); the command was blocked (strict mode)" >&2
+  {values}
+  case "$agent" in
+{arms}
+  esac
+  printf '%s\\n' "$reason" >&2
+  exit 2
+fi
 echo "agentprint: hook check failed (exit $status); the command was allowed" >&2
 case "$agent" in
 {_native_allows()}
 esac
 exit 0
 """
+
+
+# AGENTPRINT_STRICT's yes-like values as an sh `case` pattern (guard.strict_requested's words).
+_STRICT_ENV = "1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]"
 
 
 # ---- state, backups, safe writes --------------------------------------------------------------
