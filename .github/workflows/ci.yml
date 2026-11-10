@@ -30,7 +30,7 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pyright
-      - name: tests with a coverage floor (measured 95.09%, floor is that minus 1, rounded down)
+      - name: tests with a coverage floor (measured 94.89% at 0.1.1; floor 94)
         run: uv run pytest -m "integration or not integration" --cov=agentprint --cov-report=term --cov-fail-under=94
       - name: agentprint checks its own package
         run: uv run agentprint pack . --fail-on high
