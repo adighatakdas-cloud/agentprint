@@ -222,6 +222,8 @@ def test_cursor_allows_clean_commands_without_prompting(project):
 
 CURSOR_MATCHES = [
     "npm publish",
+    "npm pub demo-1.0.0.tgz",
+    "npm --tag next publ",
     "cd pkg && npm publish --access public",
     "pnpm -r publish",
     "yarn npm publish",

@@ -88,7 +88,8 @@ _NAMED_PUBLISH = re.compile(
     r"|(twine)(?![\w-]).{0,40}?(?<![\w-])upload(?![\w-])"
     r"|(git)(?:\.|(?![\w./-]).{0,40}?(?<![\w./-]))push(?![\w-])"
     r"|(semantic-release|release-it)(?![\w.-])"
-    r"|npx\s+(np)(?![\w.-]))",
+    r"|npx\s+(np)(?![\w.-])"
+    r"|(npm)[\s\"',]+pu(?:b(?:l(?:is?)?)?)?(?![\w:-]))",  # npm reads `npm pub` as npm publish
     re.S | re.I,  # code can build `NPM PUBLISH`.lower(); a shell on macOS finds `NPM` too
 )
 
@@ -157,7 +158,7 @@ class _Reading:
     parsed: dict[tuple, object] = field(default_factory=dict)  # makefiles and justfiles
     texts: list = field(default_factory=list)  # every text read: the backstop scans them all
     funcs: list = field(default_factory=list)  # every shell function defined
-    calls: set = field(default_factory=set)  # function calls followed
+    calls: dict = field(default_factory=dict)  # function calls followed -> their result
     dynamic: list = field(default_factory=list)  # (prefix, suffix) of commands named at run time
     virtual: dict = field(default_factory=dict)  # files the command line writes: path -> value
     parsed_texts: dict = field(default_factory=dict)  # text -> its parsed tree, read once
@@ -195,16 +196,22 @@ def _looks_like_release(*texts: str) -> bool:
 # ---- reading files --------------------------------------------------------------------------
 
 
-def _read(arg: str, cwd: Path) -> _File | None:
+def _read(arg: str, cwd: Path, run: bool = True) -> _File | None:
     """A file the command runs, read when it is inside the folder the agent's command runs in.
+
+    A file the command line wrote earlier is read as written, wherever it is, and even when its
+    name is only known at run time (`T=$(mktemp); cat > "$T"`; `bash "$T"`). `run`: it is read
+    as commands (not `cat`), so what was written is counted as read there.
 
     None when it is missing, not a regular file, outside that folder (symlinks resolved), named
     through a variable, or not text (a compiled program): none of those are followed."""
-    if not arg or c._UNKNOWABLE.search(arg):
+    if not arg:
         return None
     reading = _reading(cwd)
     if reading.virtual and (virtual := _virtual_path(arg, cwd)) in reading.virtual:
-        return _virtual_file(reading, virtual)  # written earlier by this same command line
+        return _virtual_file(reading, virtual, arg, run)  # written earlier by this command line
+    if c._UNKNOWABLE.search(arg):
+        return None
     try:
         real = (cwd / os.path.expanduser(arg)).resolve(strict=True)
     except (OSError, RuntimeError):
@@ -217,26 +224,48 @@ def _read(arg: str, cwd: Path) -> _File | None:
 
 
 def _virtual_path(arg: str, cwd: Path) -> Path:
-    return Path(os.path.normpath(_real(cwd) / os.path.expanduser(arg)))
+    """Where a file written or read by the command line is: symlinks in the folders that exist
+    resolved (each folder once per command line), so `$PWD/r.sh` and `r.sh` are the same file."""
+    joined = os.path.join(cwd, os.path.expanduser(arg))
+    head, tail = os.path.split(joined)
+    if tail in {"", ".", ".."}:
+        return Path(os.path.realpath(joined))
+    reading = _READING.get()
+    folders = reading.parsed if reading is not None else {}
+    key = ("folder", head)
+    real = folders.get(key)
+    if real is None:
+        real = folders[key] = os.path.realpath(head)
+    return Path(str(real)) / tail
 
 
-def _virtual_file(reading: _Reading, path: Path) -> _File | None:
+def _virtual_file(reading: _Reading, path: Path, arg: str, run: bool) -> _File | None:
     value = reading.virtual[path]
-    for origin in value.origins:  # what was written is read again: the backstop counts it there
-        origin.delegated = True
-    if reading.root not in path.parents:
-        return None
-    name = path.relative_to(reading.root).as_posix()
+    inside = reading.root == path or reading.root in path.parents
+    name = path.relative_to(reading.root).as_posix() if inside else arg
     if value.text is None:
         return _File(path, name, None, "unreadable")
+    if run:  # what was written is read again as commands: the backstop counts it there
+        for origin in value.origins:
+            origin.delegated = True
     return _File(path, name, value.text)
+
+
+def written(cwd: Path) -> set[str]:
+    """The names of the files the command line wrote in folder `cwd`."""
+    reading = _READING.get()
+    if reading is None or not reading.virtual:
+        return set()
+    here = _real(cwd)
+    return {path.name for path in reading.virtual if path.parent == here}
 
 
 def write_virtual(arg: str, cwd: Path, value, append: bool = False) -> None:
     """A file the command line writes (`cat > x.sh <<EOF`, `echo ... > x`, `tee x`): what a later
-    command in the same line reads or runs from it is this text, not what is on disk now."""
+    command in the same line reads or runs from it is this text, not what is on disk now. A name
+    only known at run time (`"$T"`) is kept as written: a later `bash "$T"` reads the same."""
     reading = _READING.get()
-    if reading is None or not arg or c._UNKNOWABLE.search(arg):
+    if reading is None or not arg or re.search(r"[*?]", arg):
         return
     path = _virtual_path(arg, cwd)
     if append:
@@ -254,8 +283,18 @@ def write_virtual(arg: str, cwd: Path, value, append: bool = False) -> None:
 
 def file_text(arg: str, cwd: Path) -> str | None:
     """A file's text when it is inside the folder and at most 64 KB (`cat file`, `< file`)."""
-    file = _read(arg, cwd)
+    file = _read(arg, cwd, run=False)
     return file.text if file is not None else None
+
+
+def file_origins(arg: str, cwd: Path) -> tuple:
+    """What a file the command line wrote was written from (empty for a file on disk): a
+    command that reads it and hands the text on carries them along."""
+    reading = _READING.get()
+    if reading is None or not reading.virtual or not arg:
+        return ()
+    value = reading.virtual.get(_virtual_path(arg, cwd))
+    return value.origins if value is not None else ()
 
 
 def _is_file(path: Path) -> bool:
@@ -782,7 +821,10 @@ def _script(
         return _unread(file, cwd, program, _is_shell(program))
     reading = _reading(cwd)
     argv = argv or []
-    key = (file.path, cwd, program, depth, reading.peeking, tuple(argv), _env_key(env))
+    # Everything that changes what the script does: its text (a file the command line wrote may
+    # be written again), its arguments (and which are only known at run time), what it inherits.
+    given = tuple((arg, type(arg) is not str) for arg in argv)
+    key = (file.path, file.text, cwd, program, depth, reading.peeking, given, _env_key(env))
     if key not in reading.results:
         text = file.text
         if _is_shell(program):
@@ -793,10 +835,17 @@ def _script(
 
 
 def _env_key(env: dict | None) -> tuple:
+    """What a script inherits, as a cache key: each variable's value and, when that is only
+    known at run time, what it was set from; each function's own definition."""
     if not env:
         return ()
-    values = tuple(sorted((k, v.value) for k, v in env.get("vars", {}).items()))
-    return values, tuple(sorted(env.get("funcs", {})))
+    values = tuple(
+        sorted(
+            (k, v.value, v.evidence if v.value is None else "")
+            for k, v in env.get("vars", {}).items()
+        )
+    )
+    return values, tuple(sorted((name, id(func)) for name, func in env.get("funcs", {}).items()))
 
 
 def sourced(arg: str, cwd: Path, depth: int, unknown: str = "") -> str | list[c.Risky]:
@@ -818,13 +867,18 @@ def sourced(arg: str, cwd: Path, depth: int, unknown: str = "") -> str | list[c.
     return text
 
 
+_COMPUTED = "its path is only known when the command runs"
+
+
 def _lost(arg: str, cwd: Path, depth: int, unknown: str) -> list[c.Risky]:
-    """A script run after a `cd` to a folder only known at run time (on the command line or in
-    a followed file), which isn't where agentprint looked: "could not check" when it looks like
-    a release."""
-    if not unknown or c._UNKNOWABLE.search(arg) or os.path.lexists(cwd / arg):
-        return []
+    """A script agentprint could not find: run through a path only known at run time
+    (`"$ROOT/scripts/release.sh"`), or after a `cd` to a folder only known then. "Could not
+    check" when it looks like a release."""
     if not _looks_like_release(arg):
+        return []
+    if c._VARIABLE.search(arg):
+        return [c.Risky(c.Action.publish, "sh", cwd, unsure=_COMPUTED, label=arg)]
+    if not unknown or c._UNKNOWABLE.search(arg) or os.path.lexists(cwd / arg):
         return []
     return [c.Risky(c.Action.publish, "sh", cwd, unsure=unknown, label=arg)]
 
@@ -922,7 +976,10 @@ def _find_up(start: Path, wanted: tuple[str, ...]) -> Path | None:
             entries = {entry.lower(): entry for entry in sorted(os.listdir(here), reverse=True)}
         except OSError:
             entries = {}
+        made = {entry.lower(): entry for entry in sorted(written(here), reverse=True)}
         for name in wanted:
+            if name in made:  # written by the command line: what it runs now
+                return here / made[name]
             if name in entries and _is_file(here / entries[name]):
                 return here / entries[name]
         if here == root or root not in here.parents:
@@ -984,8 +1041,11 @@ def _make(args: list[str], cwd: Path, depth: int, stdin: str | None = None) -> l
         try:
             present = set(os.listdir(cwd))
         except OSError:
-            return []
+            present = set()
+        present |= written(cwd)  # a makefile the command line wrote
         files = [name for name in MAKEFILES if name in present][:1]
+        if not files:
+            return []
     loaded = _makefile(cwd, files)
     if not isinstance(loaded, tuple):
         return loaded
@@ -1034,7 +1094,7 @@ def _makefile(cwd: Path, files: list[str]) -> _Loaded | list[c.Risky]:
     some include was not read, and what a scan of an include too large to follow found. A list
     when the makefile itself can't be followed: empty (missing, outside, not text) or a scan."""
     reading = _reading(cwd)
-    key = ("make", _real(cwd), tuple(files))
+    key = ("make", _real(cwd), tuple(files), reading.writes)
     cached = reading.parsed.get(key)
     if cached is not None:
         return cached  # type: ignore[return-value]
@@ -1130,7 +1190,7 @@ def _just(args: list[str], cwd: Path, depth: int) -> list[c.Risky]:
 def _justfile(path: Path, cwd: Path) -> tuple[recipes.Justfile, _File, bool] | list[c.Risky]:
     """The justfile and its imports, read once per command line (a list when not followed)."""
     reading = _reading(cwd)
-    key = ("just", str(path), _real(cwd))
+    key = ("just", str(path), _real(cwd), reading.writes)
     cached = reading.parsed.get(key)
     if cached is not None:
         return cached  # type: ignore[return-value]
