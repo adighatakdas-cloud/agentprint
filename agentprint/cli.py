@@ -453,9 +453,12 @@ def run_pack_command(
     missing (npm, uv) lets the publish go with one line; a package that can't be checked still
     blocks, and the exit codes are ALLOW_BLOCK_EXIT / ALLOW_UNCHECKED_EXIT instead of 1 / 2."""
     from .baseline import settle
+    from .guard import strict_requested
     from .pack import collect_each
 
     allow = if_unavailable is IfUnavailable.allow
+    # AGENTPRINT_STRICT=1: a missing tool no longer lets the publish go (strict fails closed).
+    tool_may_be_missing = allow and not strict_requested(os.environ)
     fmt = _auto_format(fmt, Format.agent, Format.table)
     project = _project(target if target.is_dir() else Path("."), sources)
     out = themed_console(dict(os.environ), plain=plain) if fmt is Format.table else None
@@ -469,7 +472,7 @@ def run_pack_command(
         listings, errors = [], [exc]
     missing_tool = bool(errors) and all(error.unavailable for error in errors)
     if not listings:
-        if allow and missing_tool:
+        if tool_may_be_missing and missing_tool:
             typer.echo(
                 f"agentprint: could not check this package ({_one_line(errors[0])}); the "
                 "publish goes on (--if-unavailable allow).",
@@ -503,7 +506,7 @@ def run_pack_command(
         return ALLOW_BLOCK_EXIT if allow else 1
     if code or not errors:
         return code
-    if allow and missing_tool:
+    if tool_may_be_missing and missing_tool:
         typer.echo(
             f"agentprint: could not check part of this package ({_one_line(errors[0])}); the "
             "publish goes on (--if-unavailable allow).",

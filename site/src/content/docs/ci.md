@@ -17,7 +17,7 @@ Add a `prepublishOnly` script to `package.json`. The npm name `agentprint` belon
 
 `pack` is a preflight: it checks what the package would publish and exits `1` if something is at or above `--fail-on` (see [exit codes](/agentprint/get-started/#exit-codes)). npm then stops the publish.
 
-If `pack` cannot check the package at all (a missing or unreadable file, say), it exits `2`, never `0`, so a CI step fails closed already. To make the agent hook (`agentprint guard`) fail closed too, set `AGENTPRINT_STRICT=1` in the job's environment.
+If `pack` cannot check the package at all (a missing or unreadable file, say), it exits `2`, never `0`, so a CI step fails closed already. To make the agent hook (`agentprint guard`) fail closed too, set `AGENTPRINT_STRICT=1` in the job's environment. In strict mode every layer blocks what it can't check, including when agentprint itself can't start: the agent hook, the plugins, the git hook `agentprint protect` adds, the hook manager lines below, and the `prepublishOnly` script `agentprint protect` writes.
 
 ## GitHub Action
 

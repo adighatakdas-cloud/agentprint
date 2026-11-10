@@ -714,6 +714,20 @@ def test_allow_covers_a_missing_tool_but_never_a_finding(package, monkeypatch):
     assert _pack(package, "--if-unavailable", "allow").exit_code == 3
 
 
+def test_agentprint_strict_turns_the_missing_tool_allowance_off(tmp_path, monkeypatch):
+    """Ruling X21: with AGENTPRINT_STRICT=1 a missing uv (or npm) stops the publish: exit 4,
+    which the npm wrapper turns into 2."""
+    from agentprint import pack as pack_module
+
+    monkeypatch.setattr(pack_module.shutil, "which", lambda name: None)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\nversion = '1'\n")
+    relaxed = _pack(tmp_path, "--if-unavailable", "allow")
+    assert relaxed.exit_code == 0 and "the publish goes on" in relaxed.output
+    strict = _pack(tmp_path, "--if-unavailable", "allow", env={"AGENTPRINT_STRICT": "1"})
+    assert strict.exit_code == 4, strict.output
+    assert "the publish stops" in strict.output
+
+
 FAKE_UVX = """#!/bin/sh
 printf '%s\\n' "$FAKE_OUT"
 exit "${FAKE_EXIT:-0}"
