@@ -62,6 +62,11 @@ uvx agentprint install   # arm each agent it finds with the tripwire
 uvx agentprint pack      # preflight: what your package would publish
 ```
 
+On Windows, `install` adds the MCP server and the note but no agent hook yet (the hooks run
+through `/bin/sh`), so no agent hook blocks a publish or push there, and `agentprint status`
+says "MCP and note; no hook on Windows yet". `agentprint protect` (below) still checks pushes
+and npm publishes at git and npm themselves. `scan`, `fix` and `pack` work the same.
+
 [Get started](https://adighatakdas-cloud.github.io/agentprint/get-started/) has the details,
 including running from a clone of this repo.
 
@@ -86,7 +91,8 @@ For a team, a [project config and baseline](https://adighatakdas-cloud.github.io
 <!-- checks:end -->
 
 Keys are found by pattern and are never used or sent anywhere: Anthropic, OpenAI, GitHub, AWS,
-Stripe, Slack and Google, then 27 newer rules (and Slack `xapp-` tokens), publishing tokens (npm, PyPI, GitLab, Docker Hub), AI providers (Hugging
+Stripe, Slack and Google, then 27 newer rules (and Slack `xapp-` tokens): Google OAuth client
+secrets (`GOCSPX-`), publishing tokens (npm, PyPI, GitLab, Docker Hub), AI providers (Hugging
 Face, Groq, OpenRouter, xAI, Perplexity, Replicate), developer platforms (Supabase, Cloudflare,
 DigitalOcean, Linear, Notion, Shopify, Atlassian, Postman, SendGrid, Doppler, 1Password), and
 DeepSeek, Twilio, Discord and Telegram only next to the provider's name. A generic "secret-looking
@@ -102,6 +108,7 @@ gitleaks and trufflehog the same way on a labelled corpus, with its method and l
 
 - A hook runs before the agent publishes a package or runs `git push`, and checks what would go out.
   It follows what the command runs, too: shell scripts, make and just recipes, `npm version` hooks.
+  Not on Windows yet: there `install` adds only the MCP server and the note.
 - An MCP server gives the agent tools to check on its own.
 - If something would leak, the agent gets a brief: the fix steps, plus what to ask you (rotate a key).
 - It only ever blocks (BLOCK or CLEAR); your agent's own approval rules still apply.
