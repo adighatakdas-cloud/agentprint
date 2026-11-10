@@ -24,7 +24,12 @@ UV_DIRS = ["~/.local/bin", "~/.cargo/bin"]  # where uv's installer puts uvx, if 
 FAILED = "agentprint: hook check failed ({}); the command was allowed"
 NO_UVX_STRICT = "agentprint: uvx not found, so this command was not checked; blocked (strict mode)"
 FAILED_STRICT = "agentprint: hook check failed ({}); the command was blocked (strict mode)"
-STRICT_BLOCK = "agentprint: BLOCK (strict mode)\nagentprint could not start, so it could not check this command.\nStrict mode is on (AGENTPRINT_STRICT=1 or --strict), so a command agentprint cannot check is blocked. Fix the cause and retry, or ask the human to turn strict mode off."
+STRICT_BLOCK = (
+    "agentprint: BLOCK (strict mode)\nagentprint could not start, so it could "
+    "not check this command.\nStrict mode is on (AGENTPRINT_STRICT=1 or "
+    "--strict), so a command agentprint cannot check is blocked. Fix the "
+    "cause and retry, or ask the human to turn strict mode off."
+)
 SKILL = Path(__file__).parent / "skills" / "agentprint" / "SKILL.md"
 _said = set()
 
