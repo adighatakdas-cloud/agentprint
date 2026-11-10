@@ -4,10 +4,12 @@ read is "not checked", never counted as armed, and never makes status say "armed
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
 
+import agentprint.roster as roster_module
 from agentprint import plugins
 from agentprint.cli import app
 from agentprint.integrations import ALL_INTEGRATIONS
@@ -23,6 +25,12 @@ FOLDER_ONLY = {
     "cursor": ".cursor/plugins/local/agentprint",
     "antigravity": ".gemini/config/plugins/agentprint",
 }
+
+
+@pytest.fixture(autouse=True)
+def _hooked_platform_roster(monkeypatch):
+    """Pin the roster where install adds hooks; Windows has its own tests (test_windows_gate)."""
+    monkeypatch.setattr(roster_module, "platform", SimpleNamespace(is_windows=lambda: False))
 
 
 def _armed(home: Path, *agents: str) -> None:

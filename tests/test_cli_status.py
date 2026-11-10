@@ -1,11 +1,20 @@
 import json
+from types import SimpleNamespace
 
+import pytest
 from typer.testing import CliRunner
 
+import agentprint.roster as roster_module
 from agentprint import __version__
 from agentprint.cli import app
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _hooked_platform_roster(monkeypatch):
+    """Pin the roster where install adds hooks; Windows has its own tests (test_windows_gate)."""
+    monkeypatch.setattr(roster_module, "platform", SimpleNamespace(is_windows=lambda: False))
 
 
 def _home(tmp_path):
