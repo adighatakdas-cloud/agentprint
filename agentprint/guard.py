@@ -82,6 +82,11 @@ STRICT_HINT = (
 )
 
 
+# Why a hook in strict mode blocks when agentprint itself could not run (the launcher's and the
+# plugin hooks' own answer, written at install or build time).
+COULD_NOT_START = "agentprint could not start, so it could not check this command."
+
+
 def strict_requested(env: Mapping[str, str]) -> bool:
     """True when AGENTPRINT_STRICT is set to a yes-like value (1, true, yes, on)."""
     return env.get("AGENTPRINT_STRICT", "").strip().lower() in {"1", "true", "yes", "on"}

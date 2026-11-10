@@ -153,9 +153,6 @@ def _native_allows() -> str:
     return "\n".join(arms)
 
 
-COULD_NOT_START = "agentprint could not start, so it could not check this command."
-
-
 def _printf(text: str) -> str:
     """`text` as a printf format that prints it as is."""
     return text.replace("\\", "\\\\").replace("%", "%%")
@@ -166,7 +163,7 @@ def _native_blocks() -> tuple[str, str]:
     inside a JSON string) as sh assignments, and `case` arms giving each agent its own "block"
     answer with it: JSON on stdout (exit 0) where the agent reads that, else the reason on
     stderr and exit 2. Built from the agent modules' own replies at install time."""
-    from .guard import strict_block
+    from .guard import COULD_NOT_START, strict_block
 
     verdict = strict_block(COULD_NOT_START)
     reason = verdict.reason.strip()

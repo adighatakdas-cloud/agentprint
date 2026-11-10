@@ -7,15 +7,17 @@ other than 2 as "deny", and other agents log it as a hook error.
 """
 
 import json
+import os
 import shlex
+import shutil
 import subprocess
 
 import pytest
 
 from agentprint import hook, install
-from agentprint.guard import Verdict
+from agentprint.guard import COULD_NOT_START, Verdict, strict_block
 from agentprint.integrations import ALL_INTEGRATIONS
-from agentprint.integrations.base import BLOCK_EXIT
+from agentprint.integrations.base import BLOCK_EXIT, LAUNCHER_GONE
 
 AGENTS = sorted(ALL_INTEGRATIONS)
 # Documented semantics, per agent: (exit code that blocks, how a block is expressed).
@@ -183,3 +185,59 @@ def test_strict_still_passes_agentprint_s_own_answers_through(tmp_path):
         )
         assert result.returncode == 0 and result.stdout.strip() == reply.stdout.strip()
         assert "strict mode" not in result.stderr
+
+
+@pytest.mark.posix_only
+@pytest.mark.parametrize("agent", AGENTS)
+def test_a_strict_hook_blocks_when_the_launcher_itself_is_gone(tmp_path, agent):
+    """The hook command answers for a deleted launcher: allow by default, block in strict."""
+    allow = ALL_INTEGRATIONS[agent].reply(None).stdout
+    gone = str(tmp_path / "gone" / "agentprint-hook")
+    strict = install.Launch(hook=gone, mcp=(), strict=True).hook_command(agent, allow)
+    result = subprocess.run(strict, shell=True, input="{}", capture_output=True, text=True)
+    assert result.stderr.splitlines()[0] == LAUNCHER_GONE
+    expected = ALL_INTEGRATIONS[agent].reply(strict_block(COULD_NOT_START))
+    if expected.stdout.strip():
+        assert result.returncode == 0 and result.stdout.strip() == expected.stdout.strip()
+    else:
+        assert result.returncode == 2 and "agentprint: BLOCK (strict mode)" in result.stderr
+    default = install.Launch(hook=gone, mcp=()).hook_command(agent, allow)
+    result = subprocess.run(default, shell=True, input="{}", capture_output=True, text=True)
+    assert result.returncode == 0 and result.stdout.strip() == allow.strip()
+
+
+OPENCODE_RUN = """
+import plugin from "./agentprint.mjs"
+const hooks = await plugin.server({ directory: "." })
+try {
+  await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "npm publish" } })
+  console.log("allowed")
+} catch (err) {
+  console.log("blocked: " + err.message.split("\\n")[0])
+}
+"""
+
+
+@pytest.mark.posix_only
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@pytest.mark.parametrize(("strict", "env", "expected"), [
+    (False, {}, "allowed"),
+    (True, {}, "blocked: agentprint: BLOCK (strict mode)"),
+    (False, {"AGENTPRINT_STRICT": "1"}, "blocked: agentprint: BLOCK (strict mode)"),
+])  # fmt: skip
+def test_the_opencode_plugin_blocks_a_missing_launcher_only_in_strict(
+    tmp_path, strict, env, expected
+):
+    from agentprint.integrations import opencode
+
+    launch = install.Launch(hook=str(tmp_path / "gone" / "agentprint-hook"), mcp=(), strict=strict)
+    (plugin,) = [e for e in opencode.edits(tmp_path, {}, launch) if e.what.startswith("hook")]
+    (tmp_path / "agentprint.mjs").write_text(plugin.content)
+    (tmp_path / "run.mjs").write_text(OPENCODE_RUN)
+    run_env = {"PATH": os.environ["PATH"], **env}
+    done = subprocess.run(
+        [shutil.which("node") or "node", "run.mjs"],
+        cwd=tmp_path, capture_output=True, text=True, env=run_env, timeout=60,
+    )  # fmt: skip
+    assert done.stdout.strip() == expected, done.stderr
+    assert ("blocked (strict mode)" if "blocked" in expected else "command allowed") in done.stderr

@@ -20,6 +20,7 @@ from pathlib import Path
 
 import agentprint
 from agentprint import plugins
+from agentprint.guard import COULD_NOT_START, strict_block
 from agentprint.integrations import ALL_INTEGRATIONS
 from agentprint.integrations.base import BLOCK_EXIT, INSTRUCTIONS, FileEdit, JsonEdit, Launch
 from agentprint.integrations.cursor import RULE as CURSOR_RULE
@@ -275,6 +276,8 @@ def hermes() -> dict[Path, str]:
         timeout="25",  # Hermes blocks a callback that runs past its 30 s default
         blocked=str(BLOCK_EXIT),
         no_uvx=json.dumps(plugins.NO_UVX),
+        no_uvx_strict=json.dumps(plugins.NO_UVX_STRICT),
+        strict_block=json.dumps(strict_block(COULD_NOT_START).reason.strip()),
         uv_dirs=json.dumps([d.replace("$HOME/", "~/") for d in plugins.UV_DIRS]),
         name=NAME,
     )
