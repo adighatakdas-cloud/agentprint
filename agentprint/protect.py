@@ -206,20 +206,35 @@ def manual_line(strict: bool) -> str:
 HOOK_ARGS = '--pre-push --remote "$1"'  # in a pre-push hook script: git's stdin and remote
 
 
+# AGENTPRINT_STRICT's yes-like values, as an sh `case` pattern (no `tr`: PATH may be bare).
+_STRICT_ENV = "1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]"
+
+
 def guarded_snippet(strict: bool, args: str = HOOK_ARGS) -> list[str]:
     """sh lines that run `manual_line` the way protect's own hook does: a BLOCK stops the push;
     if agentprint can't run (no uv on a teammate's machine), one line and the push goes on,
-    unless strict. Safe under `sh -e` (husky): no command here fails unless it should. `args`
-    tell push-check where the push comes from (git's stdin and the remote's name)."""
-    if strict:
-        last = 'echo "agentprint: the push check could not run (exit $s); push blocked" >&2; exit 1'
-    else:
-        last = 'echo "agentprint: the push check could not run (exit $s); push allowed" >&2'
+    unless strict (--strict, or AGENTPRINT_STRICT=1 where it runs). Safe under `sh -e`
+    (husky): no command here fails unless it should. `args` tell push-check where the push
+    comes from (git's stdin and the remote's name)."""
+    could_not = 'echo "agentprint: the push check could not run (exit $s); push'
     command = manual_line(strict) + (f" {args}" if args else "")
-    return [
+    run = [
         f"s=0; out=$({command}) || s=$?",
         f'case "$s:$out" in 0:|"0:{OK}") ;; *) printf \'%s\\n\' "$out" >&2 ;; esac',
-        f'case "$s:$out" in 0:*) ;; "1:agentprint: BLOCK"*) exit 1 ;; *) {last} ;; esac',
+    ]
+    if strict:
+        last = f'{could_not} blocked" >&2; exit 1'
+        return [
+            *run,
+            f'case "$s:$out" in 0:*) ;; "1:agentprint: BLOCK"*) exit 1 ;; *) {last} ;; esac',
+        ]
+    env = f'ap_strict=0; case "${{AGENTPRINT_STRICT:-}}" in {_STRICT_ENV}) ap_strict=1 ;; esac'
+    return [
+        env,
+        *run,
+        f'case "$s:$out:$ap_strict" in 0:*) ;; "1:agentprint: BLOCK"*) exit 1 ;; '
+        f'*:1) {could_not} blocked (strict mode)" >&2; exit 1 ;; *) {could_not} allowed" >&2 ;; '
+        "esac",
     ]
 
 
@@ -307,6 +322,18 @@ def _run_by(hook: bytes) -> str | None:
 SHARED = "  That file is usually committed, so this check then runs for every teammate and in CI."
 
 
+def lefthook_lines(strict: bool) -> list[str]:
+    """lefthook.yml lines that run the push check, with git's stdin and the remote passed on."""
+    return [
+        "pre-push:",
+        "  commands:",
+        "    agentprint:",
+        "      use_stdin: true",
+        "      run: |",
+        *(f"        {line}" for line in guarded_snippet(strict, "--pre-push --remote {1}")),
+    ]
+
+
 def _by_hand(repo: Repo, manager: str | None, strict: bool) -> list[str]:
     """Where and what to add by hand for `manager`, indented under the explanation. Hook
     manager files are shared, so what they run fails open (one line) unless strict."""
@@ -321,12 +348,7 @@ def _by_hand(repo: Repo, manager: str | None, strict: bool) -> list[str]:
         name = lefthook[0] if lefthook else "lefthook.yml"
         return [
             f"  To check every push, add this to {name}, then run `lefthook install`:",
-            "    pre-push:",
-            "      commands:",
-            "        agentprint:",
-            "          use_stdin: true",
-            "          run: |",
-            *(f"            {line}" for line in guarded_snippet(strict, "--pre-push --remote {1}")),
+            *(f"    {line}" for line in lefthook_lines(strict)),
             SHARED,
             unavailable,
         ]

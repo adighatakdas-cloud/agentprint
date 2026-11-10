@@ -750,6 +750,20 @@ def test_the_hook_manager_snippet_fails_open_under_sh_e(tmp_path, uvx, out, code
         assert done.stderr == "after\n"  # quiet on a clean push
 
 
+@pytest.mark.posix_only
+@pytest.mark.parametrize("value, expected", [("1", 1), ("TRUE", 1), ("on", 1), ("0", 0), ("", 0)])
+def test_the_hook_manager_snippet_honours_agentprint_strict(tmp_path, value, expected):
+    """X21: strict fails closed in every layer. The shared snippet allows a push where
+    agentprint can't run, unless AGENTPRINT_STRICT is set where it runs (a CI job, say)."""
+    script = tmp_path / "pre-push"
+    script.write_text("\n".join(["#!/bin/sh", *guarded_snippet(False), "echo after >&2", ""]))
+    env = {"PATH": str(tmp_path / "empty"), "AGENTPRINT_STRICT": value}  # no uvx at all
+    sh = shutil.which("sh") or "/bin/sh"
+    done = subprocess.run([sh, "-e", str(script)], env=env, capture_output=True, text=True)
+    assert done.returncode == expected, done.stderr
+    assert f"push {'blocked (strict mode)' if expected else 'allowed'}" in done.stderr
+
+
 # ---- push-check -------------------------------------------------------------------------------
 
 

@@ -7,22 +7,20 @@ repos:
       - id: agentprint-scan   # keys in this repo's agent settings
 ```
 
-To run the repository check before each `git push` instead of each commit, use `agentprint-pre-push` in place of `agentprint-scan`, and install the push hook once with `pre-commit install --hook-type pre-push`.
+To check each `git push` instead of each commit, use `agentprint-pre-push` in place of `agentprint-scan`, and install the push hook once with `pre-commit install --hook-type pre-push`. It runs `agentprint push-check`, the check `agentprint protect` sets up. For strict mode, add `args: [--strict]` under its id.
 
 ## lefthook
 
 Add to `lefthook.yml`, then run `lefthook install`:
 
 ```yaml
-pre-push:
-  jobs:
-    - run: uvx agentprint=={{version}} scan --no-home
+{{lefthook}}
 ```
 
 ## husky
 
-After `npx husky init`, add the check to `.husky/pre-push`:
+After `npx husky init`, add these lines to `.husky/pre-push`:
 
-```bash
-echo "uvx agentprint=={{version}} scan --no-home" > .husky/pre-push
+```sh
+{{husky}}
 ```
