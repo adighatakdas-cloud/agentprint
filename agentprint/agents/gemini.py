@@ -23,6 +23,7 @@ from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
 from .base import (
     artifacts,
+    children,
     dig,
     from_home,
     gemini_folder,
@@ -73,6 +74,10 @@ def _grants(data: dict[str, Any]) -> tuple[Grant, ...]:
 _RECORDS = (re.compile(r"(^|/)\.gemini/tmp/"),)
 
 
+# Folders of Gemini CLI extensions, one per entry (extension_paths).
+_LOADED = ("commands", "skills", "extensions")
+
+
 class Gemini:
     name = NAME
     package_rules = (
@@ -114,6 +119,19 @@ class Gemini:
         base = root / ".gemini"
         yield from artifacts(NAME, Kind.SETTINGS, base / "settings.json")
         yield from artifacts(NAME, Kind.CREDENTIALS, base / ".env", personal=True)
+
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # GEMINI.md, custom commands (commands/*.toml), skills/ and each extension in
+        # extensions/<name>/, in ~/.gemini and in a project's .gemini/.
+        # https://geminicli.com/docs/cli/gemini-md, https://geminicli.com/docs/extensions/
+        paths: list[Path] = []
+        if home is not None:
+            base = gemini_folder(home)
+            paths += [base / "GEMINI.md", *children(*(base / name for name in _LOADED))]
+        if project is not None:
+            base = project / ".gemini"
+            paths += [project / "GEMINI.md", *children(*(base / name for name in _LOADED))]
+        return paths
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)

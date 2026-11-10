@@ -7,17 +7,22 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
 from .base import (
+    EnvReference,
     artifacts,
+    children,
     dig,
     from_home,
+    glob,
     hook_commands,
     is_blanket_command,
+    live_versions,
     matches_any,
     mcp_servers,
 )
@@ -60,6 +65,11 @@ def _grants(data: dict[str, Any]) -> tuple[Grant, ...]:
     return tuple(grants)
 
 
+# The files that expand ${VAR}: `agentprint fix` moves an inline env key there to "${VAR}".
+_ENV = EnvReference("mcpServers", "${{var}}", "the shell that starts Claude Code")
+_ENV_FILES = {".mcp.json": _ENV, ".claude.json": replace(_ENV, projects=True)}
+
+
 # History that is only a record (fix masks keys there): typed prompts, pasted text, backups of
 # edited files, and the transcripts under projects/. projects/<slug>/memory/ is auto memory,
 # read back into every session, so it is not a record.
@@ -68,6 +78,11 @@ _RECORDS = (
     re.compile(r"(^|/)\.claude/(paste-cache|file-history)/"),
     re.compile(r"(^|/)\.claude/projects/[^/]+/(?!memory/)(?:[^/]+/)*[^/]+\.jsonl$"),
 )
+
+
+# What Claude Code loads from ~/.claude and a project's .claude/ as instructions or runs as hook
+# scripts, one extension per entry (extension_paths).
+_LOADED = ("skills", "commands", "agents", "rules", "hooks")
 
 
 class ClaudeCode:
@@ -127,8 +142,28 @@ class ClaudeCode:
         )
         yield from artifacts(NAME, Kind.PERSONAL, root / "CLAUDE.local.md", personal=True)
 
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # CLAUDE.md and .claude/rules/ (https://code.claude.com/docs/en/memory), skills/,
+        # commands/, agents/ (.../skills, .../slash-commands, .../sub-agents), and each plugin
+        # version Claude Code loads from ~/.claude/plugins/cache/<marketplace>/<plugin>/
+        # <version>/ (.../plugins/loading.md; a version marked .orphaned_at is no longer
+        # used). .claude/hooks/ is where the hooks docs keep the scripts a hook runs.
+        paths: list[Path] = []
+        if home is not None:
+            base = home / ".claude"
+            paths += [base / "CLAUDE.md", *children(*(base / name for name in _LOADED))]
+            paths += live_versions(glob(base / "plugins" / "cache", "*/*/*"))
+        if project is not None:
+            base = project / ".claude"
+            paths += [project / "CLAUDE.md", base / "CLAUDE.md"]
+            paths += children(*(base / name for name in _LOADED))
+        return paths
+
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)
+
+    def env_reference(self, path: Path) -> EnvReference | None:
+        return _ENV_FILES.get(path.name)
 
     def read_config(self, artifact: Artifact) -> AgentConfig:
         name = artifact.path.name

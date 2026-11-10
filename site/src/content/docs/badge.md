@@ -40,7 +40,7 @@ jobs:
       contents: write       # pushes the agentprint-badge branch
       id-token: write       # signs with GitHub's OIDC identity
       attestations: write   # stores the attestation
-    uses: adighatakdas-cloud/agentprint/.github/workflows/badge.yml@v0.1.0  # better: pin the release's commit SHA
+    uses: adighatakdas-cloud/agentprint/.github/workflows/badge.yml@v0.1.1  # better: pin the release's commit SHA
 ```
 
 The inputs are `command` (only `scan`, the default), `path` (relative to your repository, default `.`) and `fail-on` (default `high`). `fail-on: none` is refused: a report-only run must never publish a signed CLEAR. It signs only on a public repository, and it publishes on a push to the default branch.
@@ -83,7 +83,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: adighatakdas-cloud/agentprint@v0.1.0  # better: pin the release's commit SHA
+      - uses: adighatakdas-cloud/agentprint@v0.1.1  # better: pin the release's commit SHA
         with:
           command: pack
           badge-dir: ${{ runner.temp }}/agentprint-badge
@@ -154,7 +154,7 @@ You need the [GitHub CLI](https://cli.github.com/), signed in with `gh auth logi
      --format json --jq '.[].verificationResult.statement.predicate'
    ```
 
-   For a badge signed by agentprint, use `--signer-workflow adighatakdas-cloud/agentprint/.github/workflows/badge.yml --signer-digest <release commit SHA>` instead. The SHA is in the notes of the agentprint release you pinned (`@v0.1.0`); without it the check cannot tell a genuine agentprint release from a copy of the file. Then read `path`, `command`, `fail_on` and `version` in the printed predicate: `path` should be `.` (or the folder you expect) and `command` should be the one you expect.
+   For a badge signed by agentprint, use `--signer-workflow adighatakdas-cloud/agentprint/.github/workflows/badge.yml --signer-digest <release commit SHA>` instead. The SHA is in the notes of the agentprint release you pinned (`@v0.1.1`); without it the check cannot tell a genuine agentprint release from a copy of the file. Then read `path`, `command`, `fail_on` and `version` in the printed predicate: `path` should be `.` (or the folder you expect) and `command` should be the one you expect.
 
 4. Read the result. If the command fails, the file wasn't signed for that commit by that workflow, and you shouldn't trust the badge. If it passes, look at the printed verdict and at `fail_on`. A `fail_on` of `none` means the run was set up never to block.
 

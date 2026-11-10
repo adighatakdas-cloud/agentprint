@@ -79,6 +79,17 @@ def test_badge_dir_is_passed_to_the_run_that_sets_the_exit_code():
     assert "badge-file=" in step["run"] and "verdict-file=" in step["run"]
 
 
+def test_a_signed_or_published_badge_ignores_the_repositorys_config():
+    step = _step("run")
+    assert step["env"]["AP_ATTEST"] == "${{ inputs.attest-badge }}"
+    assert step["env"]["AP_PUBLISH"] == "${{ inputs.publish-badge }}"
+    gate = step["run"][step["run"].index('if [ "$AP_ATTEST"') :].split("\nfi\n", 1)[0]
+    for mode in ('"$AP_ATTEST" = "true"', '"$AP_PUBLISH" = "true"', '"$AP_PUBLISH" = "dry-run"'):
+        assert mode in gate
+    assert "cmd+=(--no-config)" in gate
+    assert step["run"].index("cmd+=(--no-config)") < step["run"].index('ap "${cmd[@]}"')
+
+
 def test_attest_step_is_pinned_signs_the_badge_and_skips_private_repos():
     [attest] = [s for s in _action()["runs"]["steps"] if "actions/attest@" in s.get("uses", "")]
     assert re.fullmatch(r"actions/attest@[0-9a-f]{40}", attest["uses"])
@@ -176,6 +187,7 @@ def badge_dir(tmp_path):
     return d
 
 
+@pytest.mark.posix_only  # runs bash scripts
 @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 def test_publish_dry_run_pushes_nothing(tmp_path, badge_dir):
     remote = tmp_path / "remote.git"
@@ -189,6 +201,7 @@ def test_publish_dry_run_pushes_nothing(tmp_path, badge_dir):
     assert "FAKETOKEN123" not in (proc.stdout + proc.stderr).replace("::add-mask::FAKETOKEN123", "")
 
 
+@pytest.mark.posix_only  # runs bash scripts
 @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 @pytest.mark.parametrize("existing", [False, True])
 def test_publish_keeps_one_commit_whether_or_not_the_branch_exists(tmp_path, badge_dir, existing):
@@ -216,6 +229,7 @@ def test_publish_keeps_one_commit_whether_or_not_the_branch_exists(tmp_path, bad
     assert "FAKETOKEN123" not in proc.stdout.replace("::add-mask::FAKETOKEN123", "")
 
 
+@pytest.mark.posix_only  # runs bash scripts
 def test_publish_without_badge_files_is_an_error(tmp_path):
     proc = _publish(tmp_path, tmp_path, "dry-run")
     assert proc.returncode == 2 and "::error" in proc.stdout
@@ -303,6 +317,7 @@ DEFAULTS = {"fail-on": "high", "upload-sarif": "false"}
 RESULTS = {"clean-npm": 0, "leaky-npm": 2, "clean-repo": 0, "leaky-repo": 1}  # SARIF results
 
 
+@pytest.mark.posix_only  # runs the action steps with bash
 @pytest.mark.integration
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv not installed")
 @pytest.mark.parametrize("fixture", sorted(EXPECTED))
@@ -319,6 +334,7 @@ def test_action_exit_codes_and_sarif(action_env, fixture):
     assert fakes.ANTHROPIC not in sarif + proc.stdout + proc.stderr
 
 
+@pytest.mark.posix_only  # runs the action steps with bash
 @pytest.mark.integration
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv not installed")
 @pytest.mark.parametrize(
@@ -340,6 +356,30 @@ def test_action_fail_on_and_errors(action_env, inputs, expected):
         assert "sarif-file" not in outputs
 
 
+@pytest.mark.posix_only  # runs the action steps with bash
+@pytest.mark.integration
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv not installed")
+def test_action_badges_count_every_print_whatever_the_repository_accepts(action_env, tmp_path):
+    env, fixtures = action_env
+    repo = tmp_path / "repo"
+    shutil.copytree(fixtures / "leaky-repo", repo)
+    accepted = subprocess.run(
+        ["uv", "run", "--quiet", "--no-sync", "--project", str(ROOT), "agentprint", "baseline",
+         "--format", "json", str(repo)],
+        env=env, capture_output=True, text=True, check=True,
+    )  # fmt: skip
+    assert json.loads(accepted.stdout)["entries"] >= 1
+    plain, proc = _run_action(env, command="scan", path=str(repo), **DEFAULTS)
+    assert plain["exit-code"] == "0", proc.stdout + proc.stderr  # the baseline accepts the key
+    badge = {"badge-dir": str(tmp_path / "badge")}
+    for flag in ({"attest-badge": "true"}, {"publish-badge": "dry-run"}):
+        signed, proc = _run_action(env, command="scan", path=str(repo), **DEFAULTS, **badge, **flag)
+        assert signed["exit-code"] == "1", (flag, proc.stdout + proc.stderr)
+        verdict = json.loads(Path(signed["verdict-file"]).read_text())
+        assert verdict["verdict"] == "BLOCK" and "known" not in verdict["summary"]
+
+
+@pytest.mark.posix_only  # runs the action steps with bash
 @pytest.mark.integration
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv not installed")
 def test_action_passes_a_dash_path_as_a_path(action_env):

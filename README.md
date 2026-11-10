@@ -1,3 +1,4 @@
+<!-- mcp-name: io.github.adighatakdas-cloud/agentprint -->
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/adighatakdas-cloud/agentprint/main/docs/brand/logo-dark.svg">
@@ -26,7 +27,8 @@ npx agentprint-cli
 </p>
 
 <p align="center">
-  <sub>Works inside: Claude Code · Codex · Cursor · Gemini CLI · Windsurf · Devin · OpenCode · Copilot · Hermes · Antigravity</sub>
+  <sub>Works inside: Claude Code · Codex · Cursor · Gemini CLI · Windsurf · Devin · OpenCode · Copilot · Hermes · Antigravity</sub><br>
+  <sub>Also scans: Cline · Claude Desktop · Kilo Code · Zed · Goose · Aider · Continue · Qwen Code · Crush · Kiro · Factory Droid · Augment · Amp · Junie</sub>
 </p>
 
 <p align="center">
@@ -60,8 +62,15 @@ uvx agentprint install   # arm each agent it finds with the tripwire
 uvx agentprint pack      # preflight: what your package would publish
 ```
 
+On Windows, `install` adds the MCP server and the note but no agent hook yet (the hooks run
+through `/bin/sh`), so no agent hook blocks a publish or push there, and `agentprint status`
+says "MCP and note; no hook on Windows yet". `agentprint protect` (below) still checks pushes
+and npm publishes at git and npm themselves. `scan`, `fix` and `pack` work the same.
+
 [Get started](https://adighatakdas-cloud.github.io/agentprint/get-started/) has the details,
 including running from a clone of this repo.
+
+For a team, a [project config and baseline](https://adighatakdas-cloud.github.io/agentprint/config/) accept what you have already reviewed.
 
 ## What it checks
 
@@ -75,26 +84,47 @@ including running from a clone of this repo.
 | [AP005](https://adighatakdas-cloud.github.io/agentprint/checks/ap005/) | An API key is written inline in an MCP server entry (env, headers, args, command or URL). | critical |
 | [AP006](https://adighatakdas-cloud.github.io/agentprint/checks/ap006/) | An agent file, such as .claude/settings.local.json, would ship in your npm or PyPI package. | high, medium or low, by file |
 | [AP007](https://adighatakdas-cloud.github.io/agentprint/checks/ap007/) | A personal agent file, such as CLAUDE.local.md, is in a git repo but not gitignored, or is already committed. | low |
-| [AP008](https://adighatakdas-cloud.github.io/agentprint/checks/ap008/) | Agent history, settings or a key store can be read by other users on this machine (macOS and Linux). | medium; high for key stores |
+| [AP008](https://adighatakdas-cloud.github.io/agentprint/checks/ap008/) | Agent history, settings or a key store can be read by other users on this machine (macOS, Linux and Windows). | medium; high for key stores |
 | [AP009](https://adighatakdas-cloud.github.io/agentprint/checks/ap009/) | Source maps, original source or AI instruction files in your package hand an AI your code. | high to low by licence; no licence, UNLICENSED, SEE LICENSE IN, proprietary or only LicenseRef- choices count as closed; low for a private registry |
+| [AP010](https://adighatakdas-cloud.github.io/agentprint/checks/ap010/) | A skill, rule, plugin or hook an agent loads has hidden characters, sends a credential out, pipes a download to a shell or hides a command. | high; critical for a credential sent out, medium for a piped download (low in install docs), low for a stray character or an unfinished read |
+| [AP011](https://adighatakdas-cloud.github.io/agentprint/checks/ap011/) | An MCP server runs a package or image with no fixed version (npx, uvx, pipx run, docker run): each start gets whatever was published last. | medium |
 <!-- checks:end -->
 
-Keys are found by pattern (Anthropic, OpenAI, GitHub, AWS, Stripe, Slack and Google formats, plus
-a generic "secret-looking name = random-looking value" rule) and are never used or sent anywhere.
+Keys are found by pattern and are never used or sent anywhere: Anthropic, OpenAI, GitHub, AWS,
+Stripe, Slack and Google, then 27 newer rules (and Slack `xapp-` tokens): Google OAuth client
+secrets (`GOCSPX-`), publishing tokens (npm, PyPI, GitLab, Docker Hub), AI providers (Hugging
+Face, Groq, OpenRouter, xAI, Perplexity, Replicate), developer platforms (Supabase, Cloudflare,
+DigitalOcean, Linear, Notion, Shopify, Atlassian, Postman, SendGrid, Doppler, 1Password), and
+DeepSeek, Twilio, Discord and Telegram only next to the provider's name. A generic "secret-looking
+name = random-looking value" rule catches the rest. Format lengths for Docker Hub, Supabase
+secret keys and Google OAuth secrets are from third-party scanners, not the vendor's docs.
+
+It also finds keys hidden from ordinary secret scanners: split across strings, behind invisible
+characters, continued across lines, inside YAML blocks or base64. The
+[benchmark](https://adighatakdas-cloud.github.io/agentprint/benchmark/) scores agentprint,
+gitleaks and trufflehog the same way on a labelled corpus, with its method and limits stated.
 
 ## Inside your AI agent
 
 - A hook runs before the agent publishes a package or runs `git push`, and checks what would go out.
+  It follows what the command runs, too: shell scripts, make and just recipes, `npm version` hooks.
+  Not on Windows yet: there `install` adds only the MCP server and the note.
 - An MCP server gives the agent tools to check on its own.
 - If something would leak, the agent gets a brief: the fix steps, plus what to ask you (rotate a key).
 - It only ever blocks (BLOCK or CLEAR); your agent's own approval rules still apply.
+- Strict mode (`agentprint install --strict`) also blocks a publish or push agentprint can't check.
 - `agentprint uninstall` takes out exactly what `install` added.
+- `agentprint protect` adds a second check at git and npm themselves (a pre-push hook and
+  `prepublishOnly`), so a push hidden from the agent hook is still caught. `--undo` takes it out.
+- Rather add it as a plugin? Claude Code, Codex, Copilot CLI, Gemini CLI, Cursor, Antigravity
+  and Hermes each have one: see [Plugins](https://adighatakdas-cloud.github.io/agentprint/plugins/).
 
 Details: [Inside your agent](https://adighatakdas-cloud.github.io/agentprint/inside-your-agent/).
 
 ## More
 
 [Agents](https://adighatakdas-cloud.github.io/agentprint/agents/) ·
+[Plugins](https://adighatakdas-cloud.github.io/agentprint/plugins/) ·
 [Use in CI](https://adighatakdas-cloud.github.io/agentprint/ci/) ·
 [Privacy](https://adighatakdas-cloud.github.io/agentprint/privacy/) ·
 [Comparison](https://adighatakdas-cloud.github.io/agentprint/comparison/) ·

@@ -63,13 +63,23 @@ synthetic. Note in the agent module where and when you checked the layout (for e
      log, paste cache or prompt history). `agentprint fix` masks keys only in these; a skill,
      rule, memory or scheduled job the agent reads back must return False. `matches_any` in
      `agents/base.py` checks a path against a list of patterns.
+   - `extension_paths(home, project)`: the instruction files it loads and each skill,
+     command, rule or plugin in the folders its docs name (`children` lists one per entry), or
+     `[]`. Only what the agent loads as instructions or runs: AP010 and AP011 read them.
    Start the module with a docstring linking the docs you followed. `agents/gemini.py` is a
    good short example.
 2. Add one line to `ALL_AGENTS` in `agentprint/agents/__init__.py`. Every check picks it up.
-3. Add fake files for it in `tests/conftest.py` and a `tests/test_agent_<agent>.py` that checks
-   which files are found, what `read_config` returns, and that a scan reports the planted keys.
+3. Add a fake home for it, built at test time with keys from `tests/fakes.py`: one builder per
+   agent in `tests/fixtures/agent_homes.py` (the older agents' homes are in `tests/conftest.py`).
+   Then a `tests/test_agent_<agent>.py` that checks which files are found, what `read_config`
+   returns, and that a scan reports the planted keys.
 4. Add the agent to `site/src/content/docs/agents.md` and `site/check-notes/ap003.md`, then run
    `uv run python -m tools.gen_docs` (it rewrites the site's agent data and landing text).
+
+**No install yet?** Give the module a `doc = AgentDoc(...)` (`agents/base.py`): its row on the
+agents page and its `agentprint status` line come from it, with any path its docs don't confirm
+under `unverified`. Read MCP files with `read_mcp_file` from `agents/base.py`, and add
+`env_reference` only if the agent's docs name a way to refer to an environment variable there.
 
 **Only package rules?** If agentprint doesn't read the agent's home folder yet, add one
 `_agent(...)` entry to `agentprint/agents/scan_only.py` instead.

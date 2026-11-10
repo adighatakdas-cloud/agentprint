@@ -13,18 +13,24 @@ never see this layout: they get fixreport.to_agent_fix.
 from __future__ import annotations
 
 import os
+import re
+from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.text import Text
 
 from agentprint.fix import Outcome, Plan
-from agentprint.fixreport import UNDOABLE, Row, fixes, rows, server_name, skipped_rows
+from agentprint.fixreport import UNDOABLE, Row, env_field, fixes, rows, server_name, skipped_rows
 from agentprint.models import Finding
 from agentprint.report import FailOn, _short, exit_code
 from agentprint.sanitize import clean
 from agentprint.ui.layout import hang
-from agentprint.ui.results import DETAIL_INDENT, STUB, verdict_lines, where_line
+from agentprint.ui.results import DETAIL_INDENT, STUB, known_section, verdict_lines, where_line
+
+if TYPE_CHECKING:
+    from agentprint.baseline import Known
 
 VERBS = ("mask", "env", "ignore", "lock")
 PLACE = " " * (2 + max(len(v) for v in VERBS) + 2)  # where the place starts: under it, the rest
@@ -45,7 +51,9 @@ def _what(row: Row) -> Text:
             text.append(f" (×{places})", style="ap.dim")
         return text
     if row.kind == "env":
-        return Text(f"{clean(server_name(first), 60)}.env.{first.var} → ${{{first.var}}}")
+        reference = first.reference or "${" + first.var + "}"
+        where = f"{clean(server_name(first), 60)}.{env_field(first)}.{first.var}"
+        return Text(f"{where} → {clean(reference)}")
     if row.kind == "ignore":
         text = Text(f"+ {clean(first.line_text)}")
         if not os.path.lexists(first.path):
@@ -54,11 +62,19 @@ def _what(row: Row) -> Text:
                 " (new file, copied from .gitignore)" if seeded else " (new file)", "ap.dim"
             )
         return text
+    if row.kind == "lock" and first.old_mode is None:  # Windows: an access list, not a mode
+        many = f"{len(row.changes)} files: " if len(row.changes) > 1 else ""
+        return Text(f"{many}access list → other users removed")
     if row.kind == "lock" and len(row.changes) > 1:
         return Text(f"{len(row.changes)} files → owner only")
     if row.kind == "lock" and first.old_mode is not None:
         return Text(f"{first.old_mode:04o} → {first.old_mode & ~0o077:04o}, owner only")
     return Text(clean(first.shown))
+
+
+def _slashes(rest: str) -> str:
+    """The part of a path after ~, with forward slashes on Windows (doubled ones are JSON's)."""
+    return rest.replace("\\\\", "/").replace("\\", "/") if os.sep == "\\" else rest
 
 
 def _prose(text: str) -> Text:
@@ -68,7 +84,13 @@ def _prose(text: str) -> Text:
     home = str(Path.home())
     text = clean(text, None)
     if home not in ("", "/"):
-        text = text.replace(f'"{home}/', '"~/').replace(f'"{home}"', '"~"')
+        # Display paths are JSON-quoted, so on Windows a backslash arrives doubled: match both.
+        homes = "|".join(re.escape(v) for v in {home, home.replace("\\", "\\\\")})
+        text = re.sub(
+            f'"(?:{homes})' + r'(?=[/\\"])([/\\][^"]*)?',
+            lambda m: '"~' + _slashes(m.group(1) or ""),
+            text,
+        )
     out = Text()
     end = 0
     for stub in STUB.finditer(text):
@@ -176,6 +198,8 @@ def render_outcome(
     *,
     plan: Plan | None = None,
     note: str | None = None,
+    not_checked: Sequence[str] = (),
+    known: Sequence[Known] = (),
 ) -> None:
     """After the plan (and the y/N question): what was fixed and what was not, what still
     blocks, then the verdict of the re-check (BLOCK or CLEAR, from ui.results). `outcome` None:
@@ -210,8 +234,14 @@ def render_outcome(
                 # "fix masked it", and this key is still in its file.
                 for line in hang(DETAIL_INDENT, _prose(f.detail), width):
                     console.print(line)
+    if known:  # findings the project accepted: left alone, shown apart
+        known_section(known, blocks.next(), gap=False)
+    for gap in not_checked:
+        blocks.next()
+        for line in hang(Text("not checked  ", style="ap.dim"), clean(gap), width):
+            console.print(line)
     blocks.next()
-    for line in verdict_lines(after_findings, fail_on, width):
+    for line in verdict_lines(after_findings, fail_on, width, len(known)):
         console.print(line)
 
 

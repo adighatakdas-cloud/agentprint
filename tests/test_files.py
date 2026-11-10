@@ -8,7 +8,7 @@ from agentprint.files import iter_lines, walk_files
 
 def test_reads_lines_with_numbers(tmp_path):
     f = tmp_path / "a.jsonl"
-    f.write_text("one\ntwo\n")
+    f.write_bytes(b"one\ntwo\n")
     assert list(iter_lines(f)) == [(1, "one\n"), (2, "two\n")]
 
 

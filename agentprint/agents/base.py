@@ -12,6 +12,7 @@ from typing import Any, Protocol
 
 from ..files import walk_files
 from ..models import AgentConfig, Artifact, HookCommand, Kind, McpServer, PackageRule
+from ..structured import load
 
 
 @dataclass(frozen=True)
@@ -60,12 +61,113 @@ class Agent(Protocol):
         a file the agent doesn't understand (or a broken one) gives an empty AgentConfig."""
         ...
 
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        """Where this agent loads extensions from, in a home folder and a project (either may
+        be None): instruction files, and each skill, command, subagent, rule, plugin or
+        extension in the folders that hold them. Each path is one extension, a file or a folder
+        read whole (extension_files); a path that does not exist is simply not read."""
+        ...
+
 
 def artifacts(agent: str, kind: Kind, *paths: Path, personal: bool = False) -> Iterator[Artifact]:
     """Every existing file at or under each path, tagged with its agent and kind."""
     for path in paths:
         for file in walk_files(path):
             yield Artifact(agent=agent, kind=kind, path=file, personal=personal)
+
+
+# --- extensions: what an agent loads as instructions or runs as its tools (AP010, AP011) ------
+
+
+@dataclass(frozen=True)
+class ExtensionArtifact(Artifact):
+    """A file of an agent extension (Kind.EXTENSION), with the extension it belongs to: one
+    plugin, extension, skill, rule or command folder, or the instruction file itself. A check
+    reads the file's place in it to tell a plugin's README.md or docs/ from what the agent
+    loads."""
+
+    root: Path | None = None
+
+
+# Folders an agent never loads from inside an extension: dependencies, version control data and
+# caches. Skipped at any depth, so a plugin's node_modules is not read as part of the plugin.
+NOT_LOADED = frozenset(
+    {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "site-packages"}
+    | {".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".cache"}
+)
+MAX_EXTENSION_FILES = 4000  # files listed per extension; past that the rest is not read
+
+
+def children(*folders: Path) -> list[Path]:
+    """Each entry of each folder, sorted: a folder of skills, rules, commands or plugins holds
+    one extension per entry. A missing or unreadable folder has none."""
+    found: list[Path] = []
+    for folder in folders:
+        try:
+            found += sorted(folder.iterdir())
+        except OSError:
+            continue
+    return found
+
+
+def live_versions(folders: Iterable[Path]) -> list[Path]:
+    """The cached plugin versions still in use: an update or uninstall leaves `.orphaned_at` in
+    the old version folder until a cleanup deletes it (Claude Code; read the same way for
+    Codex, whose cache has the same layout)."""
+    live = []
+    for folder in folders:
+        try:
+            if folder.is_dir() and not (folder / ".orphaned_at").exists():
+                live.append(folder)
+        except OSError:
+            continue
+    return live
+
+
+def each(*paths: Path) -> list[Path]:
+    """A folder's entries (children), or the path itself when it is a file or missing: for
+    names that are a file in one version of an agent and a folder in another (.clinerules)."""
+    found: list[Path] = []
+    for path in paths:
+        try:
+            folder = path.is_dir()
+        except OSError:
+            folder = False
+        found += children(path) if folder else [path]
+    return found
+
+
+def extension_files(agent: str, roots: Iterable[Path]) -> Iterator[Artifact]:
+    """Every file of each extension, as Kind.EXTENSION artifacts that remember their root. A
+    root that is a symlink is followed (dotfile setups); symlinks inside a folder are not."""
+    for root in roots:
+        for path in _extension_walk(root):
+            yield ExtensionArtifact(agent, Kind.EXTENSION, path, root=root)
+
+
+def _extension_walk(root: Path) -> Iterator[Path]:
+    try:
+        if root.is_file():
+            yield root
+            return
+        if root.name in NOT_LOADED or not root.is_dir():
+            return
+    except OSError:
+        return
+    count = 0
+    for dirpath, dirs, names in os.walk(root, followlinks=False):
+        dirs[:] = sorted(d for d in dirs if d not in NOT_LOADED)
+        for name in sorted(names):
+            path = Path(dirpath) / name
+            try:
+                if path.is_symlink() or not path.is_file():
+                    continue
+            except OSError:
+                continue
+            yield path
+            count += 1
+            if count >= MAX_EXTENSION_FILES:
+                return
 
 
 def gemini_folder(home: Path) -> Path:
@@ -195,13 +297,18 @@ def mcp_servers(servers: Any, secret_fix: str) -> tuple[McpServer, ...]:
         if not isinstance(entry, dict):
             continue
         fields: list[tuple[str, str]] = []
+        argv: list[str] = []
         command = entry.get("command")
         if isinstance(command, str):
             fields.append(("command", command))
+            argv.append(command)
         elif isinstance(command, list):  # OpenCode: ["npx", "-y", "pkg", ...]
+            argv += [c for c in command if isinstance(c, str)]
             fields += _argv_fields("command", [str(c) for c in command if isinstance(c, str)])
         args = entry.get("args")
         if isinstance(args, list):
+            if argv:
+                argv += [a for a in args if isinstance(a, str)]
             fields += _argv_fields("args", [str(a) for a in args if isinstance(a, str)])
         for key in _ENV_KEYS:
             values = entry.get(key)
@@ -221,5 +328,131 @@ def mcp_servers(servers: Any, secret_fix: str) -> tuple[McpServer, ...]:
         for key in _TOKEN_KEYS:
             if isinstance(entry.get(key), str):
                 fields.append((key, f"{key} = {entry[key]}"))
-        found.append(McpServer(str(name), tuple(fields), secret_fix))
+        found.append(McpServer(str(name), tuple(fields), secret_fix, tuple(argv)))
     return tuple(found)
+
+
+# --- MCP config files: one reader for every agent's format -----------------------------------
+
+# Why an agent's MCP config file is a package print (AP006); keys in it are reported separately.
+MCP_WHY = "MCP server config; rarely meant for a package (keys inside are reported separately)."
+
+# What some agents call a server's command, env block and URL (Goose: cmd, envs, uri).
+_MCP_ALIASES = {"cmd": "command", "envs": "env", "uri": "url"}
+
+
+def _entry(entry: Any) -> Any:
+    """An MCP server entry with the alias field names renamed to the common ones."""
+    if not isinstance(entry, dict) or not any(alias in entry for alias in _MCP_ALIASES):
+        return entry
+    renamed = dict(entry)
+    for alias, name in _MCP_ALIASES.items():
+        if alias in renamed and name not in renamed:
+            renamed[name] = renamed.pop(alias)
+    return renamed
+
+
+def _server_map(value: Any) -> dict[str, Any]:
+    """{name: entry} from either shape agents write: a map of named entries, or a list of
+    entries that each carry their own "name" (Continue's config.yaml)."""
+    if isinstance(value, dict):
+        return {str(name): _entry(entry) for name, entry in value.items()}
+    if isinstance(value, list):
+        return {
+            entry["name"]: _entry(entry)
+            for entry in value
+            if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+        }
+    return {}
+
+
+def read_mcp_servers(data: Any, secret_fix: str, *keys: str) -> tuple[McpServer, ...]:
+    """MCP servers in a parsed config file, under any of the top-level `keys`: mcpServers,
+    servers (VS Code), mcp (Kilo, Crush), context_servers (Zed), the flat key "amp.mcpServers"
+    (Amp) or extensions (Goose), as a map of named entries or a list of entries with a name."""
+    if not isinstance(data, dict):
+        return ()
+    found: list[McpServer] = []
+    for key in keys:
+        found += mcp_servers(_server_map(data.get(key)), secret_fix)
+    return tuple(found)
+
+
+def read_mcp_file(path: Path, secret_fix: str, *keys: str) -> AgentConfig:
+    """read_mcp_servers for one JSON, JSONC or YAML file; never raises."""
+    return AgentConfig(mcp_servers=read_mcp_servers(load(path), secret_fix, *keys))
+
+
+@dataclass(frozen=True)
+class EnvReference:
+    """How `agentprint fix` moves an inline key in one agent's MCP file to an environment
+    variable, for agents that document such a reference: the key of the server map, the text
+    that names the variable ("${env:{var}}" in VS Code), and where the human then sets it."""
+
+    servers: str
+    template: str
+    where: str
+    projects: bool = False  # also each project's own servers (Claude Code ~/.claude.json)
+    env: str = "env"  # the env block's key in a server entry ("environment" in Kilo Code)
+
+    def reference(self, var: str) -> str:
+        return self.template.replace("{var}", var)
+
+
+@dataclass(frozen=True)
+class AgentDoc:
+    """How the docs' agents table and `agentprint status` describe an agent that a sweep reads
+    in full but `agentprint install` can't arm yet (tools/gen_docs.py draws the table)."""
+
+    label: str
+    reads: str  # what a sweep reads (Markdown)
+    keys: str  # its own key stores: only who can read them is checked (AP008)
+    fix: str  # what `agentprint fix` does for it
+    checked: str  # which docs the paths come from, and when they were read
+    unverified: str = ""  # paths probed but not confirmed by the agent's docs
+
+
+def glob(base: Path, pattern: str) -> list[Path]:
+    """Sorted matches of a glob under base; nothing when base can't be read."""
+    try:
+        return sorted(base.glob(pattern))
+    except OSError:
+        return []
+
+
+def app_dirs(home: Path, *name: str) -> list[Path]:
+    """An app's own folder on macOS, Linux and Windows: ~/Library/Application Support/<name>,
+    ~/.config/<name> and %APPDATA%/<name> (VS Code, and Electron apps such as Claude Desktop)."""
+    return [
+        home.joinpath("Library", "Application Support", *name),
+        home.joinpath(".config", *name),
+        home.joinpath("AppData", "Roaming", *name),
+    ]
+
+
+# Files at a plugin's or extension's root that declare MCP servers under "mcpServers": Claude
+# Code and Copilot CLI (.mcp.json, plugin.json), Agent Plugins, Codex and Cursor (mcp.json),
+# Gemini CLI (gemini-extension.json), Qwen Code (qwen-extension.json), Antigravity
+# (mcp_config.json).
+PLUGIN_MCP_FILES = frozenset(
+    {".mcp.json", "mcp.json", "mcp_config.json", "gemini-extension.json", "plugin.json"}
+    | {"qwen-extension.json"}
+    | {".claude-plugin/plugin.json", ".github/plugin/plugin.json", ".plugin/plugin.json"}
+    | {".cursor-plugin/plugin.json", ".codex-plugin/plugin.json"}
+)
+
+
+def extension_mcp_servers(artifact: Artifact) -> tuple[McpServer, ...]:
+    """The MCP servers a plugin or extension declares in its own config (AP011); () for every
+    other file. Only an inline "mcpServers" map: a path written there names one of these files,
+    which is read on its own."""
+    root = getattr(artifact, "root", None)
+    if artifact.kind is not Kind.EXTENSION or root is None:
+        return ()
+    try:
+        rel = artifact.path.relative_to(root).as_posix()
+    except ValueError:
+        return ()
+    if rel not in PLUGIN_MCP_FILES:
+        return ()
+    return read_mcp_servers(load(artifact.path), "", "mcpServers")

@@ -43,9 +43,12 @@ export default defineConfig({
           label: "Reference",
           items: [
             { slug: "agents" },
+            { slug: "plugins" },
+            { slug: "config" },
             { slug: "how-it-works" },
             { slug: "privacy" },
             { slug: "comparison" },
+            { slug: "benchmark" },
             { slug: "glossary" },
           ],
         },

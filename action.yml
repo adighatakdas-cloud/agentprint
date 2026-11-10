@@ -95,6 +95,8 @@ runs:
         AP_PATH: ${{ inputs.path }}
         AP_FAIL_ON: ${{ inputs.fail-on }}
         AP_BADGE_DIR: ${{ inputs.badge-dir }}
+        AP_ATTEST: ${{ inputs.attest-badge }}
+        AP_PUBLISH: ${{ inputs.publish-badge }}
         COLUMNS: "160"
       run: |
         set +e  # keep going on findings: the last step reports the exit code
@@ -109,6 +111,11 @@ runs:
             exit 0
             ;;
         esac
+        # A badge that is signed or published counts every print: the repository's own
+        # .agentprint.toml or baseline must not be able to turn it CLEAR (agentprint's --no-config).
+        if [ "$AP_ATTEST" = "true" ] || [ "$AP_PUBLISH" = "true" ] || [ "$AP_PUBLISH" = "dry-run" ]; then
+          cmd+=(--no-config)
+        fi
         badge=()
         if [ -n "$AP_BADGE_DIR" ]; then
           mkdir -p "$AP_BADGE_DIR"

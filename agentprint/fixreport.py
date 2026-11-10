@@ -11,16 +11,20 @@ never holds a key.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from . import __version__
 from .advice import Moment
 from .fix import Change, Outcome, Plan
 from .models import Finding
-from .report import DATA_NOTE, FailOn, exit_code, finding_dict, summary
+from .report import DATA_NOTE, FailOn, add_known, exit_code, finding_dict, known_lines, summary
 from .sanitize import clean, quote
+
+if TYPE_CHECKING:
+    from .baseline import Known
 
 UNDOABLE = ("ignore", "lock")  # the kinds of change `agentprint fix --undo` can put back
 RERUN = "re-run with --yes to apply"
@@ -77,6 +81,15 @@ def fixes(n: int) -> str:
     return f"{n} fix" if n == 1 else f"{n} fixes"
 
 
+def env_field(change: Change) -> str:
+    """The env block an env change is in: "env", or "environment" (Kilo Code's name)."""
+    try:
+        field = json.loads(change.json_path)[-2]
+    except (ValueError, IndexError, TypeError):
+        return "env"
+    return field if field in ("env", "environment") else "env"
+
+
 def server_name(change: Change) -> str:
     """The MCP server an env change is in (scanned text: quote or clean it before showing)."""
     try:
@@ -97,11 +110,15 @@ def describe(row: Row) -> str:
         more = f" ({places} places)" if places > 1 else ""
         return f"key {quote(first.shown)} masked in place{more}"
     if row.kind == "env":
-        reference = "${" + first.var + "}"
+        reference = first.reference or "${" + first.var + "}"
         server = quote(server_name(first))
-        return f"env.{first.var} of MCP server {server} set to {quote(reference)}"
+        return f"{env_field(first)}.{first.var} of MCP server {server} set to {quote(reference)}"
     if row.kind == "ignore":
         return f"line {quote(first.line_text)} added"
+    if row.kind == "lock" and first.old_mode is None:  # Windows: an access list, not a mode
+        if len(row.changes) > 1:
+            return f"{len(row.changes)} files: other users removed from their access lists (icacls)"
+        return first.shown
     if row.kind == "lock" and len(row.changes) > 1:
         return f"{len(row.changes)} files made private to the owner (chmod go-rwx)"
     if row.kind == "lock" and first.old_mode is not None:
@@ -121,8 +138,27 @@ def to_agent_fix(
     fail_on: FailOn,
     *,
     dry_run: bool = False,
+    not_checked: Sequence[str] = (),
+    known: Sequence[Known] = (),
 ) -> str:
-    """Compact text for an AI agent. Line 1 is the verdict after fixing. `outcome` is None when
+    """Compact text for an AI agent, then the `known:` line (findings the project accepted,
+    left alone) and one `not_checked:` line per thing this machine could not be checked for
+    (so a clean result is never read as covering it)."""
+    text = _to_agent_fix(plan, outcome, after, fail_on, dry_run=dry_run)
+    if known:
+        text += "".join(f"\n{line}" for line in known_lines(known))
+    return text + "".join(f"\nnot_checked: {clean(note)}" for note in not_checked)
+
+
+def _to_agent_fix(
+    plan: Plan,
+    outcome: Outcome | None,
+    after: list[Finding],
+    fail_on: FailOn,
+    *,
+    dry_run: bool,
+) -> str:
+    """The text for an AI agent. Line 1 is the verdict after fixing. `outcome` is None when
     nothing was applied (no --yes, a dry run, or nothing to apply); `after` is the re-check, or
     the scan itself when nothing changed."""
     planned = rows(plan.changes, plan.findings)
@@ -209,6 +245,8 @@ def to_json_fix(
     fail_on: FailOn,
     *,
     pack: bool = False,
+    not_checked: Sequence[str] = (),
+    known: Sequence[Known] = (),
 ) -> str:
     """The plan, what was applied or skipped, what needs the human, and the re-check. One entry
     per change (a folder of 28 locked files is 28 entries)."""
@@ -227,6 +265,9 @@ def to_json_fix(
             "findings": [finding_dict(f, moment) for f in after],
         },
     }
+    if not_checked:  # absent when everything was checked
+        data["not_checked"] = list(not_checked)
+    add_known(data, known, data["after"]["summary"], moment)
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 

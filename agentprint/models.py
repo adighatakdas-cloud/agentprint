@@ -7,6 +7,10 @@ from dataclasses import asdict, dataclass
 from enum import IntEnum, StrEnum
 from pathlib import Path
 
+# Checks whose findings are a key, shown only as its redact() stub ("<rule>: sk-a…(len 105)").
+# Ruling C1 and the baseline lean on this set: a new check that reports keys belongs in it.
+KEY_CHECKS = frozenset({"AP001", "AP002", "AP005"})
+
 
 class Severity(IntEnum):
     LOW = 1
@@ -25,6 +29,11 @@ class Kind(StrEnum):
     # Keys are meant to be there, so the content is never scanned; only who can read the file
     # is checked (AP008).
     CREDENTIALS = "credentials"
+    # What an agent loads as instructions or runs as its tools: skills, commands, subagents,
+    # rules and instruction files, and the files of installed plugins and extensions (their
+    # hooks, scripts and MCP config). Read for risky content (AP010) and for MCP servers that
+    # run an unpinned package (AP011); never secret-scanned, never permission-checked.
+    EXTENSION = "extension"
 
 
 @dataclass(frozen=True)
@@ -51,6 +60,10 @@ class Finding:
         # Not a dataclass field, so it never reaches to_dict() or the reports: the exact files
         # a check wants changed (AP008), for `agentprint fix` to use instead of re-deriving them.
         self.paths: tuple[Path, ...] = ()
+        # Not a field either: what a finding that is not a key is about, for its baseline
+        # fingerprint (AP003: the setting and the granted value; AP004: the hook event and its
+        # network indicators). Never a key or a command's text. Empty: the check's title.
+        self.subject: str = ""
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -87,11 +100,13 @@ class HookCommand:
 
 @dataclass(frozen=True)
 class McpServer:
-    """One MCP server entry, flattened to the text fields a key could hide in (AP005)."""
+    """One MCP server entry, flattened to the text fields a key could hide in (AP005), with the
+    command line that starts it (AP011)."""
 
     name: str
     fields: tuple[tuple[str, str], ...]  # (field, text), e.g. ("env.API_KEY", "API_KEY=...")
     secret_fix: str  # how to load a value from the environment instead; "<VAR>" = variable name
+    argv: tuple[str, ...] = ()  # the command and its arguments, as written (AP011)
 
 
 @dataclass(frozen=True)
@@ -101,6 +116,11 @@ class AgentConfig:
     grants: tuple[Grant, ...] = ()
     hooks: tuple[HookCommand, ...] = ()
     mcp_servers: tuple[McpServer, ...] = ()
+
+
+# Ends the detail of a key found in an older version of a file that a push would upload (in a
+# commit on the way out, though no longer in the newest one): " (in pushed commit 1a2b3c4d5e6f)".
+IN_PUSHED_COMMIT = " (in pushed commit "
 
 
 class CannotCheck(Exception):

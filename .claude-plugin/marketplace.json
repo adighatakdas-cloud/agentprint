@@ -1,0 +1,14 @@
+{
+  "name": "agentprint",
+  "owner": {
+    "name": "adighatakdas-cloud",
+    "email": "adi65das@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "agentprint",
+      "source": "./plugins/agentprint",
+      "description": "Stops your AI coding agent from publishing a package or running git push that would leak API keys or agent files, and gives it an MCP server to check first. Offline."
+    }
+  ]
+}

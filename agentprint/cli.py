@@ -5,19 +5,20 @@ from __future__ import annotations
 import os
 import sys
 import time
-from collections.abc import Collection, Iterator
+from collections.abc import Collection, Iterator, Sequence
 from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Annotated, Any, TypeVar, cast
 
 import typer
 from rich.console import Console
 from typer.core import TyperCommand, TyperGroup
 
-from . import __version__
+from . import __version__, platform
 from .advice import Moment
 from .checks import PACKAGE_WANT, check_package
+from .config import Sources
 from .integrations import ALL_INTEGRATIONS
 from .models import Finding
 from .pack import PackError, collect
@@ -26,6 +27,10 @@ from .sarif import to_sarif
 from .scanner import scan as run_scan
 from .ui.detect import is_agent, is_interactive, plain_help, should_animate
 from .ui.theme import console as themed_console
+
+if TYPE_CHECKING:
+    from .baseline import Known, Project, Settled
+    from .roster import AgentState
 
 AGENT_NAMES = ", ".join(ALL_INTEGRATIONS)  # help text stays in step with the integrations
 
@@ -89,6 +94,25 @@ BadgeOpt = Annotated[
 ]
 FailOnOpt = Annotated[
     FailOn, typer.Option(help="Exit 1 if any finding is at or above this severity.")
+]
+ConfigOpt = Annotated[
+    Path | None,
+    typer.Option(
+        "--config",
+        help="Project config to read. Default: .agentprint.toml in the project, else "
+        "[tool.agentprint] in its pyproject.toml.",
+    ),
+]
+NoConfigOpt = Annotated[
+    bool,
+    typer.Option("--no-config", help="Read no project config and no baseline: every print counts."),
+]
+BaselineOpt = Annotated[
+    Path | None,
+    typer.Option(
+        "--baseline",
+        help="Baseline of accepted findings. Default: .agentprint-baseline.json in the project.",
+    ),
 ]
 
 
@@ -165,11 +189,11 @@ def _bare(ctx: typer.Context, plain: bool) -> int:
 def _run_action(ctx: typer.Context, action: str | None, plain: bool) -> int:
     """Run what was picked in the menu, through the same code as the command itself."""
     if action == "scan":
-        return run_scan_command(Path("."), None, False, None, FailOn.high, plain)
+        return run_scan_command(Path("."), None, False, None, None, plain)
     if action == "pack":
         if not _python_build_ok(Path("."), plain):
             return 0
-        return run_pack_command(Path("."), None, FailOn.high, plain)
+        return run_pack_command(Path("."), None, None, plain)
     if action in ("install", "uninstall"):
         return _arm(action == "install")
     if action == "status":
@@ -245,16 +269,20 @@ def _emit(
     labels: Collection[str] = (),
     out: Console | None = None,
     header: str | None = None,
+    not_checked: Sequence[str] = (),
+    known: Sequence[Known] = (),
 ) -> None:
     if fmt is Format.json:
-        typer.echo(to_json(findings, moment))
-    elif fmt is Format.sarif:
+        typer.echo(to_json(findings, moment, not_checked, known))
+    elif fmt is Format.sarif:  # only what counts: known findings are left out
         typer.echo(to_sarif(findings, package=package, labels=labels))
     elif fmt is Format.agent:
-        typer.echo(to_agent(findings, fail_on, moment))
+        typer.echo(to_agent(findings, fail_on, moment, not_checked=not_checked, known=known))
     else:
         out = out or themed_console(dict(os.environ))
-        print_table(findings, out, fail_on=fail_on, header=header)
+        print_table(
+            findings, out, fail_on=fail_on, header=header, not_checked=not_checked, known=known
+        )
 
 
 def _roster_size(home: Path | None) -> int:
@@ -267,7 +295,7 @@ def _roster_size(home: Path | None) -> int:
 
 
 def _write_badge(
-    directory: Path | None, command: str, fail_on: FailOn, findings: list[Finding]
+    directory: Path | None, command: str, fail_on: FailOn, findings: list[Finding], known: int = 0
 ) -> int:
     """After the normal output: write the badge files. 0, or 2 with a message if it can't."""
     if directory is None:
@@ -275,7 +303,7 @@ def _write_badge(
     from . import badge
 
     try:
-        badge.write(directory, command=command, fail_on=fail_on, findings=findings)
+        badge.write(directory, command=command, fail_on=fail_on, findings=findings, known=known)
     except OSError as exc:
         why = exc.strerror or type(exc).__name__
         typer.secho(f"error: cannot write the badge to {directory}: {why}", err=True, fg="red")
@@ -283,26 +311,53 @@ def _write_badge(
     return 0
 
 
+def _given(ctx: typer.Context, value: FailOn, name: str = "fail_on") -> FailOn | None:
+    """An option's value if it was typed on the command line; None lets the config decide.
+    (By the source's name: typer ships its own copy of click's ParameterSource.)"""
+    source = ctx.get_parameter_source(name)
+    return value if getattr(source, "name", None) == "COMMANDLINE" else None
+
+
+def _project(root: Path, sources: Sources | None, home: Path | None = None) -> Project:
+    """The project's config and baseline (and with `home`, the personal baseline in it), each
+    warning about them on stderr."""
+    from .baseline import load
+    from .sanitize import safe_text
+
+    project = load(root, sources, home)
+    for warning in project.warnings:  # config and baseline text: keys masked, cleaned
+        typer.secho(f"warning: {safe_text(warning)}", err=True, fg=typer.colors.YELLOW)
+    return project
+
+
 def run_scan_command(
     path: Path,
     home: Path | None,
     no_home: bool,
     fmt: Format | None,
-    fail_on: FailOn,
+    fail_on: FailOn | None,
     plain: bool,
     badge_dir: Path | None = None,
+    sources: Sources | None = None,
 ) -> int:
-    """`agentprint scan`, returning the exit code (the menu runs it too)."""
+    """`agentprint scan`, returning the exit code (the menu runs it too). `fail_on` None: the
+    project config's, else high."""
+    from .baseline import settle
+
     fmt = _auto_format(fmt, Format.agent, Format.table)
     home_dir = None if no_home else (home or Path.home())
     for target in (path, home_dir):
         if target is not None and not target.is_dir():
             typer.secho(f"error: {target} does not exist or is not a directory", err=True, fg="red")
             return 2
+    project = _project(path, sources, home_dir)
     out = themed_console(dict(os.environ), plain=plain) if fmt is Format.table else None
     started = time.perf_counter()
     with _working(out, plain, "sweeping…"):
-        findings = run_scan(home_dir, path)
+        settled = settle(
+            run_scan(home_dir, path), project, fail_on, publishing=False, home=home_dir
+        )
+    findings, fail_on = settled.active, settled.fail_on
     header = None
     if out is not None:
         secs = time.perf_counter() - started
@@ -311,8 +366,24 @@ def run_scan_command(
         else:
             where = f"{'~' if home is None else _short(str(home))} + {path}"
             header = f"agentprint scan  {where} · roster {_roster_size(home)} · {secs:.2f}s"
-    _emit(findings, fmt, fail_on, Moment.scan, out=out, header=header)
-    return _write_badge(badge_dir, "scan", fail_on, findings) or exit_code(findings, fail_on)
+    _emit(
+        findings,
+        fmt,
+        fail_on,
+        Moment.scan,
+        out=out,
+        header=header,
+        not_checked=platform.scan_notes(),
+        known=settled.known,
+    )
+    if fmt is Format.agent:
+        from .protect import protection_line
+
+        protected = protection_line(path)  # only in a protected repo: other output is unchanged
+        if protected:
+            typer.echo(protected)
+    known = len(settled.known)
+    return _write_badge(badge_dir, "scan", fail_on, findings, known) or exit_code(findings, fail_on)
 
 
 @app.command()
@@ -329,31 +400,90 @@ def scan(
     fail_on: FailOnOpt = FailOn.high,
     plain: PlainOpt = False,
     badge: BadgeOpt = None,
+    config: ConfigOpt = None,
+    no_config: NoConfigOpt = False,
+    baseline_file: BaselineOpt = None,
 ) -> None:
     """Find secrets that AI coding agents left in history and settings files."""
     plain = _top_plain(ctx, plain)
-    raise typer.Exit(run_scan_command(path, home, no_home, fmt, fail_on, plain, badge))
+    sources = Sources(config, no_config, baseline_file)
+    raise typer.Exit(
+        run_scan_command(
+            path, home, no_home, fmt, _given(ctx, fail_on), plain, badge, sources=sources
+        )
+    )
+
+
+class IfUnavailable(StrEnum):
+    block = "block"
+    allow = "allow"
+
+
+def _one_line(error: Exception) -> str:
+    """An error as one short line: its first line, keys masked (no tool's whole stderr)."""
+    from .sanitize import one_line
+
+    return one_line(error)
+
+
+# `pack --if-unavailable allow` exits with these instead of 1 and 2, so a wrapper (the npm one)
+# can tell agentprint's own verdict from uv, npx or Python failing to run agentprint at all.
+ALLOW_BLOCK_EXIT = 3  # something would leak
+ALLOW_UNCHECKED_EXIT = 4  # the package could not be checked (not a missing tool)
 
 
 def run_pack_command(
     target: Path,
     fmt: Format | None,
-    fail_on: FailOn,
+    fail_on: FailOn | None,
     plain: bool,
     badge_dir: Path | None = None,
+    sources: Sources | None = None,
+    if_unavailable: IfUnavailable = IfUnavailable.block,
 ) -> int:
-    """`agentprint pack`, returning the exit code (the menu runs it too)."""
+    """`agentprint pack`, returning the exit code (the menu runs it too). The project config is
+    read from the target folder (for a built file, from the current folder); `fail_on` None:
+    the config's, else high.
+
+    Each ecosystem in the folder is checked on its own: what one finds always counts, even if
+    another can't be listed. Inside an npm `prepublishOnly` only the npm package is checked
+    (that is what npm is publishing). With `if_unavailable` allow, a tool agentprint needs being
+    missing (npm, uv) lets the publish go with one line; a package that can't be checked still
+    blocks, and the exit codes are ALLOW_BLOCK_EXIT / ALLOW_UNCHECKED_EXIT instead of 1 / 2."""
+    from .baseline import settle
+    from .guard import strict_requested
+    from .pack import collect_each
+
+    allow = if_unavailable is IfUnavailable.allow
+    # AGENTPRINT_STRICT=1: a missing tool no longer lets the publish go (strict fails closed).
+    tool_may_be_missing = allow and not strict_requested(os.environ)
     fmt = _auto_format(fmt, Format.agent, Format.table)
+    project = _project(target if target.is_dir() else Path("."), sources)
     out = themed_console(dict(os.environ), plain=plain) if fmt is Format.table else None
+    # npm (and pnpm, yarn, bun) name the running script in lowercase npm_lifecycle_event.
+    npm_only = os.environ.get("npm_lifecycle_event") == "prepublishOnly"  # noqa: SIM112
     started = time.perf_counter()
     try:
         with _working(out, plain, "preflighting…"):
-            listings = collect(target, PACKAGE_WANT)
+            listings, errors = collect_each(target, PACKAGE_WANT, npm_only=npm_only)
     except PackError as exc:
-        typer.secho(f"error: {exc}", err=True, fg=typer.colors.RED)
-        return 2
+        listings, errors = [], [exc]
+    missing_tool = bool(errors) and all(error.unavailable for error in errors)
+    if not listings:
+        if tool_may_be_missing and missing_tool:
+            typer.echo(
+                f"agentprint: could not check this package ({_one_line(errors[0])}); the "
+                "publish goes on (--if-unavailable allow).",
+                err=True,
+            )
+            return 0
+        _unchecked(errors[0], allow)
+        return ALLOW_UNCHECKED_EXIT if allow else 2
     secs = time.perf_counter() - started
     findings = [finding for listing in listings for finding in check_package(listing)]
+    # Ruling C1: a key in the package always counts; ignore and baseline cover the rest.
+    settled = settle(findings, project, fail_on, publishing=True, package=True)
+    findings, fail_on = settled.active, settled.fail_on
     labels = [listing.label for listing in listings]
     header = f"agentprint pack  {', '.join(labels)} · {secs:.2f}s" if out is not None else None
     _emit(
@@ -365,8 +495,36 @@ def run_pack_command(
         labels=labels,
         out=out,
         header=header,
+        known=settled.known,
+        not_checked=[f"could not list part of it: {_one_line(e)}" for e in errors],
     )
-    return _write_badge(badge_dir, "pack", fail_on, findings) or exit_code(findings, fail_on)
+    known = len(settled.known)
+    code = _write_badge(badge_dir, "pack", fail_on, findings, known) or exit_code(findings, fail_on)
+    if code == 1:  # a finding always blocks, whatever else could not be listed
+        return ALLOW_BLOCK_EXIT if allow else 1
+    if code or not errors:
+        return code
+    if tool_may_be_missing and missing_tool:
+        typer.echo(
+            f"agentprint: could not check part of this package ({_one_line(errors[0])}); the "
+            "publish goes on (--if-unavailable allow).",
+            err=True,
+        )
+        return 0
+    _unchecked(errors[0], allow)
+    return ALLOW_UNCHECKED_EXIT if allow else 2
+
+
+def _unchecked(error: PackError, allow: bool) -> None:
+    """Say a package could not be checked, in one line with every key masked (the error can
+    hold npm's or uv's stderr); in allow mode in the words a wrapper reads."""
+    if allow:
+        typer.echo(
+            f"agentprint: could not check this package ({_one_line(error)}); the publish stops.",
+            err=True,
+        )
+    else:
+        typer.secho(f"error: {_one_line(error)}", err=True, fg=typer.colors.RED)
 
 
 @app.command()
@@ -380,6 +538,17 @@ def pack(
     fail_on: FailOnOpt = FailOn.high,
     plain: PlainOpt = False,
     badge: BadgeOpt = None,
+    config: ConfigOpt = None,
+    no_config: NoConfigOpt = False,
+    baseline_file: BaselineOpt = None,
+    if_unavailable: Annotated[
+        IfUnavailable,
+        typer.Option(
+            "--if-unavailable",
+            help="allow: if a tool agentprint needs (npm, uv) is missing, exit 0 with one line. "
+            "Verdicts then exit 3 (would leak) and 4 (can't check) instead of 1 and 2.",
+        ),
+    ] = IfUnavailable.block,
 ) -> None:
     """Check what a package would publish: agent files, the keys inside them, and what lets an
     AI rebuild your source (source maps, original source, AI instruction files).
@@ -388,7 +557,11 @@ def pack(
     Python projects are built with `uv build`, which runs the project's build backend and may
     download it from PyPI: only point it at projects you trust, or pass a built archive.
     """
-    raise typer.Exit(run_pack_command(target, fmt, fail_on, _top_plain(ctx, plain), badge))
+    plain = _top_plain(ctx, plain)
+    sources = Sources(config, no_config, baseline_file)
+    given = _given(ctx, fail_on)
+    code = run_pack_command(target, fmt, given, plain, badge, sources, if_unavailable)
+    raise typer.Exit(code)
 
 
 class FixFormat(StrEnum):
@@ -444,15 +617,18 @@ def run_fix_command(
     only: str | None,
     dry_run: bool,
     yes: bool,
-    fail_on: FailOn,
+    fail_on: FailOn | None,
     fmt: FixFormat | None,
     plain: bool,
+    sources: Sources | None = None,
 ) -> int:
     """`agentprint fix`: sweep (or preflight), plan, ask or take --yes, apply, check again.
 
     It asks only a person at a real terminal (never an AI agent, a pipe or CI), default No.
-    Without that answer or --yes, it prints the plan and changes nothing."""
+    Without that answer or --yes, it prints the plan and changes nothing. Findings the project
+    accepted (its baseline and ignore rules) are left alone."""
     from . import fix as fixer
+    from .baseline import settle
     from .fixreport import RERUN, fixes, rows, to_agent_fix, to_json_fix
     from .ui import fixview
 
@@ -490,12 +666,19 @@ def run_fix_command(
         )
         header = f"agentprint fix  {where}"
         working = "sweeping…"
+    swept_home = None if pack or no_home else (home or Path.home()).absolute()
+    project = _project(path if path.is_dir() else Path("."), sources, swept_home)
+
+    def counted(found: list[Finding], given: FailOn | None = fail_on) -> Settled:
+        return settle(found, project, given, publishing=pack, package=pack, home=swept_home)
+
     try:
         with _working(out, plain, working):
-            before = check()
+            settled = counted(check())
     except PackError as exc:
         typer.secho(f"error: {exc}", err=True, fg=typer.colors.RED)
         return 2
+    before = settled.active
     scope = [f for f in before if wanted is None or f.check_id in wanted]
     # The scan's own Finding objects: AP008 hands its file list over on them (Finding.paths).
     the_plan = fixer.plan(scope, pack=pack, root=root)
@@ -523,22 +706,38 @@ def run_fix_command(
         if not (dry_run or ask):
             note = f"Nothing changed: {RERUN}."
 
-    outcome, after, status = None, before, 0
+    outcome, status = None, 0
     if go:
         with _working(out, plain, "fixing…"):
             outcome = fixer.apply(the_plan, (home or Path.home()).absolute())
             try:
-                after = check()
+                settled = counted(check())
             except PackError as exc:  # changes made, but the preflight can't run again
                 typer.secho(f"error: could not check again: {exc}", err=True, fg="red")
                 status = 2
+    after, known, fail_on = settled.active, settled.known, settled.fail_on
+    gaps = () if pack else platform.scan_notes()  # a package check reads no permissions
     if fmt is FixFormat.json:
-        typer.echo(to_json_fix(the_plan, outcome, after, fail_on, pack=pack))
+        typer.echo(
+            to_json_fix(the_plan, outcome, after, fail_on, pack=pack, not_checked=gaps, known=known)
+        )
     elif fmt is FixFormat.agent:
-        typer.echo(to_agent_fix(the_plan, outcome, after, fail_on, dry_run=dry_run))
+        typer.echo(
+            to_agent_fix(
+                the_plan,
+                outcome,
+                after,
+                fail_on,
+                dry_run=dry_run,
+                not_checked=gaps,
+                known=known,
+            )
+        )
     else:
         assert out is not None
-        fixview.render_outcome(outcome, after, out, fail_on, plan=the_plan, note=note)
+        fixview.render_outcome(
+            outcome, after, out, fail_on, plan=the_plan, note=note, not_checked=gaps, known=known
+        )
     return status or exit_code(after, fail_on)
 
 
@@ -582,6 +781,9 @@ def fix(
         bool, typer.Option("--undo", help="Put back the ignore and lock changes of the last fix.")
     ] = False,
     plain: PlainOpt = False,
+    config: ConfigOpt = None,
+    no_config: NoConfigOpt = False,
+    baseline_file: BaselineOpt = None,
 ) -> None:
     """Fix the prints a sweep finds, then check again: BLOCK to CLEAR in one command.
 
@@ -604,33 +806,362 @@ def fix(
         raise typer.Exit(
             _run_undo(home, _auto_format(fmt, FixFormat.agent, FixFormat.table), plain)
         )
+    sources = Sources(config, no_config, baseline_file)
+    given = _given(ctx, fail_on)
     raise typer.Exit(
-        run_fix_command(path, home, no_home, pack, only, dry_run, yes, fail_on, fmt, plain)
+        run_fix_command(path, home, no_home, pack, only, dry_run, yes, given, fmt, plain, sources)
     )
+
+
+class BaselineFormat(StrEnum):
+    table = "table"
+    json = "json"
+    agent = "agent"
+
+
+def run_baseline_command(
+    path: Path,
+    mode: str,
+    home: Path | None,
+    sources: Sources,
+    fmt: BaselineFormat | None,
+    plain: bool,
+) -> int:
+    """`agentprint baseline`: write (or --update, --prune, --check) the project's baseline, and
+    with a home folder your personal one (<home>/.agentprint/baseline.json) for its findings."""
+    from . import baseline as bl
+
+    fmt = _auto_format(fmt, BaselineFormat.agent, BaselineFormat.table)
+    for target in (path, home):
+        if target is not None and not target.is_dir():
+            typer.secho(f"error: {target} does not exist or is not a directory", err=True, fg="red")
+            return 2
+    if sources.off and sources.baseline is None:
+        typer.secho(
+            "error: --no-config leaves no baseline file: pass --baseline", err=True, fg="red"
+        )
+        return 2
+    project = _project(path, sources, home)
+    file = project.config.baseline
+    assert file is not None
+    # Findings an ignore rule covers are known already; the baseline takes the rest.
+    findings = run_scan(home, path)
+    counted = bl.settle(findings, bl.Project(project.config, {}), None, publishing=False, home=home)
+    # Each file: where it is, its entries, today's findings for it, whether it is personal, and
+    # the folder it must stay in (unless --baseline named it).
+    targets = [(file, project.entries, bl.tally(counted.active, path, home), False, path)]
+    if home is not None:
+        now = bl.tally(counted.active, path, home, personal=True)
+        targets.append((home / bl.PERSONAL, project.personal, now, True, home))
+    if mode == "check":
+        checked = [
+            bl.Checked(_short(str(f)), bl.check(old, now), personal)
+            for f, old, now, personal, _ in targets
+        ]
+        if fmt is BaselineFormat.json:
+            typer.echo(bl.to_json_check(checked))
+        elif fmt is BaselineFormat.agent:
+            typer.echo(bl.to_agent_check(checked))
+        else:
+            _print_baseline_check(checked, plain)
+        return 0
+    written = []
+    for target, old, now, personal, folder in targets:
+        named = sources.baseline is not None and not personal
+        if not _baseline_writable(target, folder, named, personal):
+            return 2
+        change = bl.rewrite(old, now, mode, f"accepted {bl.today()}")
+        if not _write_baseline(target, bl.dumps(change.entries), personal=personal):
+            return 2
+        written.append(bl.Written(_short(str(target)), change, personal))
+    if fmt is BaselineFormat.json:
+        typer.echo(bl.to_json_write(written, mode))
+    elif fmt is BaselineFormat.agent:
+        typer.echo(bl.to_agent_write(written, mode))
+    else:
+        _print_baseline_write(written, plain)
+    return 0
+
+
+def _write_baseline(file: Path, text: str, personal: bool) -> bool:
+    """The project's baseline is shared with the team (0644); a personal one is yours (0600, in
+    a 0700 folder)."""
+    from .safewrite import atomic_write
+
+    try:
+        if personal and not file.parent.is_dir():
+            file.parent.mkdir(mode=0o700)
+        atomic_write(file, text, mode=0o600 if personal else 0o644)
+    except OSError as exc:
+        why = exc.strerror or type(exc).__name__
+        typer.secho(f"error: cannot write the baseline to {file}: {why}", err=True, fg="red")
+        return False
+    return True
+
+
+def _baseline_writable(file: Path, root: Path, chosen: bool, personal: bool = False) -> bool:
+    """Never write through a link, and never outside the project (or, for the personal one,
+    the home folder) unless --baseline said so: a cloned repository could commit the file as a
+    link to ~/.bashrc."""
+    folder, project = Path(os.path.realpath(file.parent)), Path(os.path.realpath(root))
+    if file.is_symlink():
+        why = "is a symbolic link"
+    elif not chosen and not folder.is_relative_to(project):
+        why = f"is outside the {'home folder' if personal else 'project'}"
+    else:
+        return True
+    typer.secho(f"error: {file} {why}; agentprint does not write it", err=True, fg="red")
+    return False
+
+
+def _print_baseline_write(written: list[Any], plain: bool) -> None:
+    from rich.text import Text
+
+    from .baseline import to_human_write
+    from .sanitize import clean
+    from .ui.layout import hang
+
+    out = themed_console(dict(os.environ), plain=plain)
+    out.print(
+        Text(f"agentprint baseline  {clean(written[0].file)}", style="ap.dim"), soft_wrap=True
+    )
+    out.print()
+    lines = to_human_write(written)
+    for counts in lines[: len(written)]:
+        out.print(Text(clean(counts)), soft_wrap=True)
+    out.print(Text("Fingerprints only: no key is stored.", style="ap.dim"))
+    for step in lines[len(written) :]:
+        for line in hang("  - ", step, out.width):
+            out.print(line)
+
+
+def _print_baseline_check(checked: list[Any], plain: bool) -> None:
+    from rich.text import Text
+
+    from .sanitize import clean
+
+    out = themed_console(dict(os.environ), plain=plain)
+    head = f"agentprint baseline --check  {clean(checked[0].file)}"
+    out.print(Text(head, style="ap.dim"), soft_wrap=True)
+    out.print()
+    for c in checked:
+        r = c.result
+        entries = f"{r.entries} entr{'y' if r.entries == 1 else 'ies'}"
+        where = f"personal {clean(c.file)}: " if c.personal else ""
+        text = f"{where}{entries} · {r.matched} still found · {len(r.stale)} stale · {r.new} new"
+        out.print(Text(text), soft_wrap=True)
+    stale = [e for c in checked for e in c.result.stale]
+    if stale:
+        out.print()
+        out.print(Text("stale", style="ap.dim"))
+        for e in stale:
+            line = Text("  ")
+            line.append(e.check, style="ap.dim")
+            line.append("  ")
+            line.append(clean(e.path), style="ap.strong")
+            line.append(f"  {clean(e.reason)}", style="ap.dim")
+            out.print(line, soft_wrap=True)
+    out.print()
+    tips = ["Nothing changed."]
+    if stale:
+        tips.append("agentprint baseline --prune drops the stale entries.")
+    if any(c.result.new for c in checked):
+        tips.append("agentprint scan shows the new ones.")
+    out.print(Text(" ".join(tips), style="ap.dim"))
+
+
+@app.command("baseline")
+def baseline_command(
+    ctx: typer.Context,
+    path: Annotated[Path, typer.Argument(help="Project directory.")] = Path("."),
+    update: Annotated[
+        bool, typer.Option("--update", help="Add new findings, keep every old entry.")
+    ] = False,
+    prune: Annotated[
+        bool, typer.Option("--prune", help="Drop entries whose finding is gone; add nothing.")
+    ] = False,
+    check: Annotated[
+        bool,
+        typer.Option("--check", help="Change nothing: list stale entries and count new findings."),
+    ] = False,
+    include_home: Annotated[
+        bool,
+        typer.Option(
+            "--include-home",
+            help="Also accept your home folder's findings (personal: keep the "
+            "file out of git then).",
+        ),
+    ] = False,
+    home: Annotated[
+        Path | None, typer.Option(help="Home directory for --include-home. Default: yours.")
+    ] = None,
+    config: ConfigOpt = None,
+    no_config: NoConfigOpt = False,
+    baseline_file: BaselineOpt = None,
+    fmt: Annotated[
+        BaselineFormat | None,
+        typer.Option("--format", "-f", help="Output format. Default: agent inside an AI agent."),
+    ] = None,
+    plain: PlainOpt = False,
+) -> None:
+    """Accept today's findings: write them to .agentprint-baseline.json, so `scan` and `fix`
+    count them as known (listed apart) instead of failing on them.
+
+    The file holds fingerprints only (a hash of the check, the file, the rule and the masked
+    stub), never a key. Only the project's findings, unless --include-home. Without a flag the
+    file is rewritten from today's findings (reasons of entries still found are kept). A key in
+    a package being published or in a push still blocks, whatever the baseline says.
+    """
+    if update + prune + check > 1:
+        typer.secho("error: pick one of --update, --prune and --check", err=True, fg="red")
+        raise typer.Exit(2)
+    mode = "update" if update else "prune" if prune else "check" if check else "write"
+    home_dir = (home or Path.home()) if include_home or home is not None else None
+    sources = Sources(config, no_config, baseline_file)
+    plain = _top_plain(ctx, plain)
+    raise typer.Exit(run_baseline_command(path, mode, home_dir, sources, fmt, plain))
 
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 def guard(
+    ctx: typer.Context,
     agent: Annotated[
         str,
         typer.Option(help=f"Agent calling the hook: {AGENT_NAMES}."),
     ] = "claude-code",
     fail_on: FailOnOpt = FailOn.high,
+    strict: Annotated[
+        bool,
+        typer.Option(
+            "--strict",
+            help="Block (instead of allowing with a warning) when agentprint cannot check a "
+            "publish or push. Same as AGENTPRINT_STRICT=1.",
+        ),
+    ] = False,
 ) -> None:
     """Hook entry point for AI agents: stop a publish or git push that would leak.
 
     Reads the agent's hook JSON on stdin and answers in that agent's own format. Only package
     publishes and `git push` are checked; everything else passes straight through. If
-    agentprint itself fails, the command is allowed. `agentprint install` sets this up.
+    agentprint itself fails, the command is allowed (with --strict it is blocked).
+    `agentprint install` sets this up.
     """
     from .hook import run_hook  # imported here so other commands stay fast to start
 
-    reply = run_hook(agent, sys.stdin.read(), os.environ, fail_on)
+    platform.use_utf8_streams()  # a Windows console is cp1252 unless told otherwise
+    reply = run_hook(agent, sys.stdin.read(), os.environ, _given(ctx, fail_on), strict)
     if reply.stdout:
         typer.echo(reply.stdout)
     if reply.stderr:
         typer.echo(reply.stderr, err=True)
     raise typer.Exit(reply.exit_code)
+
+
+@app.command("push-check", hidden=True)
+def push_check(
+    ctx: typer.Context,
+    fail_on: FailOnOpt = FailOn.high,
+    strict: Annotated[
+        bool,
+        typer.Option(
+            "--strict",
+            help="Block the push when agentprint cannot check it. Same as AGENTPRINT_STRICT=1.",
+        ),
+    ] = False,
+    remote: Annotated[
+        str | None,
+        typer.Option("--remote", help="The remote git named to the pre-push hook ($1)."),
+    ] = None,
+    pre_push: Annotated[
+        bool,
+        typer.Option("--pre-push", help="stdin is git's own pre-push input (empty: up to date)."),
+    ] = False,
+) -> None:
+    """Git pre-push hook entry point (`agentprint protect` sets it up).
+
+    Reads git's pre-push lines on stdin, checks what the push would publish, prints the brief
+    and exits 1 to stop the push. A push that only deletes remote branches is never stopped.
+    """
+    from .protect import push_check as run_push_check
+
+    platform.use_utf8_streams()
+    refs = None if sys.stdin is None or sys.stdin.isatty() else sys.stdin.read()
+    code, text = run_push_check(
+        Path.cwd(),
+        refs,
+        os.environ,
+        _given(ctx, fail_on),
+        strict,
+        remote=remote,
+        pre_push=pre_push,
+    )
+    typer.echo(text)
+    raise typer.Exit(code)
+
+
+class ProtectFormat(StrEnum):
+    table = "table"
+    agent = "agent"
+
+
+@app.command()
+def protect(
+    path: Annotated[Path, typer.Argument(help="Project folder. Default: this one.")] = Path("."),
+    undo: Annotated[
+        bool, typer.Option("--undo", help="Take out what protect added, exactly.")
+    ] = False,
+    strict: Annotated[
+        bool,
+        typer.Option(
+            "--strict",
+            help="The hook blocks the push when agentprint is missing or cannot check it "
+            "(default: it lets the push go with a note).",
+        ),
+    ] = False,
+    shared: Annotated[
+        bool,
+        typer.Option(
+            "--global",
+            help="If core.hooksPath names a folder outside the repository, add the hook there: "
+            "it then checks pushes from every repository that uses that folder.",
+        ),
+    ] = False,
+    fmt: Annotated[
+        ProtectFormat | None,
+        typer.Option(
+            "--format",
+            "-f",
+            help="agent: the report, then ask_human items for an AI agent to put to the human. "
+            "Default: agent inside an AI agent.",
+        ),
+    ] = None,
+) -> None:
+    """Check every git push and npm publish at git and npm themselves, for one project.
+
+    Adds a git pre-push hook (a hook already there is kept and runs first) and, if PATH has a
+    package.json, a prepublishOnly script. They fire however the push or publish was started,
+    even one hidden from the agent hook. `agentprint protect --undo` takes them out.
+    """
+    from .protect import protect as run_protect
+    from .protect import unprotect
+
+    if undo and (strict or shared):
+        typer.secho("error: --undo takes no --strict or --global", err=True, fg=typer.colors.RED)
+        raise typer.Exit(2)
+    home = Path.home()
+    asks: list[str] = []
+    code = (
+        unprotect(path, home, typer.echo)
+        if undo
+        else run_protect(path, home, typer.echo, strict=strict, shared=shared, asks=asks)
+    )
+    if _auto_format(fmt, ProtectFormat.agent, ProtectFormat.table) is ProtectFormat.agent:
+        typer.echo("ask_human:" + ("" if asks else " (nothing)"))
+        for ask in asks:
+            typer.echo(f"  - {ask}")
+        if asks:
+            typer.echo("Tell the human each ask_human item.")
+    raise typer.Exit(code)
 
 
 @app.command()
@@ -689,7 +1220,19 @@ def _setup_args(
 
 
 @app.command()
-def install(agent: AgentsOpt = None, dry_run: DryRunOpt = False, home: SetupHomeOpt = None) -> None:
+def install(
+    agent: AgentsOpt = None,
+    dry_run: DryRunOpt = False,
+    home: SetupHomeOpt = None,
+    strict: Annotated[
+        bool,
+        typer.Option(
+            "--strict",
+            help="Write hooks that block a publish or push agentprint cannot check "
+            "(default: allow it with a warning).",
+        ),
+    ] = False,
+) -> None:
     """Set agentprint up inside every AI coding agent on this computer.
 
     For each agent found it adds a hook that checks publishes and pushes (where the agent
@@ -699,7 +1242,7 @@ def install(agent: AgentsOpt = None, dry_run: DryRunOpt = False, home: SetupHome
     from .install import install as run_install
 
     home_dir, env, names = _setup_args(agent, home)
-    run_install(home_dir, env, names, dry_run, typer.echo)
+    run_install(home_dir, env, names, dry_run, typer.echo, strict=strict)
 
 
 @app.command()
@@ -725,7 +1268,7 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
 
     from rich.text import Text
 
-    from .roster import roster, summary_line
+    from .roster import roster, scanned, summary_line
     from .sanitize import clean
     from .ui.layout import hang
 
@@ -738,34 +1281,119 @@ def run_status_command(home: Path | None, fmt: StatusFormat | None, plain: bool)
         return 2
     fmt = _auto_format(fmt, StatusFormat.agent, StatusFormat.table)
     states = roster(home_dir, env)
+    notes = [note for s in states if s.found and (note := _keep_one(s))]
+    # Agents a sweep reads in full but install can't arm yet: listed when found.
+    swept = scanned(home_dir)
+    protected = _protected_here()  # only set in a protected repo: other output is unchanged
     if fmt is StatusFormat.json:
-        agents = [
-            {"name": s.name, "label": s.label, "found": s.found, "armed": s.armed} for s in states
-        ]
-        typer.echo(json_lib.dumps({"tool": "agentprint", "version": __version__, "agents": agents}))
+        agents = []
+        for s in states:
+            agent = {"name": s.name, "label": s.label, "found": s.found, "armed": s.armed}
+            if s.mcp_only:  # Windows: install added the MCP server and the note, no hook
+                agent |= {"hook": False, "installed": "mcp-and-note"}
+            if s.plugin:  # only when one is there, so the usual output stays as it was
+                agent["plugin"] = s.plugin  # "enabled", "disabled" or "unknown"
+            agents.append(agent)
+        also = [{"name": s.name, "label": s.label, "found": s.found} for s in swept]
+        data = {"tool": "agentprint", "version": __version__, "agents": agents, "scanned": also}
+        if protected:
+            data["protected"] = protected
+        typer.echo(json_lib.dumps(data))
     elif fmt is StatusFormat.agent:
         for s in states:
-            word = ("armed" if s.armed else "unarmed") if s.found else "not found"
-            typer.echo(f"{clean(s.name)} {word}")
-        if any(s.found and not s.armed for s in states):
+            typer.echo(f"{clean(s.name)} {_status_word(s)}")
+        for s in swept:
+            if s.found:
+                typer.echo(f"{clean(s.name)} scanned (agentprint install can't arm it yet)")
+        if any(s.unarmed for s in states):
             typer.echo("Arm unarmed agents with: agentprint install")
+        for note in notes:
+            typer.echo(note)
+        if protected:
+            typer.echo(_protected_text(protected))
     else:
         out = themed_console(env or dict(os.environ), plain=plain)
         out.print(Text(f"agentprint {__version__} · roster", style="ap.dim"))
-        for line in hang("", summary_line(states), out.width):
+        for line in hang("", summary_line(states, swept), out.width):
             out.print(line)
-        width = max([14, *(len(clean(s.label)) + 2 for s in states if s.found)])
+        shown = [s for s in [*states, *swept] if s.found]
+        width = max([14, *(len(clean(s.label)) + 2 for s in shown)])
         for s in states:
             if s.found:
                 line = Text(clean(s.label).ljust(width))
-                line.append(*(("armed", "ap.amber") if s.armed else ("unarmed", "ap.dim")))
+                line.append(_status_word(s), "ap.amber" if s.guarded else "ap.dim")
+                out.print(line)
+        for s in swept:
+            if s.found:
+                out.print(Text(clean(s.label).ljust(width)).append("scanned", "ap.dim"))
+        if any(s.found for s in swept):
+            note = "scanned = agentprint scan reads its files; agentprint install can't arm it yet"
+            for line in hang("", Text(note, style="ap.dim"), out.width):
                 out.print(line)
         missing = [clean(s.label) for s in states if not s.found]
         if missing:
             body = Text(", ".join(missing), style="ap.dim")
             for line in hang(Text("not found: ", style="ap.dim"), body, out.width):
                 out.print(line)
+        for note in notes:
+            for line in hang("", note, out.width):
+                out.print(line)
+        if protected:
+            for line in hang("", Text(_protected_text(protected), style="ap.dim"), out.width):
+                out.print(line)
     return 0
+
+
+def _protected_here() -> list[str]:
+    """What checks pushes and publishes at git and npm themselves for the current folder."""
+    from .protect import protection
+
+    return protection(Path.cwd())
+
+
+def _protected_text(found: list[str]) -> str:
+    from .protect import protection_text
+
+    return protection_text(found)
+
+
+def _status_word(s: AgentState) -> str:
+    from .plugins import DISABLED, ENABLED, UNKNOWN
+    from .roster import MCP_ONLY
+
+    if not s.found:
+        return "not found"
+    if s.twice:
+        return "armed twice (plugin and install)"
+    if s.plugin == ENABLED:
+        return "armed (plugin)"
+    word = "armed" if s.armed else MCP_ONLY if s.mcp_only else "unarmed"
+    if s.plugin == UNKNOWN:
+        return f"{word} (agentprint plugin found, not checked whether it is enabled)"
+    if s.plugin == DISABLED:
+        return f"{word} (agentprint plugin installed, not enabled)"
+    return word
+
+
+def _keep_one(s: AgentState) -> str:
+    """What to do when agentprint may be in an agent both as a plugin and through install."""
+    from .plugins import REMOVE_PLUGIN, UNKNOWN
+
+    ways = (
+        f"To keep the plugin, run: agentprint uninstall --agent {s.name}. To keep install, "
+        f"remove the plugin: {REMOVE_PLUGIN.get(s.name, 'in the agent')}."
+    )
+    if s.twice:
+        return (
+            f"{s.label} has agentprint twice, as a plugin and through agentprint install: "
+            f"keep one. {ways}"
+        )
+    if s.armed and s.plugin == UNKNOWN:
+        return (
+            f"{s.label} also has the agentprint plugin, and agentprint could not check whether "
+            f"it is enabled. If it is, keep one. {ways}"
+        )
+    return ""
 
 
 @app.command()

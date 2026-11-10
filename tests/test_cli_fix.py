@@ -30,6 +30,7 @@ from agentprint.cli import app
 from agentprint.integrations.base import INSTRUCTIONS
 from agentprint.secrets import find_secrets
 from tests import fakes
+from tests.conftest import set_home
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD_DEMO = ROOT / "demo" / "build_demo.py"
@@ -47,7 +48,7 @@ runner = CliRunner()
 @pytest.fixture(autouse=True)
 def _fake_real_home(tmp_path, monkeypatch):
     """Path.home() is a temporary folder: a fix run that forgot --home could only touch that."""
-    monkeypatch.setenv("HOME", str(tmp_path))
+    set_home(monkeypatch, str(tmp_path))
     for name in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME"):
         monkeypatch.delenv(name, raising=False)
 
@@ -290,6 +291,7 @@ def _normalise(text: str, tmp_path: Path) -> str:
     return text.replace(str(tmp_path), "<TMP>").replace(__version__, "<VERSION>")
 
 
+@pytest.mark.posix_only  # snapshot holds POSIX paths and the 2 permission fixes
 @needs_demo
 def test_agent_format_snapshot(world, tmp_path):
     result = _fix(world, "--yes", "--format", "agent")
@@ -351,7 +353,8 @@ def test_output_never_contains_a_key(world, fmt, monkeypatch):
 
 
 def test_brief_mentions_fix():
-    assert "agentprint fix --yes --format agent" in INSTRUCTIONS
+    assert "agentprint fix --pack --yes --format agent" in INSTRUCTIONS  # after a blocked publish
+    assert "agentprint fix --yes --format agent" in INSTRUCTIONS  # any other BLOCK
 
 
 # ---- AP008: the check's own file list reaches the plan through the CLI -------------------------

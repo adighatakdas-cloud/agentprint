@@ -23,9 +23,21 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from .. import platform
 from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
-from .base import artifacts, from_home, hook_commands, is_blanket_command, matches_any, mcp_servers
+from .base import (
+    EnvReference,
+    artifacts,
+    children,
+    from_home,
+    glob,
+    hook_commands,
+    is_blanket_command,
+    matches_any,
+    mcp_servers,
+    read_mcp_servers,
+)
 
 NAME = "copilot"
 
@@ -52,10 +64,14 @@ _CLI_SECRET_FIX = (
     "so <VAR> cannot be read from your shell."
 )
 _VSCODE_SECRET_FIX = (
-    'replace the value with "${input:<VAR>}" and add {"id": "<VAR>", "type": "promptString", '
-    '"password": true} to the file\'s "inputs" list: VS Code then asks for the key once and keeps '
-    "it in its secret storage."
+    'replace the value with "${env:<VAR>}" and set <VAR> in the environment VS Code starts from '
+    '(agentprint fix makes this change for an env entry). Or use "${input:<VAR>}" and add '
+    '{"id": "<VAR>", "type": "promptString", "password": true} to the file\'s "inputs" list: VS '
+    "Code then asks for the key once and keeps it in its secret storage."
 )
+# VS Code-format mcp.json (top key "servers") names an environment variable as ${env:NAME}.
+# https://code.visualstudio.com/docs/copilot/reference/mcp-configuration (read 2026-11-07)
+VSCODE_ENV = EnvReference("servers", "${env:{var}}", "the environment VS Code starts from")
 _REGEX_ALL = re.compile(r"/\^?\.[*+]\$?/[a-z]*")
 
 
@@ -64,15 +80,8 @@ def _user_dirs(home: Path) -> list[Path]:
     return [
         home / "Library" / "Application Support" / "Code" / "User",
         home / ".config" / "Code" / "User",
-        home / "AppData" / "Roaming" / "Code" / "User",
+        platform.roaming_appdata(home) / "Code" / "User",
     ]
-
-
-def _glob(base: Path, pattern: str) -> list[Path]:
-    try:
-        return sorted(base.glob(pattern))
-    except OSError:
-        return []
 
 
 def _grants(data: dict[str, Any]) -> tuple[Grant, ...]:
@@ -104,6 +113,10 @@ _RECORDS = (
     re.compile(r"(^|/)workspaceStorage/[^/]+/(chatSessions|chatEditingSessions)/"),
     re.compile(r"(^|/)globalStorage/(emptyWindowChatSessions|transferredChatSessions)/"),
 )
+
+
+# A repository's .github/ folders of Copilot extensions, one per entry (extension_paths).
+_LOADED = ("instructions", "prompts", "agents", "skills", "chatmodes")
 
 
 class Copilot:
@@ -166,6 +179,8 @@ class Copilot:
             base / "hooks",
             base / "permissions-config.json",
             *(user / name for user in users for name in ("settings.json", "mcp.json")),
+            # Each VS Code profile keeps its own mcp.json (the folder name is not in the docs).
+            *(mcp for user in users for mcp in glob(user / "profiles", "*/mcp.json")),
         )
         yield from artifacts(
             NAME,
@@ -178,7 +193,7 @@ class Copilot:
                 session
                 for user in users
                 for pattern in ("*/chatSessions", "*/chatEditingSessions")
-                for session in _glob(user / "workspaceStorage", pattern)
+                for session in glob(user / "workspaceStorage", pattern)
             ),
             *(
                 user / "globalStorage" / name
@@ -209,8 +224,33 @@ class Copilot:
             NAME, Kind.SETTINGS, github / "copilot" / "settings.local.json", personal=True
         )
 
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # Custom instructions (~/.copilot/copilot-instructions.md, .github/copilot-instructions.md,
+        # .github/instructions/), prompt files and custom agents (.github/prompts/,
+        # .github/agents/, VS Code's user prompts/ folder), skills (~/.copilot/skills/,
+        # .github/skills/) and installed plugins (~/.copilot/installed-plugins/MARKETPLACE/
+        # PLUGIN-NAME, direct installs in _direct/). https://docs.github.com/en/copilot/
+        # reference/cli-plugin-reference, https://code.visualstudio.com/docs/copilot/customization
+        paths: list[Path] = []
+        if home is not None:
+            base = home / ".copilot"
+            paths += [base / "copilot-instructions.md"]
+            paths += children(base / "skills", base / "agents")
+            paths += glob(base / "installed-plugins", "*/*")
+            paths += children(*(user / "prompts" for user in _user_dirs(home)))
+        if project is not None:
+            github = project / ".github"
+            paths += [github / "copilot-instructions.md"]
+            paths += children(*(github / name for name in _LOADED))
+        return paths
+
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)
+
+    def env_reference(self, path: Path) -> EnvReference | None:
+        """VS Code's own mcp.json files (workspace .vscode/mcp.json, the user's and each
+        profile's), never Copilot CLI's mcp-config.json or a repo's .github/mcp.json."""
+        return VSCODE_ENV if path.name == "mcp.json" and path.parent.name != ".github" else None
 
     def read_config(self, artifact: Artifact) -> AgentConfig:
         path = artifact.path
@@ -223,7 +263,8 @@ class Copilot:
             return AgentConfig(hooks=hook_commands(data.get("hooks")))
         if path.name in ("mcp-config.json", "mcp.json"):
             if isinstance(data.get("servers"), dict):  # VS Code format: .vscode/mcp.json
-                return AgentConfig(mcp_servers=mcp_servers(data["servers"], _VSCODE_SECRET_FIX))
+                servers = read_mcp_servers(data, _VSCODE_SECRET_FIX, "servers")
+                return AgentConfig(mcp_servers=servers)
             servers = data.get("mcpServers")
             if servers is None and path.parent.name == ".github":
                 servers = data  # project files may leave out the mcpServers wrapper

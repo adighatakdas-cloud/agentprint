@@ -5,23 +5,128 @@ on macOS; every value is synthetic and every key comes from tests.fakes.
 """
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
 import pytest
+from hypothesis import settings as hypothesis_settings
 
 from agentprint.ui.detect import AGENT_MARKERS
 from tests import fakes
+
+# In CI the property tests search the same examples every run, so main cannot go red on a
+# one-off counterexample. Local runs keep the random search.
+hypothesis_settings.register_profile("ci", derandomize=True, deadline=None)
+if os.environ.get("CI"):
+    hypothesis_settings.load_profile("ci")
 
 # tools/ (research scripts) is not shipped in the source package; skip its tests there.
 if not (Path(__file__).resolve().parent.parent / "tools").is_dir():
     collect_ignore_glob = ["test_ecoscan_*.py"]
 
 
+def home_vars(home: Path | str) -> dict[str, str]:
+    """The variables that name a user's home on POSIX and on Windows, all pointing under `home`."""
+    home = str(home)
+    return {
+        "HOME": home,
+        "USERPROFILE": home,
+        "APPDATA": str(Path(home) / "AppData" / "Roaming"),
+        "LOCALAPPDATA": str(Path(home) / "AppData" / "Local"),
+    }
+
+
+def set_home(monkeypatch: pytest.MonkeyPatch, home: Path | str) -> None:
+    """Make `home` the user's home for Path.home() and APPDATA lookups, on any OS."""
+    for name, value in home_vars(home).items():
+        monkeypatch.setenv(name, value)
+
+
+def _tool_caches() -> dict[str, str]:
+    """Where uv and npm keep their caches and Pythons under the real home folder. Kept for the
+    tests that run them: an isolated home would send them to the network."""
+    env, home = os.environ, Path.home()
+    if os.name == "nt":
+        local = Path(env.get("LOCALAPPDATA") or home / "AppData" / "Local")
+        roaming = Path(env.get("APPDATA") or home / "AppData" / "Roaming")
+        uv_cache, uv_python, npm = (
+            local / "uv" / "cache",
+            roaming / "uv" / "python",
+            local / "npm-cache",
+        )
+    else:
+        cache = Path(env.get("XDG_CACHE_HOME") or home / ".cache")
+        data = Path(env.get("XDG_DATA_HOME") or home / ".local" / "share")
+        uv_cache, uv_python, npm = cache / "uv", data / "uv" / "python", home / ".npm"
+    found = {"UV_CACHE_DIR": uv_cache, "UV_PYTHON_INSTALL_DIR": uv_python, "npm_config_cache": npm}
+    return {name: env.get(name) or str(path) for name, path in found.items()}
+
+
+_TOOL_CACHES = _tool_caches()
+XDG = {
+    "XDG_CONFIG_HOME": ".config",
+    "XDG_DATA_HOME": ".local/share",
+    "XDG_STATE_HOME": ".local/state",
+    "XDG_CACHE_HOME": ".cache",
+}
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line("markers", "posix_only: needs POSIX modes, /bin/sh or symlinks")
+    config.addinivalue_line("markers", "windows_only: needs Windows")
+    config.addinivalue_line(
+        "markers", "real_home: keeps the real home folder (the autouse isolation is off)"
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    windows = os.name == "nt"
+    skip_posix = pytest.mark.skip(reason="POSIX only (modes, /bin/sh launcher, symlinks)")
+    skip_windows = pytest.mark.skip(reason="Windows only")
+    for item in items:
+        if windows and "posix_only" in item.keywords:
+            item.add_marker(skip_posix)
+        if not windows and "windows_only" in item.keywords:
+            item.add_marker(skip_windows)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_home(request, tmp_path_factory, monkeypatch):
+    """Every test gets a throwaway home folder: HOME, USERPROFILE, APPDATA, LOCALAPPDATA and the
+    XDG folders all point inside it, so no test can read or write the developer's own agent
+    files, and subprocesses inherit the same. Git reads no global or system config (a
+    developer's core.hooksPath, init.templateDir or excludes file can't change an outcome).
+    Tests that set their own home still do; `@pytest.mark.real_home` opts out."""
+    if request.node.get_closest_marker("real_home"):
+        return
+    for name, value in _TOOL_CACHES.items():
+        monkeypatch.setenv(name, value)
+    home = tmp_path_factory.mktemp("home")
+    set_home(monkeypatch, home)
+    for name, sub in XDG.items():
+        monkeypatch.setenv(name, str(home / sub))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
 @pytest.fixture(autouse=True)
 def _no_gemini_cli_home(monkeypatch):
     """GEMINI_CLI_HOME moves ~/.gemini; a developer's own setting must not leak into tests."""
     monkeypatch.delenv("GEMINI_CLI_HOME", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_sweep_notes():
+    """A sweep's "not checked" notes are module state, reset by each scan; a test that runs a
+    check on its own must not see notes another test left behind."""
+    from agentprint import platform, unread
+
+    unread.forget()
+    platform._RUN_NOTES.clear()
+    yield
+    unread.forget()
+    platform._RUN_NOTES.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +138,7 @@ def _no_ambient_agent_env(monkeypatch):
 
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    path.write_text(text, newline="\n")  # the same bytes on every OS
 
 
 def _jsonl(*rows: dict) -> str:

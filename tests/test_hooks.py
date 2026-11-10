@@ -159,6 +159,23 @@ def test_antigravity_allow_defers_to_its_own_policy(project):
     assert out == {"decision": "allow"}
 
 
+def test_antigravity_without_a_folder_could_not_check(project, monkeypatch):
+    # A plugin hook runs in the plugin's own folder, so with neither Cwd nor workspacePaths the
+    # check must not look there and say OK: a publish or push "could not be checked".
+    monkeypatch.chdir(project)  # even a leaky package here must not be what gets checked
+    data = payload("antigravity", PUBLISH, project)
+    del data["workspacePaths"], data["toolCall"]["args"]["Cwd"]
+    out = json.loads(run("antigravity", data).stdout)
+    assert out["decision"] == "allow" and "could not check" in out["reason"]
+    assert "agentprint: BLOCK" not in out["reason"]
+    strict = json.loads(
+        hook.run_hook("antigravity", json.dumps(data), {"AGENTPRINT_STRICT": "1"}).stdout
+    )
+    assert strict["decision"] == "deny" and "strict mode" in strict["reason"]
+    data["toolCall"]["args"]["CommandLine"] = "ls -la"
+    assert json.loads(run("antigravity", data).stdout) == {"decision": "allow"}
+
+
 def test_hermes_ignores_other_tools(project):
     data = payload("hermes", PUBLISH, project)
     data["tool_name"] = "read_file"
@@ -205,6 +222,8 @@ def test_cursor_allows_clean_commands_without_prompting(project):
 
 CURSOR_MATCHES = [
     "npm publish",
+    "npm pub demo-1.0.0.tgz",
+    "npm --tag next publ",
     "cd pkg && npm publish --access public",
     "pnpm -r publish",
     "yarn npm publish",
@@ -220,6 +239,73 @@ CURSOR_MATCHES = [
     "git -C sub push origin main",
     "git add . && git commit -m x && git push",
     "if npm test; then git push; fi",
+    # files a publish can hide in (Ruling X7)
+    "make",
+    "make release",
+    "cd pkg && gmake -j4 publish",
+    "just release",
+    "task release",
+    "npm version patch",
+    "pnpm --silent version minor",
+    "./release.sh",
+    "scripts/release",
+    "bash scripts/release.sh",
+    "sh -e x.sh",
+    "source ./ship.sh",
+    "python scripts/release.py",
+    "python3 -u tools/up.py",
+    "node release.mjs",
+    "uv run python scripts/release.py",
+    "poetry run release",
+    "npx tsx scripts/release.ts",
+    "tsx scripts/release.ts",
+    "deno run -A scripts/release.ts",
+    "ruby scripts/release.rb",
+    "perl release.pl",
+    "bun scripts/ship.ts",
+    "pdm run release",
+    "pipenv run python release.py",
+    "hatch run release",
+    "rye run release",
+    "go-task release",
+    "fish release.fish",
+    "env make release",
+    "npm --prefix pkg version patch",
+    "pnpm -C pkg version minor",
+    "sudo ./release.sh",
+    "sudo -E ./release.sh",
+    "doas ./release.sh",
+    "nice -n 10 ./release.sh",
+    "command ./release.sh",
+    "caffeinate -i ./release.sh",
+    "stdbuf -oL ./release.sh",
+    "if ./check.sh; then echo ok; fi",
+    "pypy3 scripts/release.py",
+    "php -r 'shell_exec(1);'",
+    # options with values, and wrappers the guard follows
+    "sudo -u deploy npm publish",
+    "sudo -u deploy ./release.sh",
+    "doas -u x npm publish",
+    "env -u FOO npm publish",
+    "env -C pkg npm publish",
+    "ionice -c3 ./release.sh",
+    "chronic ./release.sh",
+    "watch -n 5 ./release.sh",
+    "time -p ./release.sh",
+    # text the shell runs later: variables, eval, here-documents, stdin
+    "CMD='npm publish'; $CMD",
+    "CMD='npm publish'; eval \"$CMD\"",
+    'eval "npm pub""lish"',
+    'builtin eval "$CMD"',
+    "V=publish; npm $V",
+    'A=npm; B="$A publish"; $B',
+    "python3 - <<'EOF'\nimport subprocess\nEOF",
+    "echo 'npm publish' | sh",
+    'set -- npm publish; "$@"',
+    'n"p"m publish',
+    "$'npm' publish",
+    "`echo npm publish`",
+    "echo publish | xargs npm",
 ]
 CURSOR_SKIPS = [
     "git stash push",
@@ -229,6 +315,12 @@ CURSOR_SKIPS = [
     "ls -la",
     "npm test",
     "git status",
+    "cat Makefile",
+    "echo make release",
+    "git commit -m 'make it work'",
+    "ls -la scripts",
+    "vim release.sh",
+    "npm install semver",
 ]
 
 

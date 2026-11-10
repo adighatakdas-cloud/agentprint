@@ -4,8 +4,9 @@ Agent-neutral: `integrations/` turn the agent's hook payload into (command, cwd)
 verdict back into the agent's native reply. Only publishes and `git push` are checked; every
 other command returns None straight away. Never runs a build and never touches the network:
 npm projects are listed with `npm pack --dry-run --ignore-scripts`, Python publishes are checked
-through the already-built files they upload. Any internal error lets the command through, with
-a warning saying so.
+through the already-built files they upload. By default any internal error, or a publish or push
+it cannot check, lets the command through with a warning saying so. In strict mode
+(`AGENTPRINT_STRICT=1` or `guard --strict`) those cases block instead.
 """
 
 from __future__ import annotations
@@ -13,19 +14,24 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
 from .advice import Moment
+from .baseline import Known, Project, Settled, defaults, settle
+from .baseline import load as load_project
 from .checks import PACKAGE_WANT, check_package
 from .commands import NODE, ROOT_RELEASERS, WORKSPACE_RELEASERS, Action, Risky, detect
 from .gitcheck import check_push
 from .models import CannotCheck, Finding
 from .pack import PackageListing, PackError, read_archive, read_npm_project
-from .report import FailOn, exit_code, to_agent
-from .sanitize import clean
+from .report import KNOWN_WORD, FailOn, exit_code, known_groups, to_agent
+from .sanitize import clean, quote, safe_text
+from .secrets import mask_keys
 
 ARCHIVES = (".whl", ".tar.gz", ".zip", ".tgz")
 DEFAULT_DIST = ("dist/*",)
@@ -40,21 +46,133 @@ class Verdict:
     warning: str | None = None  # shown to the human/agent, never blocks
 
 
-__all__ = ["CannotCheck", "Verdict", "check_package_path", "evaluate", "workspace_folders"]
+__all__ = [
+    "CannotCheck",
+    "Verdict",
+    "check_package_path",
+    "evaluate",
+    "strict_block",
+    "strict_requested",
+    "workspace_folders",
+]
 
 
-def evaluate(command: str, cwd: Path, fail_on: FailOn = FailOn.high) -> Verdict | None:
-    """None when the command neither publishes nor pushes."""
+# Words that make a command look like a publish or push. Only used in strict mode, when the
+# parser itself crashes: then only a command with one of these is blocked.
+PUBLISH_WORDS = [
+    "publish",
+    "push",
+    "upload",
+    "twine",
+    "changeset",
+    "changesets",
+    "lerna",
+    "release-it",
+    "semantic-release",
+    "np",
+]
+_LOOKS_RISKY = re.compile(
+    r"(?<![\w-])(?:" + "|".join(re.escape(w) for w in PUBLISH_WORDS) + r")(?![\w-])", re.I
+)
+
+NEXT_STEP = "Run the publish or push as its own command, so agentprint can check it."
+STRICT_HINT = (
+    "Strict mode is on (AGENTPRINT_STRICT=1 or --strict), so a command agentprint cannot check "
+    "is blocked. Fix the cause and retry, or ask the human to turn strict mode off."
+)
+
+
+# Why a hook in strict mode blocks when agentprint itself could not run (the launcher's and the
+# plugin hooks' own answer, written at install or build time).
+COULD_NOT_START = "agentprint could not start, so it could not check this command."
+
+
+def strict_requested(env: Mapping[str, str]) -> bool:
+    """True when AGENTPRINT_STRICT is set to a yes-like value (1, true, yes, on)."""
+    return env.get("AGENTPRINT_STRICT", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def strict_block(why: str) -> Verdict:
+    """The verdict strict mode gives when agentprint cannot check: a normal BLOCK."""
+    return Verdict(True, f"agentprint: BLOCK (strict mode)\n{why}\n{STRICT_HINT}\n")
+
+
+def evaluate(
+    command: str,
+    cwd: Path,
+    fail_on: FailOn | None = None,
+    strict: bool = False,
+    project: Project | None = None,
+) -> Verdict | None:
+    """None when the command neither publishes nor pushes.
+
+    With `strict`, an internal error or a publish/push that cannot be checked blocks. The
+    project config and baseline of `cwd` (or `project`) apply: `fail_on` None means the
+    config's, else high, and its `strict = true` turns strict mode on."""
     try:
         risky = detect(command, cwd)
     except Exception as exc:  # noqa: BLE001 - a parser bug must never block work
-        return Verdict(False, warning=_internal(exc))
+        strict = strict or _project(cwd, project).config.strict
+        return _failed(exc, strict and bool(_LOOKS_RISKY.search(command)))
     if not risky:
         return None
+    project = _project(cwd, project)
+    strict = strict or project.config.strict
     try:
-        return _decide(command, risky, fail_on)
-    except Exception as exc:  # noqa: BLE001 - fail open, but say so
-        return Verdict(False, warning=_internal(exc))
+        return _decide(command, risky, fail_on, strict, project)
+    except Exception as exc:  # noqa: BLE001 - fail open (unless strict), but say so
+        return _failed(exc, strict)
+
+
+def _project(cwd: Path, project: Project | None) -> Project:
+    """The project config and baseline. Never raises: on a bug, the defaults (nothing known)."""
+    if project is not None:
+        return project
+    try:
+        return load_project(cwd)
+    except Exception:  # noqa: BLE001 - a config bug must never stop the check
+        return defaults(cwd)
+
+
+def _settle(
+    findings: list[Finding], fail_on: FailOn | None, project: Project | None
+) -> tuple[list[Finding], FailOn, list[Known], list[str]]:
+    """What counts, the fail_on, what is known, and the config's warnings. Ruling C1: a key on
+    its way out always counts, whatever the config or baseline says."""
+    default = fail_on or FailOn.high
+    if project is None:
+        return findings, default, [], []
+    try:
+        settled = settle(findings, project, fail_on, publishing=True, package=None)
+    except Exception as exc:  # noqa: BLE001 - never allow because of a bug: everything counts
+        why = f"agentprint could not apply the project config ({type(exc).__name__})"
+        return findings, default, [], [f"{why}; every finding counts."]
+    notes = [f"agentprint: {safe_text(note)}." for note in project.warnings]
+    if exit_code(findings, default) and not exit_code(settled.active, settled.fail_on):
+        notes.append(_allowed_by_config(settled, project, default))  # say why it went through
+    return settled.active, settled.fail_on, settled.known, notes
+
+
+def _allowed_by_config(settled: Settled, project: Project, default: FailOn) -> str:
+    """One line for a publish or push the project config let through, that would have been
+    blocked without it."""
+    parts = [
+        f"{n} {check_id} {KNOWN_WORD.get(via, via)} {quote(reason)}"
+        for check_id, via, reason, n in known_groups(settled.known)
+    ]
+    if exit_code(settled.active, default):
+        source = safe_text(str(project.config.source or "the project config"))
+        parts.append(f"fail_on = {settled.fail_on.value} in {source}")
+    return f"agentprint: allowed by project config: {'; '.join(parts)}."
+
+
+def _failed(exc: Exception, strict: bool) -> Verdict:
+    if strict:
+        return strict_block(
+            f"agentprint hit an internal error ({type(exc).__name__}) and could not check "
+            "this command."
+        )
+    return Verdict(False, warning=_internal(exc))
 
 
 def _internal(exc: Exception) -> str:
@@ -64,7 +182,13 @@ def _internal(exc: Exception) -> str:
     )
 
 
-def _decide(command: str, risky: list[Risky], fail_on: FailOn) -> Verdict:
+def _decide(
+    command: str,
+    risky: list[Risky],
+    fail_on: FailOn | None,
+    strict: bool = False,
+    project: Project | None = None,
+) -> Verdict:
     os.environ.setdefault("NPM_CONFIG_UPDATE_NOTIFIER", "false")  # keep npm pack offline
     findings: list[Finding] = []
     warnings: list[str] = []
@@ -77,13 +201,33 @@ def _decide(command: str, risky: list[Risky], fail_on: FailOn) -> Verdict:
             else:
                 findings += _check_publish(item)
         except (CannotCheck, PackError) as exc:
-            what = "git push" if item.action is Action.push else f"{item.tool} publish"
-            warnings.append(f"agentprint could not check this {what}: {clean(str(exc))}.")
+            warnings.append(_could_not(item, exc))
     moment = Moment.publish if any(r.action is Action.publish for r in risky) else Moment.push
     warning = " ".join(warnings) or None
-    if exit_code(findings, fail_on):
-        return Verdict(True, to_agent(findings, fail_on, moment, rerun=command), warning)
-    return Verdict(False, warning=warning)
+    findings, threshold, known, notes = _settle(findings, fail_on, project)
+    shown = " ".join([*warnings, *notes]) or None  # config warnings never trip strict mode
+    if exit_code(findings, threshold):
+        reason = to_agent(findings, threshold, moment, rerun=command, known=known)
+        return Verdict(True, reason, shown)
+    if strict and warnings:
+        return strict_block(warning or "")
+    return Verdict(False, warning=shown)
+
+
+def _could_not(item: Risky, exc: Exception) -> str:
+    """One "could not check" line. When it is about a file or command (`item.label`), it names
+    that (as a quoted value) and says what to do instead. Labels and reasons can hold text from
+    the command or its files, so every key in them is cut to its redact() stub first."""
+    why = clean(_masked(str(exc)))
+    if item.label:
+        return f"agentprint could not check {quote(_masked(item.label))}: {why}. {NEXT_STEP}"
+    what = "git push" if item.action is Action.push else f"{item.tool} publish"
+    return f"agentprint could not check this {what}: {why}."
+
+
+def _masked(text: str) -> str:
+    """`text` with every key in it cut to its first 4 characters and length."""
+    return mask_keys(text)
 
 
 def _built(cwd: Path, patterns: tuple[str, ...]) -> list[PackageListing]:

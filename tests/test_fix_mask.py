@@ -6,6 +6,7 @@ generic value). Masked files must keep every byte that was not part of a key.
 
 import dataclasses
 import json
+import os
 import re
 import sqlite3
 import stat
@@ -72,7 +73,7 @@ def test_history_key_masked_in_place(tmp_path):
     assert path.read_bytes() == _masked(original, fakes.ANTHROPIC)
     after = path.stat()
     assert (after.st_ino, after.st_dev) == (before.st_ino, before.st_dev)
-    assert stat.S_IMODE(after.st_mode) == 0o640
+    assert os.name == "nt" or stat.S_IMODE(after.st_mode) == 0o640
     assert _ap001(home) == []
     # The key is gone from the file, but it was exposed: rotating it is left to the human.
     assert any(m.check_id == "AP001" and "Rotate" in m.text for m in p.manual)
@@ -226,7 +227,7 @@ def test_other_prints_are_left_to_the_human(tmp_path):
     p = fix.plan(findings)
     assert p.changes == [] and p.findings == findings
     assert [m.check_id for m in p.manual] == ["AP003"]
-    assert str(path) in p.manual[0].text
+    assert json.dumps(str(path))[1:-1] in p.manual[0].text  # shown JSON-quoted
 
 
 def test_journal_has_no_key(tmp_path):
@@ -236,8 +237,8 @@ def test_journal_has_no_key(tmp_path):
     journal = outcome.journal
     assert journal is not None and journal.parent == home / ".agentprint" / "fix"
     assert re.fullmatch(r"\d{8}T\d{6}Z\.json", journal.name)
-    assert stat.S_IMODE(journal.stat().st_mode) == 0o600
-    assert stat.S_IMODE(journal.parent.stat().st_mode) == 0o700
+    assert os.name == "nt" or stat.S_IMODE(journal.stat().st_mode) == 0o600
+    assert os.name == "nt" or stat.S_IMODE(journal.parent.stat().st_mode) == 0o700
     text = journal.read_text()
     assert fakes.ANTHROPIC not in text
     assert fix.mask_text(fakes.ANTHROPIC) not in text

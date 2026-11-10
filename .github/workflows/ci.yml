@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest  # macOS runs in test-other-os once the repo is public
+    runs-on: ubuntu-latest  # macOS and Windows run in test-other-os
     strategy:
       matrix:
         python: ["3.11", "3.13"]
@@ -30,7 +30,7 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pyright
-      - name: tests with a coverage floor (measured 95.09%, floor is that minus 1, rounded down)
+      - name: tests with a coverage floor (measured 94.89% at 0.1.1; floor 94)
         run: uv run pytest -m "integration or not integration" --cov=agentprint --cov-report=term --cov-fail-under=94
       - name: agentprint checks its own package
         run: uv run agentprint pack . --fail-on high
@@ -40,14 +40,20 @@ jobs:
       - name: agentprint checks the npm wrapper package
         run: uv run agentprint pack npm --fail-on high
 
-  # Private macOS minutes cost 10x, so these switch on by themselves when the repo goes public.
+  # macOS and Windows, both hard gates. (`experimental: true` on a leg would let it fail without
+  # turning the run red; no leg uses it now that Windows is green.)
   test-other-os:
-    if: ${{ !github.event.repository.private }}
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    env:
+      PYTHONUTF8: "1"
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest]  # Windows CI returns after launch, with skips for POSIX-only tests
+        include:
+          - {os: macos-latest, python: "3.13", experimental: false}
+          - {os: windows-latest, python: "3.11", experimental: false}
+          - {os: windows-latest, python: "3.13", experimental: false}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -57,5 +63,8 @@ jobs:
         with:
           node-version: "22"
           package-manager-cache: false
-      - run: uv sync --locked --python 3.13
+      - run: uv sync --locked --python "$PYTHON"
+        shell: bash
+        env:
+          PYTHON: ${{ matrix.python }}
       - run: uv run pytest -m "integration or not integration"

@@ -1,6 +1,8 @@
 import re
 import subprocess
 
+from agentprint import __version__
+from agentprint.plugins import REMOVE_PLUGIN
 from agentprint.secrets import find_secrets
 from tools import gen_docs
 
@@ -11,7 +13,9 @@ PAGES = [
     "inside-your-agent",
     "ci",
     "badge",
+    "config",
     "agents",
+    "plugins",
     "how-it-works",
     "privacy",
     "glossary",
@@ -157,7 +161,10 @@ def test_badge_page_covers_the_verifiable_badge():
         "default branch",
     ):
         assert needle in text, needle
-    assert "adighatakdas-cloud/agentprint@v0.1.0  # better: pin the release's commit SHA" in text
+    assert (
+        f"adighatakdas-cloud/agentprint@v{__version__}  # better: pin the release's commit SHA"
+        in text
+    )
     assert "![" not in text.split("```")[0] and "<img" not in text
     assert "/agentprint/badge/" in (DOCS / "ci.md").read_text()
 
@@ -167,7 +174,7 @@ def test_badge_page_offers_both_modes_and_recommends_signed_by_agentprint():
     assert "## Signed by agentprint (new in v0.1.0)" in text
     assert "## Signed by your own workflow" in text
     assert text.index("## Signed by agentprint") < text.index("## Signed by your own workflow")
-    assert "uses: adighatakdas-cloud/agentprint/.github/workflows/badge.yml@v0.1.0" in text
+    assert f"uses: adighatakdas-cloud/agentprint/.github/workflows/badge.yml@v{__version__}" in text
     assert "--signer-workflow adighatakdas-cloud/agentprint/.github/workflows/badge.yml" in text
     assert "works from v0.1.0" in text
     assert "supports `scan` only" in text and "`command: pack` is refused" in text
@@ -191,3 +198,114 @@ def test_no_page_hardcodes_the_check_count():
             continue
         for number, line in enumerate(path.read_text().splitlines(), 1):
             assert not count.search(line), f"{path.name}:{number}: {line.strip()}"
+
+
+PUBLIC = gen_docs.ROOT / "site/public"
+# A root-relative link or image to a file (it has an extension) under the site's base path.
+ASSET = re.compile(r"""(?:\]\(|\b(?:src|href)=["'])/agentprint/([^)"'\s#?]+\.[A-Za-z0-9]+)""")
+
+
+def test_every_asset_a_docs_page_references_is_in_site_public():
+    pages = [*DOCS.rglob("*.md"), *DOCS.rglob("*.mdx")]
+    referenced = {(p.name, a) for p in pages for a in ASSET.findall(p.read_text())}
+    assert ("fix.md", "agent-loop.gif") in referenced  # the pattern sees the GIF
+    missing = sorted((page, asset) for page, asset in referenced if not (PUBLIC / asset).is_file())
+    assert missing == []
+
+
+def test_agent_loop_gif_is_the_same_file_in_docs_and_on_the_site():
+    gif = (gen_docs.ROOT / "docs/agent-loop.gif").read_bytes()
+    assert gif[:6] in (b"GIF87a", b"GIF89a")
+    assert gif == (PUBLIC / "agent-loop.gif").read_bytes()
+
+
+def test_ci_page_pins_users_copy_name_this_release():
+    text = (DOCS / "ci.md").read_text()
+    assert f"uses: adighatakdas-cloud/agentprint@v{__version__}  #" in text
+    assert f"rev: v{__version__}\n" in text
+    assert re.findall(r"agentprint@v(\d+\.\d+\.\d+)", text) == [__version__]
+
+
+def test_pinned_versions_in_ci_and_plugin_pages_are_this_release():
+    version = r"(\d+\.\d+\.\d+(?:[a-z]+\d+|\.dev\d+)?)"
+    for page in ("ci", "plugins"):
+        text = (DOCS / f"{page}.md").read_text()
+        pins = re.findall(r"(?:agentprint==|--branch v|--ref v)" + version, text)
+        assert pins and set(pins) == {__version__}, page
+    assert "uvx agentprint==" in (DOCS / "ci.md").read_text()  # lefthook and husky
+
+
+def test_ci_page_has_pre_push_lefthook_and_husky():
+    text = (DOCS / "ci.md").read_text()
+    for needed in (
+        "agentprint-pre-push",
+        "pre-commit install --hook-type pre-push",
+        "lefthook.yml",
+        "lefthook install",
+        ".husky/pre-push",
+    ):
+        assert needed in text, needed
+
+
+def test_plugins_page_covers_every_ecosystem_and_says_pick_one():
+    text = (DOCS / "plugins.md").read_text()
+    assert "Use the plugin or `agentprint install`, not both" in text
+    agents = ["Claude Code", "Codex", "GitHub Copilot CLI", "Gemini CLI", "Cursor", "Antigravity"]
+    for agent in [*agents, "Hermes Agent", "VS Code"]:
+        assert f"### {agent}" in text or f"| {agent}" in text, agent
+    rows = [ln for ln in text.splitlines() if ln.startswith("| ") and ln.endswith(" |")]
+    status = [
+        ln.split("|")[5].strip()
+        for ln in rows
+        if "as documented" in ln or "docs-verified only" in ln
+    ]
+    assert status.count("as documented") == 3 and len(status) == 8
+    live = [ln.split("|")[1].strip() for ln in rows if "| yes: blocks a leaky publish" in ln]
+    assert sorted(live) == ["Claude Code", "Gemini CLI", "GitHub Copilot CLI", "Hermes Agent"]
+    words = ("code --add-mcp", "vscode:mcp/install?", "macOS and Linux only", "uninstall")
+    for word in (*words, "not the bare `copilot plugin install adighatakdas-cloud/agentprint`"):
+        assert word in text, word
+    for command in REMOVE_PLUGIN.values():  # the same way out status prints
+        assert command in text.replace("`", ""), command
+
+
+def test_plugins_page_is_in_the_reference_sidebar():
+    config = (gen_docs.ROOT / "site/astro.config.mjs").read_text()
+    reference = re.search(r'label: "Reference",\s*items: \[(.*?)\]', config, re.S).group(1)
+    slugs = re.findall(r'slug: "([^"]+)"', reference)
+    assert slugs[:2] == ["agents", "plugins"]
+
+
+def test_inside_your_agent_explains_the_protect_layer():
+    text = (DOCS / "inside-your-agent.md").read_text()
+    section = text.split("## A second layer: `agentprint protect`")[1].split("\n## ")[0]
+    for needed in (
+        "agentprint protect --undo",
+        "agentprint protect --strict",
+        "pre-push.agentprint-chained",
+        "core.hooksPath",
+        "prepublishOnly",
+        "--ignore-scripts",
+        "--no-verify",
+        "PyPI has no publish hook",
+        "Yarn 2+",
+        "Bun",
+        "pnpm",
+        "Windows",
+        "--global",
+        "--if-unavailable allow",
+        "AGENTPRINT_HOOK_TIMEOUT",
+        "prepack",
+        "teammate",
+        "$0",
+        "git reset --soft",
+        "Git LFS",
+        "--recurse-submodules",
+        "could not check all of this push",
+        "one ref",
+        "not yet tested",
+        "exits 3",
+    ):
+        assert needed in section, needed
+    readme = (gen_docs.ROOT / "README.md").read_text().split("## Inside your AI agent")[1]
+    assert "`agentprint protect`" in readme.split("\n## ")[0]

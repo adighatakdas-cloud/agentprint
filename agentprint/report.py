@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import json
+import os
+from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich.console import Console
 
 from . import __version__
 from .advice import Moment, advise
-from .models import Finding, Severity
-from .sanitize import clean, quote, safe_step
+from .models import KEY_CHECKS, Finding, Severity
+from .sanitize import clean, quote, safe_step, safe_text
+from .secrets import mask_keys
+
+if TYPE_CHECKING:
+    from .baseline import Known
 
 
 class FailOn(StrEnum):
@@ -41,22 +48,99 @@ def finding_dict(finding: Finding, moment: Moment = Moment.scan) -> dict:
     return data
 
 
-def to_json(findings: list[Finding], moment: Moment = Moment.scan) -> str:
-    return json.dumps(
-        {
-            "tool": "agentprint",
-            "version": __version__,
-            "summary": summary(findings),
-            "findings": [finding_dict(f, moment) for f in findings],
-        },
-        indent=2,
-        ensure_ascii=False,
-    )
+def to_json(
+    findings: list[Finding],
+    moment: Moment = Moment.scan,
+    not_checked: Sequence[str] = (),
+    known: Sequence[Known] = (),
+) -> str:
+    data: dict = {
+        "tool": "agentprint",
+        "version": __version__,
+        "summary": summary(findings),
+        "findings": [finding_dict(f, moment) for f in findings],
+    }
+    if not_checked:  # absent when everything was checked, so existing output is unchanged
+        data["not_checked"] = list(not_checked)
+    add_known(data, known, moment=moment)
+    return json.dumps(data, indent=2, ensure_ascii=False)
+
+
+def known_dicts(known: Sequence[Known], moment: Moment = Moment.scan) -> list[dict]:
+    """Known findings for JSON: where and why, never the finding's text. An accepted key keeps
+    its ask_human (rotate it): accepting a key does not make it safe."""
+    out = []
+    for k in known:
+        data: dict[str, object] = {
+            "check_id": k.finding.check_id,
+            "severity": k.finding.severity.name.lower(),
+            "path": safe_text(k.path),
+            "via": k.via,
+            "reason": safe_text(k.reason),
+        }
+        if k.finding.check_id in KEY_CHECKS:
+            data["ask_human"] = advise(k.finding, moment).ask_human
+        out.append(data)
+    return out
+
+
+def add_known(
+    data: dict, known: Sequence[Known], counts: dict | None = None, moment: Moment = Moment.scan
+) -> None:
+    """Known findings into a JSON report: counted in the summary (`counts`, default
+    data["summary"]), listed under "known". Absent when there are none, so output without a
+    config or baseline is unchanged."""
+    if known:
+        (data["summary"] if counts is None else counts)["known"] = len(known)
+        data["known"] = known_dicts(known, moment)
+
+
+def known_groups(known: Sequence[Known]) -> list[tuple[str, str, str, int]]:
+    """(check id, via, reason, how many), in first-seen order."""
+    groups: dict[tuple[str, str, str], int] = {}
+    for k in known:
+        key = (k.finding.check_id, k.via, safe_text(k.reason))  # config or baseline text
+        groups[key] = groups.get(key, 0) + 1
+    return [(*key, n) for key, n in groups.items()]
+
+
+KNOWN_WORD = {
+    "baseline": "in the baseline",
+    "personal": "in your personal baseline",
+    "ignore": "ignored by config",
+}
+
+
+KNOWN_KEYS = "ask_human (an accepted key is still live until it is rotated):"
+
+
+def known_lines(known: Sequence[Known], moment: Moment = Moment.scan) -> list[str]:
+    """The agent text's `known:` line, with counts and reasons. Nothing to do for the AI,
+    except about a key: accepting one does not make it safe, so each keeps its ask_human."""
+    parts = [
+        f"{n} {check_id} {KNOWN_WORD.get(via, via)} {quote(reason)}"
+        for check_id, via, reason, n in known_groups(known)
+    ]
+    keys = [k.finding for k in known if k.finding.check_id in KEY_CHECKS]
+    todo = "" if keys else " (nothing to do)"
+    lines = [f"known: {len(known)} accepted, not counted{todo}: " + "; ".join(parts)]
+    if keys:
+        lines.append(KNOWN_KEYS)
+        lines += [f"  - {step}" for f in keys for step in advise(f, moment).ask_human]
+    return lines
 
 
 def _short(location: str) -> str:
+    """The path with the home folder written as ~. Always with forward slashes after the ~ (also
+    on Windows, where PowerShell and Git Bash accept them), so the same output reads the same on
+    every OS; paths outside the home folder are left exactly as they are."""
     home = str(Path.home())
-    return "~" + location[len(home) :] if location.startswith(home) else location
+    if not os.path.normcase(location).startswith(os.path.normcase(home)):
+        return location
+    rest = location[len(home) :]
+    if rest and rest[0] not in "/\\" and not home.endswith(("/", "\\")):
+        return location  # /home/user2 is not inside /home/user
+    return "~" + (rest.replace("\\", "/") if os.sep == "\\" else rest)
 
 
 def print_table(
@@ -64,11 +148,13 @@ def print_table(
     console: Console,
     fail_on: FailOn = FailOn.high,
     header: str | None = None,
+    not_checked: Sequence[str] = (),
+    known: Sequence[Known] = (),
 ) -> None:
     """The human view: findings grouped by severity, the fixes, then BLOCK or CLEAR."""
     from .ui.results import render  # ui.results builds on this module
 
-    render(findings, console, fail_on=fail_on, header=header)
+    render(findings, console, fail_on=fail_on, header=header, not_checked=not_checked, known=known)
 
 
 def exit_code(findings: list[Finding], fail_on: FailOn) -> int:
@@ -106,9 +192,23 @@ def _plural(n: int, word: str) -> str:
 
 
 def to_agent(
-    findings: list[Finding], fail_on: FailOn, moment: Moment, rerun: str | None = None
+    findings: list[Finding],
+    fail_on: FailOn,
+    moment: Moment,
+    rerun: str | None = None,
+    not_checked: Sequence[str] = (),
+    known: Sequence[Known] = (),
 ) -> str:
-    """Compact output for an AI agent. Line 1 is always the verdict."""
+    """Compact output for an AI agent. Line 1 is always the verdict; `not_checked` says what
+    this machine could not be checked for, so "OK" is never read as covering it. `known`
+    findings (baseline, ignore rules) are one `known:` line with counts and reasons."""
+    text = _to_agent(findings, fail_on, moment, rerun)
+    if known:
+        text += "".join(f"\n{line}" for line in known_lines(known, moment))
+    return text + "".join(f"\nnot_checked: {clean(note)}" for note in not_checked)
+
+
+def _to_agent(findings: list[Finding], fail_on: FailOn, moment: Moment, rerun: str | None) -> str:
     findings = sorted(findings, key=lambda f: -f.severity)
     blocking = [f for f in findings if exit_code([f], fail_on)]
     rest = [f for f in findings if not exit_code([f], fail_on)]
@@ -129,6 +229,10 @@ def to_agent(
         ]
     out.append(
         "Do every fix step, tell the human each ask_human item, then "
-        + (f"run again: {quote(rerun)}" if rerun else "re-run the same agentprint check.")
+        + (
+            f"run again: {quote(mask_keys(rerun))}"
+            if rerun
+            else "re-run the same agentprint check."
+        )
     )
     return "\n".join(out)

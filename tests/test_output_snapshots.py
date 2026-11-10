@@ -46,7 +46,15 @@ CASES = {
 }
 
 
-@pytest.mark.parametrize("case", CASES)
+# The scan snapshots hold POSIX tmp paths; Windows output legitimately differs (drive paths),
+# and the pack snapshots below run everywhere.
+CASE_PARAMS = [
+    pytest.param(name, marks=pytest.mark.posix_only) if name.startswith("scan") else name
+    for name in CASES
+]
+
+
+@pytest.mark.parametrize("case", CASE_PARAMS)
 def test_snapshot(case, tmp_path, fake_home, fake_project, monkeypatch):
     # SARIF's originalUriBaseIds is built from the process cwd; pin it so it becomes <TMP>/.
     monkeypatch.chdir(tmp_path)
@@ -62,4 +70,33 @@ def test_snapshot(case, tmp_path, fake_home, fake_project, monkeypatch):
     if os.environ.get("AGENTPRINT_UPDATE_SNAPSHOTS") == "1":
         path.write_text(output, encoding="utf-8")
         pytest.skip(f"wrote {filename}")
+    assert output == path.read_text(encoding="utf-8")
+
+
+# AP010 and AP011 on a world of agent extensions: benign ones (never printed), each risky shape
+# once, and unpinned MCP servers. New files; the snapshots above stay as they were.
+EXTENSION_CASES = {
+    "agent": "scan-extensions.agent.txt",
+    "json": "scan-extensions.json",
+    "sarif": "scan-extensions.sarif",
+}
+
+
+@pytest.mark.posix_only
+@pytest.mark.parametrize("fmt", list(EXTENSION_CASES))
+def test_extension_snapshot(fmt, tmp_path, monkeypatch):
+    from tests.fixtures import extensions as ext
+
+    monkeypatch.chdir(tmp_path)
+    home, project = tmp_path / "home", tmp_path / "proj"
+    ext.benign(home, project)
+    ext.malicious(home, project)
+    ext.unpinned_servers(project)
+    result = runner.invoke(app, ["scan", str(project), "--home", str(home), "--format", fmt])
+    assert result.exit_code == 1
+    output = _normalise(result.output, tmp_path)
+    path = SNAPSHOTS / EXTENSION_CASES[fmt]
+    if os.environ.get("AGENTPRINT_UPDATE_SNAPSHOTS") == "1":
+        path.write_text(output, encoding="utf-8")
+        pytest.skip(f"wrote {path.name}")
     assert output == path.read_text(encoding="utf-8")

@@ -137,6 +137,7 @@ HOSTILE = (
 )
 
 
+@pytest.mark.posix_only  # the hostile file name (control characters, |) cannot exist on Windows
 @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 def test_push_reasons_carry_no_control_or_bidi_characters_for_any_agent(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))

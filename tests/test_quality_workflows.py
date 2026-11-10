@@ -91,11 +91,23 @@ def test_codeql_scans_python_and_actions_on_push_pr_and_weekly():
     assert workflow["permissions"] == {}
 
 
-def test_other_os_tests_wait_for_a_public_repo():
+def test_other_os_job_runs_macos_and_windows_as_hard_gates():
     job = _load("ci.yml")["jobs"]["test-other-os"]
-    assert PRIVATE_SKIP in job["if"]
-    assert job["strategy"]["matrix"]["os"] == ["macos-latest"]  # Windows CI returns after launch
+    assert "if" not in job  # the repo is public; no private-repo guard
+    assert job["strategy"]["fail-fast"] is False
+    legs = job["strategy"]["matrix"]["include"]
+    windows = [leg for leg in legs if leg["os"] == "windows-latest"]
+    assert sorted(leg["python"] for leg in windows) == ["3.11", "3.13"]
+    assert all(leg["experimental"] is False for leg in legs)  # a red Windows leg fails the run
+    assert job["continue-on-error"] == "${{ matrix.experimental }}"
+    assert job["env"]["PYTHONUTF8"] == "1"
     assert "permissions" not in job  # inherits the top-level contents: read
+
+
+def test_no_run_step_interpolates_an_expression():
+    for job in _load("ci.yml")["jobs"].values():
+        for step in job["steps"]:
+            assert "${{" not in step.get("run", ""), step
 
 
 def test_ci_runs_pyright_and_a_coverage_floor():

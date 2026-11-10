@@ -20,8 +20,15 @@ character is in [A-Za-z0-9._@%+=:,/-]; otherwise the fix is a plain sentence tha
 finding's location, so no file name can ever become shell syntax.
 
 Severity (Ruling): high for credential stores, medium otherwise. Files are not read again to
-look for keys: AP001/AP002/AP005 already report any key in them. POSIX only: skipped on Windows,
-where access is governed by ACLs.
+look for keys: AP001/AP002/AP005 already report any key in them.
+
+On Windows there are no mode bits: the file's access list (ACL) decides, read by winacl (which
+says exactly when it counts). The owner is the file's owner SID against this process's user
+(an elevated process's files are owned by Administrators: that counts as this user when
+agentprint is elevated too, and is named as not checked otherwise). The fix
+is the icacls recipe for one file, or `agentprint fix` for an agent folder with several (it runs
+icacls on each file), never chmod. A file whose list can't be read or holds entries winacl does
+not read is not reported: the sweep says it could not check it (platform.scan_notes()).
 """
 
 from __future__ import annotations
@@ -33,8 +40,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from .. import platform, winacl
 from ..agents.base import HomeArtifact
 from ..models import Artifact, Finding, Kind, Severity
+from ..sanitize import quote
 from ..sqlite_text import is_sqlite
 from .base import safe_snippet
 
@@ -57,10 +66,24 @@ _PLAIN_FILE = (
     "Make the file named in the location of this finding private to you: run chmod go-rwx on "
     "it, passing the path in single quotes."
 )
+# Windows: a path goes into the icacls command in double quotes (PowerShell and cmd alike) when
+# every character is a letter or digit of any script or one of these; with $ ` % or ! as well,
+# in PowerShell's single quotes (which keep them literal); otherwise not at all.
+_WIN_PATH_CHARS = frozenset(" ._@+=:,\\/~()'-")
+_PS_ONLY_CHARS = frozenset("$`%!")
+_WIN_PLAIN_FILE = (
+    "Make the file named in the location of this finding private to you: run icacls on it in "
+    "PowerShell, passing the path in single quotes (a ' inside written twice), with {args}."
+)
+_NOTE_FILES = 10  # files named one by one in the "not checked" lines
+_WIN_FOLDER = (
+    "Make the files here private to you: run agentprint fix --only AP008. It runs {recipe} on "
+    "each one, and agentprint fix --undo puts them back."
+)
 
 
 def _is_windows() -> bool:
-    return os.name == "nt"
+    return platform.is_windows()
 
 
 def _parents(path: Path) -> list[Path]:
@@ -72,7 +95,8 @@ class _Exposed:
     path: Path
     artifact: Artifact
     classes: tuple[str, ...]
-    mode: int
+    how: str  # "mode 0644"; on Windows "access list: Everyone, Users"
+    remove: tuple[str, ...] = ()  # Windows: other SIDs the file's own entries let read it
 
 
 def _folder_stat(folder: Path, cache: dict[Path, os.stat_result | None]) -> os.stat_result | None:
@@ -144,10 +168,116 @@ def exposed_paths(
 ) -> list[Path]:
     """The files of this artifact (and its SQLite sidecars) that others can read: the exact list
     the check reports, which `agentprint fix` locks."""
-    if _is_windows() or not _in_scope(artifact):
+    if not _in_scope(artifact):
         return []
+    if _is_windows():
+        user = _windows_user()
+        return [p for p in _paths(artifact) if _windows_exposure(p, user, []) is not None]
     cache = {} if cache is None else cache
     return [path for path in _paths(artifact) if _exposure(path, cache) is not None]
+
+
+# ---- Windows: the file's access list --------------------------------------------------------
+
+_User = tuple[str, bool] | None  # (this process's user SID, elevated); None: unknown
+
+
+def _windows_user() -> _User:
+    try:
+        return winacl.current_user()
+    except (OSError, ValueError):
+        return None
+
+
+def _windows_exposure(
+    path: Path, user: _User, unchecked: list[tuple[Path, str]]
+) -> tuple[tuple[str, ...], str, tuple[str, ...]] | None:
+    """(("others",), how, the SIDs its own entries let read it) when other users can read the
+    file; None when nobody else can, it is someone else's, or it could not be checked (then it
+    goes on `unchecked` with the reason)."""
+    try:
+        real = path.resolve(strict=True)
+        if not stat.S_ISREG(real.stat().st_mode):
+            return None
+    except (OSError, RuntimeError, ValueError):
+        return None  # missing, vanished, dangling or looping link
+    access = winacl.exposure(str(real), *user) if user else winacl.Access(unknown=winacl.NO_USER)
+    if access is not None and access.unknown:
+        unchecked.append((path, access.unknown))
+        return None
+    if access is None or not access.readers:
+        return None
+    how = "access list: " + ", ".join(winacl.name(sid) for sid in access.readers)
+    return ("others",), how, access.explicit
+
+
+def _unchecked_notes(unchecked: list[tuple[Path, str]]) -> list[str]:
+    """The sweep's "not checked" lines: one per file whose access list could not be judged (the
+    first _NOTE_FILES of them), then how many more, then what to do."""
+    first: dict[Path, str] = {}  # each file once, with its first reason, in sweep order
+    for path, why in unchecked:
+        first.setdefault(path, why)
+    if not first:
+        return []
+    notes = [
+        f"AP008 could not check who can read {quote(str(path))} on Windows: {why}."
+        for path, why in list(first.items())[:_NOTE_FILES]
+    ]
+    if len(first) > _NOTE_FILES:
+        notes.append(
+            f"AP008 could not check {len(first) - _NOTE_FILES} more agent files on Windows."
+        )
+    them = "it" if len(first) == 1 else "them"
+    notes.append(
+        f'AP008: check {them} with icacls "<file>" and tell the human if anyone else can read '
+        f"{them}."
+    )
+    return notes
+
+
+def _windows_quoting(path: str) -> str | None:
+    """ "double" when the path can go into the icacls command in double quotes, "powershell"
+    when only PowerShell's single quotes keep it literal ($ ` % !), None when it can't go in."""
+    if all(ch.isalnum() or ch in _WIN_PATH_CHARS for ch in path):
+        return "double"
+    if all(ch.isalnum() or ch in _WIN_PATH_CHARS or ch in _PS_ONLY_CHARS for ch in path):
+        return "powershell"
+    return None
+
+
+def _windows_fix(target: Path, is_folder: bool, items: list[_Exposed], me: str) -> str:
+    """The icacls recipe for one file (the only file of an agent folder too), or agentprint fix
+    for several: there is no folder-wide icacls equivalent of chmod -R go-rwx that also drops
+    what each file grants on its own."""
+    first = items[0]
+    path = str(first.path.absolute() if is_folder else target)
+    quoting = _windows_quoting(path) if not is_folder or len(items) == 1 else None
+    if quoting is not None:
+        return winacl.recipe(path, me, first.remove, powershell=quoting == "powershell")
+    if is_folder:
+        return _WIN_FOLDER.format(recipe=winacl.recipe("<file>", me))
+    return _WIN_PLAIN_FILE.format(args=" ".join(winacl.lock_args("", me, first.remove)[1:]))
+
+
+def _exposures(
+    artifact: Artifact,
+    user: _User,
+    cache: dict[Path, os.stat_result | None],
+    unchecked: list[tuple[Path, str]] | None,
+) -> Iterable[tuple[Path, tuple[str, ...], str, tuple[str, ...]]]:
+    """(path, who can read it, how, SIDs to remove) for each exposed file of the artifact. On
+    POSIX `unchecked` is None and modes decide; on Windows the access list does."""
+    if unchecked is None:
+        for path in exposed_paths(artifact, cache):
+            exposure = _exposure(path, cache)
+            if exposure is not None:  # (else it changed since the line above)
+                classes, mode = exposure
+                yield path, classes, f"mode {mode:04o}", ()
+        return
+    for path in _paths(artifact):
+        windows = _windows_exposure(path, user, unchecked)
+        if windows is not None:
+            yield path, *windows
 
 
 def _who(items: list[_Exposed]) -> str:
@@ -165,27 +295,35 @@ class ReadableByOthers:
         "Remove group and other access: chmod -R go-rwx on the agent's folder, or chmod go-rwx "
         "on a single file."
     )
+    windows_fix = (  # what `explain` says on Windows
+        'Make the files private to you: agentprint fix runs icacls "<file>" /inheritance:r '
+        "/grant:r *<your SID>:F *S-1-5-18:F *S-1-5-32-544:F on each one."
+    )
 
     def run(self, artifacts: Iterable[Artifact]) -> list[Finding]:
-        if _is_windows():
-            return []
+        windows = _is_windows()
+        user = _windows_user() if windows else None
+        unchecked: list[tuple[Path, str]] | None = [] if windows else None
         cache: dict[Path, os.stat_result | None] = {}
         groups: dict[tuple[Path, bool], list[_Exposed]] = {}
         for artifact in artifacts:
             if not _in_scope(artifact):
                 continue
             folder = _data_folder(artifact)
-            for path in exposed_paths(artifact, cache):
-                exposure = _exposure(path, cache)
-                if exposure is None:  # changed since the line above
-                    continue
+            for path, classes, how, remove in _exposures(artifact, user, cache, unchecked):
                 key = (folder.absolute(), True) if folder else (path.absolute(), False)
-                groups.setdefault(key, []).append(_Exposed(path, artifact, *exposure))
+                groups.setdefault(key, []).append(_Exposed(path, artifact, classes, how, remove))
+        platform.set_run_notes(self.id, _unchecked_notes(unchecked or []))
+        me = (user[0] if user else "") if windows else None
         return [
-            self._finding(target, is_folder, items) for (target, is_folder), items in groups.items()
+            self._finding(target, is_folder, items, me)
+            for (target, is_folder), items in groups.items()
         ]
 
-    def _finding(self, target: Path, is_folder: bool, items: list[_Exposed]) -> Finding:
+    def _finding(
+        self, target: Path, is_folder: bool, items: list[_Exposed], me: str | None = None
+    ) -> Finding:
+        """One print; `me` (this user's SID) is set on Windows, where the fix is icacls."""
         first = items[0]
         who = _who(items)
         label = _LABEL.get(first.artifact.kind, "agent file")
@@ -201,6 +339,10 @@ class ReadableByOthers:
         else:
             command, plain = f"chmod go-rwx {target}", _PLAIN_FILE
             detail = f"{label} is readable by {who} "
+        if me is None:
+            fix = command if _SAFE_PATH.fullmatch(str(target)) else plain
+        else:
+            fix = _windows_fix(target, is_folder, items, me)
         finding = Finding(
             check_id=self.id,
             severity=(
@@ -212,8 +354,8 @@ class ReadableByOthers:
             agent=first.artifact.agent,
             location=str(target),
             line=None,
-            detail=detail + f"(mode {first.mode:04o})",
-            fix=command if _SAFE_PATH.fullmatch(str(target)) else plain,
+            detail=detail + f"({first.how})",
+            fix=fix,
             count=len(items),
         )
         finding.paths = tuple(item.path for item in items)

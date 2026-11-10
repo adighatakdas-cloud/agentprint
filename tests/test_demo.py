@@ -3,6 +3,8 @@ demo/demo.tape shows works there and never prints a key in full."""
 
 from __future__ import annotations
 
+import importlib.util
+import os
 import re
 import shlex
 import shutil
@@ -11,9 +13,12 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from agentprint.cli import app
+from agentprint.ui.detect import AGENT_MARKERS
+from tests.conftest import home_vars, set_home
 
 ROOT = Path(__file__).resolve().parent.parent
 DEMO = ROOT / "demo"
@@ -134,7 +139,7 @@ def world(tmp_path, monkeypatch) -> Path:
         ap008, "_parents", lambda path: [p for p in path.parents if p.is_relative_to(inside)]
     )
     monkeypatch.chdir(root)
-    monkeypatch.setenv("HOME", str(root))  # as the tape does: no real agent folder is read
+    set_home(monkeypatch, str(root))  # as the tape does: no real agent folder is read
     monkeypatch.setenv("COLUMNS", "100")
     for name in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "GEMINI_CLI_HOME"):
         monkeypatch.delenv(name, raising=False)
@@ -184,7 +189,8 @@ def test_tape_command_runs_and_redacts(command, world):
         assert _snapshot(home) == before  # a scan changes nothing
     elif verb == "fix":
         assert result.exit_code == 0, result.output
-        assert "5 fixes ready" in result.output
+        ready = "3" if os.name == "nt" else "5"  # the 2 permission fixes are POSIX-only
+        assert f"{ready} fixes ready" in result.output
         assert "CLEAR" in result.output and "BLOCK" not in result.output
         assert "Rotate the OpenAI API key" in result.output  # what only the human can do
         assert "FAKEFAKE" not in (home / ".claude" / "history.jsonl").read_text()
@@ -218,3 +224,148 @@ def test_tape_menu_keys_land_on_roster():
     row = sum(1 if key == "Down" else -1 for key in moves) % len(menu.ITEMS)
     assert keys[0] == keys[-1] == "Enter" and moves
     assert menu.ITEMS[row][1] == "Roster"
+
+
+# --- the agent-in-the-loop demo: demo/agent_loop.py and demo/agent_loop.tape ---------------
+
+LOOP = DEMO / "agent_loop.py"
+LOOP_TAPE = DEMO / "agent_loop.tape"
+
+
+def test_loop_tape_runs_the_loop_script_and_is_short_enough():
+    tape = LOOP_TAPE.read_text(encoding="utf-8")
+    assert "Output docs/agent-loop.gif" in tape
+    shown, hidden = [], False
+    for line in tape.splitlines():
+        word = line.strip().split(" ", 1)[0]
+        hidden = {"Hide": True, "Show": False}.get(word, hidden)
+        if word == "Type" and not hidden:
+            shown.append(line.strip())
+    assert shown == ['Type `python3 "$REPO/demo/agent_loop.py" "$DEMO"`']
+    # the script's own pauses plus the tape's: the whole recording stays within a minute
+    pauses = sum(
+        float(n) for n in re.findall(r"^\s+pause\((\d+(?:\.\d+)?)\)", LOOP.read_text(), re.M)
+    )
+    sleeps = sum(
+        float(m[1]) / (1000 if m[2] == "ms" else 1)
+        for m in re.finditer(r"^\s*Sleep (\d+(?:\.\d+)?)(ms|s)", tape, re.M)
+    )
+    assert pauses + sleeps <= 50, (pauses, sleeps)
+    for name in (*AGENT_MARKERS, "CI"):
+        assert re.search(rf"\bunset\b[^`\n]*\b{name}\b", tape), name
+
+
+def test_loop_script_labels_itself_simulated():
+    assert "simulated agent · real agentprint output" in LOOP.read_text(encoding="utf-8")
+
+
+def test_workflow_takes_a_tape_input_without_expressions_in_run():
+    text = (ROOT / ".github" / "workflows" / "demo-gif.yml").read_text(encoding="utf-8")
+    assert "demo/agent_loop.tape" in text and "demo/demo.tape" in text
+    runs = [
+        step["run"]
+        for job in yaml.safe_load(text)["jobs"].values()
+        for step in job.get("steps", [])
+        if "run" in step
+    ]
+    assert runs
+    for block in runs:
+        assert "${{" not in block
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(shutil.which("npm") is None, reason="npm not installed")
+def test_loop_goes_block_then_fix_then_allowed(tmp_path):
+    root = tmp_path / "agentprint-demo"
+    built = subprocess.run(
+        [sys.executable, str(DEMO / "build_demo.py"), str(root)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert built.returncode == 0, built.stderr
+    env = {
+        **os.environ,
+        **home_vars(str(root)),
+        "AGENT_LOOP_SPEED": "0",
+        "AGENTPRINT_CMD": str(Path(sys.executable).parent / "agentprint"),
+    }
+    for name in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "GEMINI_CLI_HOME", "CI", "CLAUDECODE"):
+        env.pop(name, None)
+    result = subprocess.run(
+        [sys.executable, str(LOOP), str(root)],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        env=env,
+    )
+    out = result.stdout
+    assert result.returncode == 0, result.stdout + result.stderr
+    _no_full_key(out + result.stderr)
+    banner = out.index("simulated agent")
+    block = out.index("agentprint: BLOCK")
+    fix = out.index("agent: running (in my-app): agentprint fix --pack --yes --format agent")
+    fixed = out.index("agentprint fix: CLEAR")
+    home_fix = out.index("agentprint fix --yes --format agent --home fake-home my-app")
+    retry = out.index("agent: running again: npm publish")
+    allowed = out.index("agent: the hook let it run this time")
+    left = out.index("agent: Left for you: rotate these 3 keys.")
+    assert banner < block < fix < fixed < home_fix < retry < allowed < left
+    assert "sk-p…(len 56)" in out  # keys appear only as redacted stubs
+    # The count and the keys come from the real fix answers' "Rotate ..." lines.
+    told = re.findall(r'Rotate the (.+?) that starts ("[^"]*")', out[:left])
+    assert len(set(told)) == 3
+    for name, stub in told:
+        assert f"agent:   - {name} {stub}" in out[left:]
+    # Nothing the script wrote itself passes for agentprint output: every such line is dim.
+    for line in out.splitlines():
+        if "agent:" in line or "hook:" in line or "(shortened)" in line:
+            assert line.startswith(("\033[2;36magent: ", "\033[2m")), line
+    assert "CLEAR: allowed" not in out and "has told you which" not in out
+    assert "Tell the human" not in out and "(shortened)" in out  # the cut is said out loud
+    # only real agentprint commands changed the world: fix --pack wrote the ignore lines
+    assert "/.claude/settings.local.json" in (root / "my-app" / ".npmignore").read_text()
+    assert "FAKEFAKE" not in (root / "my-app" / ".claude" / "settings.local.json").read_text()
+    assert "wrote .npmignore" not in out
+    assert "FAKEFAKE" not in (root / "fake-home" / ".claude" / "history.jsonl").read_text()
+
+
+def _loop_module():
+    spec = importlib.util.spec_from_file_location("agent_loop", LOOP)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize(
+    ("answer", "shortened"),
+    [
+        ("agentprint fix: CLEAR\nask_human:\n  - x\nTell the human each ask_human item.\n", True),
+        ("agentprint fix: CLEAR\nask_human:\n  - x\n", False),
+    ],
+    ids=["cut", "whole"],
+)
+def test_loop_says_when_it_shortens_a_fix_answer(tmp_path, monkeypatch, capsys, answer, shortened):
+    loop = _loop_module()
+    monkeypatch.setattr(loop, "SPEED", 0)
+    done = subprocess.CompletedProcess([], 0, stdout=answer, stderr="")
+    monkeypatch.setattr(loop, "agentprint", lambda *args, **kwargs: done)
+    assert loop.run_fix("agentprint fix", ["fix"], tmp_path) == answer
+    out = capsys.readouterr().out
+    assert "Tell the human" not in out
+    assert ("(shortened)" in out) is shortened
+    assert out.startswith("\033[2;36magent: running (in ")
+
+
+def test_loop_counts_each_key_to_rotate_once():
+    loop = _loop_module()
+    first = '- AP002: Rotate the OpenAI API key that starts "sk-p…(len 56)": revoke it'
+    second = (
+        '- AP001: Rotate the Anthropic API key that starts "sk-a…(len 105)": revoke it\n'
+        '- AP005: Rotate the OpenAI API key that starts "sk-p…(len 56)": revoke it'
+    )
+    assert loop.keys_to_rotate(first, second) == [
+        'OpenAI API key "sk-p…(len 56)"',
+        'Anthropic API key "sk-a…(len 105)"',
+    ]
+    assert loop.keys_to_rotate("agentprint fix: CLEAR — nothing to do") == []

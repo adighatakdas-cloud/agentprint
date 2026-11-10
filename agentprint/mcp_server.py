@@ -1,7 +1,9 @@
 """`agentprint mcp`: agentprint as a stdio MCP server, built on the official MCP Python SDK.
 
 Every tool answers in the agent format (verdict on line 1, fix steps, ask_human) and is
-offline: nothing is built, no network is used, keys are always redacted.
+offline: nothing is built, no network is used, keys are always redacted. The project config and
+baseline of the folder checked apply, as they do on the command line (a key in a publish or a
+push always blocks).
 """
 
 from __future__ import annotations
@@ -10,13 +12,16 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
-from . import __version__
+from . import __version__, platform
 from .advice import Moment, explain
+from .baseline import load as load_project
+from .baseline import settle
 from .gitcheck import check_push as run_check_push
 from .guard import CannotCheck, check_package_path
+from .models import Finding
 from .pack import PackError
-from .report import FailOn, to_agent
-from .sanitize import clean
+from .report import to_agent
+from .sanitize import one_line, safe_text
 from .scanner import scan as run_scan
 
 INSTRUCTIONS = (
@@ -33,7 +38,28 @@ def _path(path: str) -> Path:
 
 
 def _cannot(exc: Exception) -> str:
-    return f"agentprint: could not check — {clean(str(exc))}"
+    """One line, every key masked: the error can hold npm's or uv's stderr."""
+    return f"agentprint: could not check — {one_line(exc)}"
+
+
+def _answer(
+    findings: list[Finding],
+    root: Path,
+    moment: Moment,
+    *,
+    package: bool | None = False,
+    home: Path | None = None,
+    not_checked: tuple[str, ...] = (),
+) -> str:
+    """The agent text, with the project config and baseline of `root` applied (Ruling C1 in a
+    publish or push) and a `warning:` line for each problem reading them."""
+    project = load_project(root, home=home)
+    publishing = moment is not Moment.scan
+    settled = settle(findings, project, None, publishing=publishing, package=package, home=home)
+    text = to_agent(
+        settled.active, settled.fail_on, moment, not_checked=not_checked, known=settled.known
+    )
+    return text + "".join(f"\nwarning: {safe_text(note)}" for note in project.warnings)
 
 
 def build_server() -> MCPServer:
@@ -49,11 +75,13 @@ def build_server() -> MCPServer:
         or a built file (.tgz, .whl, .tar.gz, .zip); for a Python project folder the built
         files in its dist/ are checked. Prefer an absolute path. Result line 1 is
         `agentprint: OK` or `agentprint: BLOCK — ...`, followed by fix steps."""
+        target = _path(path)
         try:
-            findings = check_package_path(_path(path))
+            findings = check_package_path(target)
         except (CannotCheck, PackError, OSError) as exc:
             return _cannot(exc)
-        return to_agent(findings, FailOn.high, Moment.publish)
+        root = target if target.is_dir() else Path(".")
+        return _answer(findings, root, Moment.publish, package=True)
 
     @server.tool()
     def check_push(path: str = ".") -> str:
@@ -64,7 +92,7 @@ def build_server() -> MCPServer:
             findings = run_check_push(_path(path))
         except (CannotCheck, OSError) as exc:
             return _cannot(exc)
-        return to_agent(findings, FailOn.high, Moment.push)
+        return _answer(findings, _path(path), Moment.push)
 
     @server.tool()
     def scan_secrets(path: str = ".", include_home: bool = False) -> str:
@@ -74,8 +102,9 @@ def build_server() -> MCPServer:
         project = _path(path)
         if not project.is_dir():
             return _cannot(ValueError(f"{path} is not a folder"))
-        findings = run_scan(Path.home() if include_home else None, project)
-        return to_agent(findings, FailOn.high, Moment.scan)
+        home = Path.home() if include_home else None
+        findings = run_scan(home, project)
+        return _answer(findings, project, Moment.scan, home=home, not_checked=platform.scan_notes())
 
     @server.tool()
     def explain_finding(check_id: str) -> str:

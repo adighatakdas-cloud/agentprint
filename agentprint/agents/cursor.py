@@ -19,10 +19,12 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from .. import platform
 from ..models import AgentConfig, Artifact, Grant, Kind, PackageRule, Severity
 from ..structured import load
 from .base import (
     artifacts,
+    children,
     dig,
     from_home,
     hook_commands,
@@ -58,7 +60,7 @@ def _user_dirs(home: Path) -> list[Path]:
     return [
         home / "Library" / "Application Support" / "Cursor" / "User",
         home / ".config" / "Cursor" / "User",
-        home / "AppData" / "Roaming" / "Cursor" / "User",
+        platform.roaming_appdata(home) / "Cursor" / "User",
     ]
 
 
@@ -153,6 +155,23 @@ class Cursor:
         yield from artifacts(
             NAME, Kind.SETTINGS, base / "mcp.json", base / "cli.json", base / "hooks.json"
         )
+
+    def extension_paths(self, home: Path | None, project: Path | None) -> list[Path]:
+        # Rules (.cursor/rules/*.mdc, the legacy .cursorrules, user rule files in
+        # ~/.cursor/rules), commands (.cursor/commands/), the hook scripts the hooks docs keep
+        # in hooks/ next to hooks.json, and local plugins in ~/.cursor/plugins/local/.
+        # https://cursor.com/docs/context/rules, https://cursor.com/docs/hooks,
+        # https://cursor.com/docs/plugins
+        paths: list[Path] = []
+        if home is not None:
+            base = home / ".cursor"
+            paths += children(base / "rules", base / "commands", base / "hooks")
+            paths += children(base / "plugins" / "local")
+        if project is not None:
+            base = project / ".cursor"
+            paths += [project / ".cursorrules"]
+            paths += children(base / "rules", base / "commands", base / "hooks")
+        return paths
 
     def pure_history(self, path: Path) -> bool:
         return matches_any(path, _RECORDS)

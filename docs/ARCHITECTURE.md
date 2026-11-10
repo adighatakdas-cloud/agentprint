@@ -19,7 +19,7 @@ steps, and what to ask the human). Who is running it decides which (`ui/detect.p
  HOW IT IS STARTED                 WHAT RUNS                            WHAT COMES OUT
  ─────────────────                 ─────────                            ──────────────
  agentprint scan ───► scanner.py ─► agents/*.py   find each agent's files
-                                    checks/*.py   AP001-AP008: what is risky ──┐
+                                    checks/*.py   AP001-AP011: what is risky ──┐
  agentprint pack ───► pack.py ────► checks/ap006  agent files in a package    │
                                                                                ▼
  agent's hook ──────► hook.py ────► commands.py   publish or push?          Findings
@@ -33,6 +33,8 @@ steps, and what to ask the human). Who is running it decides which (`ui/detect.p
                                                                    sanitize.py on every scanned string
 
  agentprint install ─► install.py + integrations/*.py: a hook, an MCP entry and a note per agent
+ agentprint protect ─► protect.py: a git pre-push hook (runs `push-check` → gitcheck.py) and
+                       npm's prepublishOnly (runs `pack`), checked at git and npm themselves
 ```
 
 ## The parts
@@ -46,19 +48,28 @@ steps, and what to ask the human). Who is running it decides which (`ui/detect.p
   which hooks it runs, and which MCP servers it starts;
 - which of its history files are only records (`pure_history`), so `agentprint fix` may mask a
   key there, and which it reads back as instructions or config;
-- which of its files must never ship in a package (`package_rules`).
+- which of its files must never ship in a package (`package_rules`);
+- where it loads extensions from (`extension_paths`): instruction files, and each skill,
+  command, subagent, rule, plugin or extension. The scanner lists their files as kind
+  `extension`, apart from the rest, so a skill folder that is also history stays history for
+  the key checks.
 
-`agents/scan_only.py` holds 15 lighter agents that are only package rules and project files.
-Adding an agent never touches a check.
+`agents/scan_only.py` holds 4 lighter agents that are only package rules and project files.
+An agent that a sweep reads in full but `install` can't arm yet carries an `AgentDoc`, which
+draws its row on the docs' agents page and its `agentprint status` line. Every MCP config
+format goes through one reader in `agents/base.py` (`read_mcp_servers`), and an agent whose
+docs name an environment-variable reference for MCP keys says so with `env_reference`, which
+`agentprint fix` then writes. Adding an agent never touches a check.
 
-**`checks/` (what is risky).** One module per check, `ap001_...` to `ap008_...`. A check gets
+**`checks/` (what is risky).** One module per check, `ap001_...` to `ap011_...`. A check gets
 the list of found files and returns findings. Checks never parse an agent's file format; they
 use what the agent module understood. When two checks see the same key (an API key inside an
 MCP server entry is both AP002 and AP005), the more precise one claims it and the other drops
 it, so you get one finding.
 
-**`secrets.py`.** Key patterns (Anthropic, OpenAI, GitHub, AWS, Stripe, Slack, Google, and a
-generic name-plus-random-value rule with an entropy test) and `redact()`.
+**`secrets.py`.** Key patterns (Anthropic, OpenAI, GitHub, AWS, Stripe, Slack, Google, newer
+formats, four of them matched only next to the provider's name, and a generic
+name-plus-random-value rule with an entropy test) and `redact()`.
 
 **`pack.py` (what a package ships).** Asks the package manager itself: `npm pack --dry-run
 --ignore-scripts` (no package code runs) or `uv build` for Python projects, or reads an
@@ -70,11 +81,31 @@ gives the agent's config folder, the three edits `install` makes (hook, MCP serv
 to read the agent's hook message (`parse_hook`: which command, in which folder) and how to
 answer (`reply`: the agent's own "deny" JSON or exit code). `install.py` applies the edits.
 
+**`plugins.py` and `plugins/` (agentprint as a plugin).** The same hook, MCP server and note,
+packaged as each agent's own plugin or extension. `tools/plugins.py` writes every file under
+`plugins/agentprint/` (and the manifests some ecosystems need at the repository root) from the
+integrations' own edits, so a plugin hook is the entry `install` writes with a pinned
+`uvx --from agentprint==<version>` command; `gen_docs --check` catches drift. `plugins.py` also
+tells `status` where each agent keeps installed plugins.
+
 **`commands.py` and `guard.py` (is this a publish?).** `commands.py` reads the shell command an
-agent is about to run and spots publishes and pushes. It is a careful reader, not a shell: it
-follows `cd`, `&&`, `bash -c`, `npm run release` (by reading `package.json`), workspaces and
-release tools. `guard.py` then works out what would be uploaded and checks it. Everything that
-isn't a publish or a push passes straight through without any check.
+agent is about to run and spots publishes and pushes. It is a careful reader, not a shell: a real
+tokenizer (`shell.py`) reads quotes, `$'...'`, here-documents and substitutions the way bash
+does, and the reader follows `cd`, `&&`, `bash -c`, `eval`, functions, variables, `npm run
+release` (by reading `package.json`), workspaces and release tools, and the files a command
+runs (`following.py`, `recipes.py`). The reader can only add risk: at the end a backstop looks
+over every text it read, as written, and any publish or push the reader did not account for is
+"could not check". `guard.py` then works out what would be uploaded and checks it. Everything
+that isn't a publish or a push passes straight through without any check.
+
+**`protect.py` (the second layer).** Reading a command can be dodged (`eval`, a push built at
+run time), so `agentprint protect` also checks at the tools' own boundary, for one project: a git
+pre-push hook that runs `agentprint push-check` and a `prepublishOnly` script that runs
+`agentprint pack`. `push-check` reads git's pre-push lines and checks what the push uploads from
+git's own objects (`gitcheck.check_pushed`: each ref's tree, plus keys in the commits on the
+way), not the working tree. An existing hook is chained unless it would break when renamed, a
+hook manager's folder is left alone (the lines to add are printed, failing open since they are
+shared), and `--undo` restores each file exactly from the record in `~/.agentprint/protect.json`.
 
 **`mcp_server.py`.** An MCP server (official MCP Python SDK) with four tools:
 `check_package`, `check_push`, `scan_secrets`, `explain_finding`. Same checks, agent format.
@@ -131,7 +162,8 @@ instructions: a file name can't pose as an instruction to the model.
 **Commands are never shortened.** A fix step that holds a shell command is shown whole and
 unchanged, or replaced by a plain-words instruction (`sanitize.safe_step`). Cutting or editing a
 shell-quoted command could turn part of a hostile file name into something that runs. AP008
-puts a path into its `chmod` command only when every character is in a small safe set.
+puts a path into its `chmod` command (on Windows, its `icacls` command, from `winacl.py`) only
+when every character is in a small safe set.
 
 **Installs are reversible.** Every edit marks what it added (a marker comment, an `agentprint`
 key, or the launcher's name in a hook command), so `uninstall` removes exactly that and keeps
@@ -139,7 +171,7 @@ your own changes. Files are backed up first (the backups are readable only by yo
 written atomically. A file agentprint can't edit safely (JSON with comments, YAML with anchors) is left alone, and the
 lines to add by hand are printed instead.
 
-**Reading is bounded.** SQLite chat databases are opened read-only. Archives are read in
+**Reading is bounded.** SQLite chat databases are opened read-only (immutable when no sidecar file exists, so nothing is created); a file that can't be read is named in the scan's not_checked notes (`unread.py`). Archives are read in
 memory, never unpacked to disk, with caps on entries, unpacked size and content read. YAML is
 read with a safe loader that gives up after 100 aliases, so a crafted file can't blow up.
 

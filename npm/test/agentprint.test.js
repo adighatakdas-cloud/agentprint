@@ -7,7 +7,13 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { command, findExecutable, pythonVersion } = require('../bin/agentprint.js');
+const {
+  allowsUnavailable,
+  command,
+  findExecutable,
+  pythonVersion,
+  strictRequested,
+} = require('../bin/agentprint.js');
 const pkg = require('../package.json');
 
 const BIN = path.join(__dirname, '..', 'bin', 'agentprint.js');
@@ -143,4 +149,65 @@ test('command() returns null when nothing is installed', () => {
     file: '/bin/uvx',
     args: ['agentprint==1.0.0', 'scan'],
   });
+});
+
+test('--if-unavailable allow lets the publish go when agentprint cannot run', unixOnly, () => {
+  const allow = ['pack', '--fail-on', 'high', '--if-unavailable', 'allow'];
+  const missing = run(fakeDir(), allow);
+  assert.equal(missing.status, 0);
+  assert.match(missing.stderr, /^agentprint: could not run: uv or pipx is not installed; the publish goes on/);
+  const dir = fakeDir('uvx');
+  // uvx could not fetch agentprint (exit 1 or 2), or Python crashed (exit 1): no verdict
+  for (const code of ['1', '2', '127']) {
+    const failed = run(dir, allow, { FAKE_EXIT: code });
+    assert.equal(failed.status, 0, code);
+    assert.equal(failed.stderr, `agentprint: could not run (exit ${code}); the publish goes on (--if-unavailable allow)\n`);
+  }
+  assert.equal(run(dir, allow, { FAKE_EXIT: '3' }).status, 1); // a BLOCK verdict still blocks
+  assert.equal(run(dir, allow, { FAKE_EXIT: '4' }).status, 2); // so does "could not check"
+  const ok = run(dir, allow, { FAKE_EXIT: '0' });
+  assert.equal(ok.status, 0);
+  assert.match(ok.stderr, /to-stderr/); // a verdict's own stderr is passed on
+  assert.equal(run(fakeDir(), ['pack']).status, 2); // without the flag: as before
+  assert.equal(run(dir, ['pack'], { FAKE_EXIT: '1' }).status, 1);
+  assert.equal(run(dir, ['pack'], { FAKE_EXIT: '2' }).status, 2);
+});
+
+test('AGENTPRINT_STRICT turns allow mode off: the publish stops', unixOnly, () => {
+  const allow = ['pack', '--fail-on', 'high', '--if-unavailable', 'allow'];
+  for (const value of ['1', 'TRUE', ' yes ', 'on']) {
+    const strict = { AGENTPRINT_STRICT: value };
+    assert.equal(allowsUnavailable(allow, strict), false, value);
+    assert.equal(strictRequested(strict), true, value);
+    const missing = run(fakeDir(), allow, strict);
+    assert.equal(missing.status, 2, value); // no uv or pipx: stopped, with the install hint
+    assert.match(missing.stderr, /uv/);
+    const dir = fakeDir('uvx');
+    assert.equal(run(dir, allow, { ...strict, FAKE_EXIT: '2' }).status, 2); // uv failed: stopped
+    assert.equal(run(dir, allow, { ...strict, FAKE_EXIT: '3' }).status, 1); // verdicts still map
+    assert.equal(run(dir, allow, { ...strict, FAKE_EXIT: '4' }).status, 2);
+    assert.equal(run(dir, allow, { ...strict, FAKE_EXIT: '0' }).status, 0);
+  }
+  for (const value of ['', '0', 'no']) {
+    assert.equal(allowsUnavailable(allow, { AGENTPRINT_STRICT: value }), true, value);
+    assert.equal(run(fakeDir(), allow, { AGENTPRINT_STRICT: value }).status, 0, value);
+  }
+});
+
+test('the flag is read in both spellings and passed on to agentprint', unixOnly, () => {
+  assert.equal(allowsUnavailable(['pack', '--if-unavailable=allow']), true);
+  assert.equal(allowsUnavailable(['pack', '--if-unavailable', 'block']), false);
+  assert.equal(allowsUnavailable(['pack']), false);
+  const result = run(fakeDir('uvx'), ['pack', '--if-unavailable', 'allow']);
+  assert.deepEqual(result.stdout.trim().split('\n').slice(2), ['pack', '--if-unavailable', 'allow']);
+});
+
+test('uvx or pipx inside node_modules is never used', unixOnly, () => {
+  const root = fakeDir();
+  const bin = path.join(root, 'node_modules', '.bin');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'uvx'), FAKE, { mode: 0o755 });
+  assert.equal(findExecutable('uvx', { PATH: bin }), null);
+  const real = fakeDir('uvx');
+  assert.equal(findExecutable('uvx', { PATH: [bin, real].join(path.delimiter) }), path.join(real, 'uvx'));
 });

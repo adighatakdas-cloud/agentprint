@@ -1,0 +1,51 @@
+name: Mutation testing
+
+# Weekly and on demand. Informational only: it never gates a merge, it shows which tests are
+# too weak to notice a changed line in the riskiest modules (fix, pack, guard, secrets).
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  mutmut:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - run: uv sync --locked --python 3.13
+      - name: run mutmut within a time budget (60 minutes)
+        run: timeout --signal=INT 3600 uv run mutmut run || true
+      - name: score summary
+        run: |
+          uv run mutmut results --all true > results.txt || true
+          killed=$(grep -c ': killed' results.txt || true)
+          survived=$(grep -c ': survived' results.txt || true)
+          timeouts=$(grep -c ': timeout' results.txt || true)
+          unchecked=$(grep -c ': not checked' results.txt || true)
+          tested=$((killed + survived + timeouts))
+          {
+            echo "## Mutation testing (fix, pack, guard, secrets)"
+            echo
+            echo "| killed | survived | timeout | not reached in the budget |"
+            echo "| --- | --- | --- | --- |"
+            echo "| $killed | $survived | $timeouts | $unchecked |"
+            echo
+            if [ "$tested" -gt 0 ]; then
+              echo "Score on the mutants that ran: $(( (killed + timeouts) * 100 / tested ))%"
+            else
+              echo "No mutants ran."
+            fi
+            echo
+            echo "Survivors by module:"
+            echo
+            echo '```'
+            grep ': survived' results.txt | sed -E 's/__mutmut_[0-9]+.*//' | sort | uniq -c | sort -rn | head -30 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

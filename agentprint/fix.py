@@ -10,7 +10,9 @@ key's bytes in place with its first four characters and `*` to the same length. 
 positioned write at the key's byte offset, made only after re-reading those bytes and checking
 they still hold what was planned. The file is never renamed or truncated, so text a running
 agent appends meanwhile is kept, and no copy of a key is ever made: no backup, and only masked
-stubs (`redact()` form) in the plan, the journal and the output.
+stubs (`redact()` form) in the plan, the journal and the output. A key hidden on purpose (split
+into joined strings, folded over lines, cut by invisible characters, base64) has no run of bytes
+to mask: it is always left to the human.
 
 New kinds of change plug in through PLANNERS (check id -> planner) and APPLIERS (kind ->
 applier); a print with no planner is left to the human with its existing advice.
@@ -33,9 +35,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from . import sqlite_text, structured
+from . import platform, sqlite_text, structured, winacl
 from .advice import NO_LEAK, Advice, Moment, advise, agent_path, split_location
 from .agents import ALL_AGENTS, by_name
+from .agents.base import EnvReference
 from .checks.ap005_mcp_inline_secret import _MARKER as MCP_MARKER
 from .checks.ap007_local_not_ignored import git_state
 from .checks.base import safe_snippet
@@ -43,7 +46,7 @@ from .files import MAX_BYTES
 from .models import Finding, Severity
 from .safewrite import atomic_write, private_dir, real
 from .sanitize import clean, quote
-from .secrets import find_secrets, redact
+from .secrets import find_secrets, hidden_how, redact
 
 JOURNAL_DIR = Path(".agentprint") / "fix"  # under the home folder
 STAMP = "%Y%m%dT%H%M%SZ"  # UTC; also names the run's backup folder
@@ -104,11 +107,15 @@ class Change:
     json_path: str = ""
     var: str = ""
     version: Version | None = None
+    # env: the text written in place of the key, in the agent's own syntax ("${TOKEN}",
+    # "${env:TOKEN}" in VS Code); "" means "${<var>}".
+    reference: str = ""
     # ignore: the line to add, and the ignore file to add it to (also `path`, so every line for
     # one file is applied in one go).
     line_text: str = ""
     target: Path | None = None
-    # lock: the file's mode when planned.
+    # lock: the file's mode when planned (POSIX). None on Windows, where the access list is read
+    # and saved right before the change.
     old_mode: int | None = None
     # ignore: when the file does not exist yet, start it as a copy of this file (.npmignore from
     # .gitignore: npm stops reading .gitignore once .npmignore exists).
@@ -500,7 +507,7 @@ def _plan_masks(findings: list[Finding], pack: bool) -> tuple[list[Change], list
 
     AP001 masks only pure history, as its agent module names it (transcripts, chat logs, paste
     caches, prompt history). A key in a file the agent reads back (skills, rules, memories,
-    scheduled jobs) is in use: that print is the human's."""
+    scheduled jobs) is in use: that print is the human's. So is a hidden key."""
     changes: list[Change] = []
     manual: list[Manual] = []
     by_file: dict[str, list[Finding]] = {}
@@ -510,6 +517,16 @@ def _plan_masks(findings: list[Finding], pack: bool) -> tuple[list[Change], list
         path = Path(location)
         if split_location(location)[0] is not None:  # inside a package: fix the source
             manual += [_advice(f, pack) for f in group]
+            continue
+        # A key hidden on purpose (split, folded, invisible characters, base64) has no run of
+        # bytes to mask: removing it is the human's, with its advice (find every piece, rotate).
+        hidden = [f for f in group if hidden_how(f.detail) is not None]
+        manual += [
+            _chat_database(f) if f.check_id == "AP001" and not f.line else _advice(f, pack)
+            for f in hidden
+        ]
+        group = [f for f in group if hidden_how(f.detail) is None]
+        if not group:
             continue
         if any(not f.line for f in group) or sqlite_text.is_sqlite(path):  # database rows
             manual += [
@@ -547,29 +564,39 @@ def _plan_masks(findings: list[Finding], pack: bool) -> tuple[list[Change], list
 PLANNERS: dict[str, Planner] = {"AP001": _plan_masks, "AP002": _plan_masks}
 
 
-# ---- env references: AP005 (Claude Code MCP entries) -----------------------------------------
+# ---- env references: AP005 (MCP entries of agents that document an env reference) ------------
 
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
-_ENV_FILES = (".claude.json", ".mcp.json")  # the Claude Code files that expand ${VAR}
 
 
-def _env_slots(doc: Any, name: str) -> Iterable[tuple[tuple[str, ...], str, str, str]]:
-    """Every string under mcpServers.<server>.env.<NAME> the way the Claude Code module reads
-    them (the top level, and for ~/.claude.json each project's own servers):
+def env_reference(agent_name: str, path: Path) -> EnvReference | None:
+    """How this agent's MCP file names an environment variable, from its module (Claude Code
+    "${NAME}", VS Code "${env:NAME}", ...), or None when the agent documents no such reference."""
+    get = getattr(by_name(agent_name), "env_reference", None)
+    try:
+        ref = get(path) if get is not None else None
+    except Exception:  # an agent module bug must never let fix edit a file it can't place
+        return None
+    return ref if isinstance(ref, EnvReference) else None
+
+
+def _env_slots(doc: Any, ref: EnvReference) -> Iterable[tuple[tuple[str, ...], str, str, str]]:
+    """Every string under <servers>.<server>.<env>.<NAME> the way the agent module reads them
+    (the top level, and with `ref.projects` each project's own servers, as in ~/.claude.json):
     (JSON path, server name, variable name, value)."""
     if not isinstance(doc, dict):
         return
     holders: list[tuple[tuple[str, ...], Any]] = [((), doc)]
-    projects = doc.get("projects") if name == ".claude.json" else None
+    projects = doc.get("projects") if ref.projects else None
     if isinstance(projects, dict):
         holders += [(("projects", k), v) for k, v in projects.items() if isinstance(k, str)]
     for prefix, holder in holders:
-        servers = holder.get("mcpServers") if isinstance(holder, dict) else None
+        servers = holder.get(ref.servers) if isinstance(holder, dict) else None
         for server, entry in servers.items() if isinstance(servers, dict) else ():
-            env = entry.get("env") if isinstance(entry, dict) else None
+            env = entry.get(ref.env) if isinstance(entry, dict) else None
             for var, value in env.items() if isinstance(env, dict) else ():
                 if isinstance(server, str) and isinstance(value, str) and _ENV_NAME.fullmatch(var):
-                    yield (*prefix, "mcpServers", server, "env", var), server, var, value
+                    yield (*prefix, ref.servers, server, ref.env, var), server, var, value
 
 
 def _plain_json_string(value: str) -> bool:
@@ -593,8 +620,11 @@ def _occurrences(data: bytes, needle: bytes) -> Iterable[int]:
         start = data.find(needle, start + 1)
 
 
-def _plan_env_file(path: Path, findings: list[Finding]) -> tuple[list[Change], list[Manual]]:
-    """Replace every inline key under an env block of one Claude Code file with "${NAME}"."""
+def _plan_env_file(
+    path: Path, findings: list[Finding], ref: EnvReference
+) -> tuple[list[Change], list[Manual]]:
+    """Replace every inline key under an env block of one MCP file with the agent's own
+    reference to an environment variable ("${NAME}" for Claude Code)."""
     changes: list[Change] = []
     var_of: dict[str, str] = {}  # finding detail -> variable that now holds the key
     data = _read(path)
@@ -607,35 +637,37 @@ def _plan_env_file(path: Path, findings: list[Finding]) -> tuple[list[Change], l
     before = structured.parse(data, str(path)) if text_ok and data is not None else None
     if data is not None and before is not None and len(data) <= structured.MAX_BYTES:
         used: set[int] = set()
-        slots = list(_env_slots(before, path.name))[:MAX_SETTINGS_TRIES]
+        slots = list(_env_slots(before, ref))[:MAX_SETTINGS_TRIES]
         for jpath, server, var, value in slots:
             found = find_secrets(value)
             if len(found) != 1 or found[0].value != value or not _plain_json_string(value):
                 continue
             needle = b'"' + value.encode() + b'"'
+            reference = ref.reference(var)
             for start in _occurrences(data, needle):
                 if start in used:
                     continue
-                new = data[:start] + f'"${{{var}}}"'.encode() + data[start + len(needle) :]
-                if structured.parse(new, str(path)) != _with_value(before, jpath, "${" + var + "}"):
+                new = data[:start] + json.dumps(reference).encode() + data[start + len(needle) :]
+                if structured.parse(new, str(path)) != _with_value(before, jpath, reference):
                     continue
                 used.add(start)
-                where = f"env.{var} of MCP server {safe_snippet(server, 60)!r}"
+                where = f"{ref.env}.{var} of MCP server {safe_snippet(server, 60)!r}"
                 changes.append(
                     Change(
                         kind="env",
                         path=path,
                         line=data.count(b"\n", 0, start) + 1,
                         check_id="AP005",
-                        shown=f'{where}: key replaced by "${{{var}}}"',
+                        shown=f'{where}: key replaced by "{reference}"',
                         offsets=((start, start + len(needle)),),
                         digests=(_digest(needle),),
                         json_path=json.dumps(list(jpath)),
                         var=var,
                         version=version,
+                        reference=reference,
                     )
                 )
-                field_text = safe_snippet(f"env.{var}", 60)
+                field_text = safe_snippet(f"{ref.env}.{var}", 60)
                 detail = f"{found[0].name}: {redact(value)}{MCP_MARKER}"
                 detail += f"{safe_snippet(server, 60)!r} ({field_text})"
                 var_of[detail] = var
@@ -650,7 +682,7 @@ def _plan_env_file(path: Path, findings: list[Finding]) -> tuple[list[Change], l
         manual.append(
             Manual(
                 finding.check_id,
-                f"After rotating, set {var} in the shell that starts Claude Code to the new key: "
+                f"After rotating, set {var} in {ref.where} to the new key: "
                 f"the MCP config now reads it from there ({quote(str(path))}).",
             )
         )
@@ -658,8 +690,10 @@ def _plan_env_file(path: Path, findings: list[Finding]) -> tuple[list[Change], l
 
 
 def _plan_env(findings: list[Finding], pack: bool) -> tuple[list[Change], list[Manual]]:
-    """AP005: Claude Code env entries become "${NAME}" references; every other entry (headers,
-    args, URL, other agents) stays with the human and its per-agent advice."""
+    """AP005: env entries become references to an environment variable, in the files of agents
+    that document one (Claude Code, Qwen Code, Amp, Factory Droid, Augment "${NAME}", VS Code
+    "${env:NAME}", Kilo Code "{env:NAME}", Crush "$NAME"); every other entry (headers, args, URL,
+    other agents) stays with the human and its advice."""
     changes: list[Change] = []
     manual: list[Manual] = []
     by_file: dict[str, list[Finding]] = {}
@@ -667,10 +701,11 @@ def _plan_env(findings: list[Finding], pack: bool) -> tuple[list[Change], list[M
         by_file.setdefault(finding.location, []).append(finding)
     for location, group in by_file.items():
         path = Path(location)
-        ours = [f for f in group if f.agent == "claude-code"] if path.name in _ENV_FILES else []
+        ref = env_reference(group[0].agent, path)
+        ours = [f for f in group if f.agent == group[0].agent] if ref is not None else []
         rest = [f for f in group if f not in ours]
-        if ours:
-            more_changes, more_manual = _plan_env_file(path, ours)
+        if ours and ref is not None:
+            more_changes, more_manual = _plan_env_file(path, ours, ref)
             changes += more_changes
             manual += more_manual
         manual += _leave_to_human(rest, pack)[1]
@@ -737,16 +772,36 @@ def _plan_ignore(findings: list[Finding], pack: bool) -> tuple[list[Change], lis
 # ---- file modes: AP008 -----------------------------------------------------------------------
 
 
+# What a Windows lock does (the icacls call of winacl.lock_args): no more than that is claimed,
+# since entries that let nobody else read the file are kept.
+WINDOWS_LOCK = "access list: other users removed"
+OTHER_OWNER = "the file belongs to another user; left as is"
+ALREADY_PRIVATE = "the file is already private"
+NO_ACLS = (
+    "agentprint cannot make the file private on this drive (it keeps no permissions); left as is"
+)
+ADMIN_OWNED = (
+    "the file is owned by Administrators (made by a program run as administrator); run "
+    "agentprint as administrator to make it private; left as is"
+)
+DENIED = "Windows denied the change (access denied); left as is"
+
+
 def _plan_locks(findings: list[Finding], pack: bool) -> tuple[list[Change], list[Manual]]:
-    """AP008: chmod go-rwx on exactly the files the check found (it hands them over on the
-    finding; fix does not work them out again)."""
+    """AP008: chmod go-rwx (on Windows, the icacls lock) on exactly the files the check found
+    (it hands them over on the finding; fix does not work them out again)."""
     changes: dict[Path, Change] = {}
     manual: list[Manual] = []
+    windows = platform.is_windows()
     for finding in findings:
         if not finding.paths:
             manual += _leave_to_human([finding], pack)[1]
             continue
         for path in finding.paths:
+            if windows:
+                if path not in changes and os.path.isfile(path):
+                    changes[path] = Change("lock", path, None, finding.check_id, WINDOWS_LOCK)
+                continue
             try:
                 mode = stat.S_IMODE(os.stat(path).st_mode)
             except OSError:
@@ -1130,7 +1185,7 @@ def _apply_env(changes: list[Change], journal: Journal) -> list[Result]:
     expected, new = before, data
     try:
         for c in sorted(changes, key=lambda c: c.offsets[0][0], reverse=True):
-            (start, end), reference = c.offsets[0], "${" + c.var + "}"
+            (start, end), reference = c.offsets[0], c.reference or "${" + c.var + "}"
             new = new[:start] + json.dumps(reference).encode() + new[end:]
             expected = _with_value(expected, tuple(json.loads(c.json_path)), reference)
         text = new.decode("utf-8")
@@ -1201,7 +1256,7 @@ def _apply_ignore(changes: list[Change], journal: Journal) -> list[Result]:
         try:
             if exists:
                 journal.open()  # claims the run's stamp, which names its backup folder
-                copy = journal.backups / Path(*target.resolve().parts[1:])
+                copy = journal.backups / Path(*platform.drive_safe_parts(target.resolve()))
                 copy.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                 private_dir(journal.folder / "backups")
                 fd = os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -1228,7 +1283,9 @@ def _apply_ignore(changes: list[Change], journal: Journal) -> list[Result]:
 
 def _apply_lock(changes: list[Change], journal: Journal) -> list[Result]:
     """chmod go-rwx on a file (the owner's bits, execute included, are kept) and journal the
-    mode it had right now."""
+    mode it had right now. On Windows: the icacls lock, journaling the access list."""
+    if platform.is_windows():
+        return [_lock_windows(change) for change in changes]
     results = []
     for change in changes:
         try:
@@ -1237,12 +1294,12 @@ def _apply_lock(changes: list[Change], journal: Journal) -> list[Result]:
                 results.append(Result(change, CHANGED))
                 continue
             if hasattr(os, "getuid") and st.st_uid != os.getuid():
-                results.append(Result(change, "the file belongs to another user; left as is"))
+                results.append(Result(change, OTHER_OWNER))
                 continue
             old = stat.S_IMODE(st.st_mode)
             new = old & ~0o077
             if new == old:
-                results.append(Result(change, "the file is already private"))
+                results.append(Result(change, ALREADY_PRIVATE))
                 continue
             os.chmod(change.path, new)
             results.append(Result(change, None, {"mode": old, "now": new}))
@@ -1251,6 +1308,88 @@ def _apply_lock(changes: list[Change], journal: Journal) -> list[Result]:
         except OSError as exc:
             results.append(Result(change, _cannot_write(exc)))
     return results
+
+
+def _icacls_failed(code: int) -> str:
+    if code == winacl.ERROR_ACCESS_DENIED:
+        return DENIED
+    if code == winacl.ERROR_NOT_SUPPORTED:
+        return NO_ACLS
+    if code < 0:
+        return (
+            "agentprint could not run Windows' icacls.exe, so the file was not locked; left as is"
+        )
+    return f"icacls could not change the file's permissions (exit code {code}); left as is"
+
+
+def _lock_windows(change: Change) -> Result:
+    """The icacls lock on one file (winacl.lock_args), then the access list is read again: if
+    anyone else can still read the file, or the owner can no longer read and write it, the old
+    list is put back. The journal keeps the list as it was (SDDL text) for --undo."""
+    try:
+        target = change.path.resolve(strict=True)
+        if not stat.S_ISREG(target.stat().st_mode):
+            return Result(change, CHANGED)
+        where = str(target)
+        if not winacl.has_acls(where):
+            return Result(change, NO_ACLS)
+        before = winacl.read(where)
+        me, elevated = winacl.current_user()
+        if before.owner == winacl.ADMINISTRATORS and not elevated:
+            return Result(change, ADMIN_OWNED)
+        if not winacl.owned_by_me(before.owner, me, elevated):
+            return Result(change, OTHER_OWNER)
+        access = winacl.classify(before.aces, {me, before.owner})
+        if access.unknown:
+            return Result(
+                change,
+                f"agentprint could not check who can read the file ({access.unknown}); left as is",
+            )
+        if not access.readers:
+            return Result(change, ALREADY_PRIVATE)
+        code = winacl.lock(where, me, access.explicit)
+        try:
+            after = winacl.read(where)
+        except (OSError, ValueError):
+            return _roll_back(change, where, before.sddl, "its access list could not be read again")
+        if code != 0 and after.sddl == before.sddl:
+            return Result(change, _icacls_failed(code))
+        mine = {me, winacl.ADMINISTRATORS} if elevated else {me}
+        left = winacl.classify(after.aces, {me, after.owner})
+        keeps = all(
+            winacl.allows(after.aces, mine, right)
+            for right in (winacl.FILE_READ_DATA, winacl.FILE_WRITE_DATA)
+        )
+        if code == 0 and keeps and not left.readers and not left.unknown:
+            return Result(change, None, {"sddl": before.sddl, "now": after.sddl})
+        if code != 0:
+            why = f"icacls stopped with exit code {code}"
+        else:
+            why = "you would have lost access" if not keeps else "others could still read it"
+        return _roll_back(change, where, before.sddl, why)
+    except FileNotFoundError:
+        return Result(change, GONE)
+    except (OSError, ValueError) as exc:
+        return Result(
+            change, f"agentprint could not change the file's permissions ({_why(exc)}); left as is"
+        )
+
+
+def _roll_back(change: Change, where: str, sddl: str, why: str) -> Result:
+    """Put the access list back as it was before a lock that did not work."""
+    try:
+        winacl.restore(where, sddl)
+    except (OSError, ValueError) as exc:
+        return Result(
+            change,
+            f"the lock did not work ({why}) and the old permissions could not be put back "
+            f"({_why(exc)}); check them with icacls",
+        )
+    return Result(change, f"the lock did not work ({why}); the old permissions are back")
+
+
+def _why(exc: Exception) -> str:
+    return getattr(exc, "strerror", None) or type(exc).__name__
 
 
 APPLIERS: dict[str, Applier] = {
@@ -1319,6 +1458,8 @@ def _undo_entry(entry: dict[str, Any], folder: Path, done: set[tuple[str, str]])
     if not isinstance(undo, dict):
         text = _KEY_GONE.get(kind, "this {kind} change can't be undone")
         return text.format(path=quote(path), shown=quote(str(entry.get("shown"))), kind=kind)
+    if kind == "lock" and "sddl" in undo:
+        return _undo_windows_lock(path, undo)
     if kind == "lock":
         target = Path(path)
         mode = stat.S_IMODE(os.stat(target).st_mode)
@@ -1344,10 +1485,24 @@ def _undo_entry(entry: dict[str, Any], folder: Path, done: set[tuple[str, str]])
     return f"this {kind} change can't be undone"
 
 
+def _undo_windows_lock(path: str, undo: dict[str, Any]) -> str | None:
+    """Put back the access list a Windows lock replaced, if nobody changed it since."""
+    if not platform.is_windows():
+        return f"the permissions of {quote(path)} were changed on Windows; undo it there"
+    where = str(Path(path).resolve(strict=True))
+    if winacl.read(where).sddl != undo["now"]:
+        return (
+            f"the permissions of {quote(path)} were changed again since fix; left as they are now"
+        )
+    winacl.restore(where, str(undo["sddl"]))
+    return None
+
+
 def undo(home: Path) -> tuple[list[str], list[str]]:
-    """Revert what the newest fix journal can: file modes and ignore files. Returns (restored,
-    not restorable), both plain sentences. Masked keys and env references are gone for good.
-    Older journals are left alone. With no journal there is nothing to do, and it says so."""
+    """Revert what the newest fix journal can: file modes (on Windows, access lists) and ignore
+    files. Returns (restored, not restorable), both plain sentences. Masked keys and env
+    references are gone for good. Older journals are left alone. With no journal there is
+    nothing to do, and it says so."""
     folder = home / JOURNAL_DIR
     names = sorted(p for p in folder.glob("*.json") if _JOURNAL_NAME.fullmatch(p.name))
     if not names:
@@ -1365,6 +1520,8 @@ def undo(home: Path) -> tuple[list[str], list[str]]:
         if entry.get("undone"):
             continue
         what = {"lock": "mode of", "ignore": "ignore file"}.get(str(entry.get("kind")), "")
+        if isinstance(entry.get("undo"), dict) and "sddl" in entry["undo"]:
+            what = "permissions of"  # a Windows lock
         where = quote(str(entry.get("path")))
         try:
             reason = _undo_entry(entry, folder, done)

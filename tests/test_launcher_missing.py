@@ -79,6 +79,7 @@ def test_every_hooked_agent_is_in_the_table():
     assert set(HOOK_FILES) == hooked
 
 
+@pytest.mark.posix_only
 @pytest.mark.parametrize("agent", sorted(HOOK_FILES))
 def test_hook_allows_when_the_launcher_is_gone(home, agent):
     _install(home)
@@ -90,6 +91,7 @@ def test_hook_allows_when_the_launcher_is_gone(home, agent):
     assert result.stdout.strip() == ALL_INTEGRATIONS[agent].reply(None).stdout.strip()
 
 
+@pytest.mark.posix_only
 def test_reinstall_puts_a_deleted_launcher_back(home):
     _install(home)
     launcher = home / ".agentprint" / "bin" / "agentprint-hook"
@@ -98,6 +100,7 @@ def test_reinstall_puts_a_deleted_launcher_back(home):
     assert launcher.is_file() and "Nothing changed" not in out
 
 
+@pytest.mark.posix_only
 def test_reinstall_replaces_a_stale_launcher(home):
     _install(home)
     launcher = home / ".agentprint" / "bin" / "agentprint-hook"
@@ -106,6 +109,7 @@ def test_reinstall_replaces_a_stale_launcher(home):
     assert "guard-old" not in launcher.read_text()
 
 
+@pytest.mark.posix_only
 def test_agentprints_own_files_are_private(home):
     _install(home)
     owned = [

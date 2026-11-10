@@ -5,7 +5,7 @@ from __future__ import annotations
 from ..agents import ALL_AGENTS
 from ..models import Finding, PackageRule
 from ..pack import PackageListing
-from ..secrets import find_secrets, redact
+from ..secrets import find_hidden, find_secrets, hidden_note, redact
 from .ap002_settings_secret import CHECK as AP002
 
 ID = "AP006"
@@ -41,7 +41,8 @@ def check_listing(listing: PackageListing) -> list[Finding]:
         findings.append(Finding(ID, rule.severity, TITLE, rule.agent, location, None, why, FIX))
         text = listing.contents.get(name, b"").decode("utf-8", errors="replace")
         seen: set[str] = set()
-        for match in find_secrets(text):
+        plain = find_secrets(text)
+        for match in [*plain, *find_hidden(text, {m.value for m in plain})]:
             if match.value in seen:
                 continue
             seen.add(match.value)
@@ -53,7 +54,7 @@ def check_listing(listing: PackageListing) -> list[Finding]:
                     agent=rule.agent,
                     location=location,
                     line=text.count("\n", 0, match.start) + 1,
-                    detail=f"{match.name}: {redact(match.value)}",
+                    detail=f"{match.name}: {redact(match.value)}{hidden_note(match)}",
                     fix=AP002.fix,
                 )
             )
